@@ -421,7 +421,7 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { message: 'Not found' });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Supabase Local Dev Bridge running on http://127.0.0.1:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`🚀 Supabase Local Dev Bridge running on port ${PORT} (dual-stack IPv4/IPv6)`);
   console.log(`Connected to PostgreSQL: postgresql://${DB_USER}:***@${DB_HOST}:${DB_PORT}/${DB_NAME}`);
 });
