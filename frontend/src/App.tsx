@@ -17,6 +17,7 @@ import { CustomersPage } from './pages/CustomersPage';
 import { ServicesPage } from './pages/ServicesPage';
 import { StaffCommissionPage } from './pages/StaffCommissionPage';
 import { ReportsPage } from './pages/ReportsPage';
+import { SettingsPage } from './pages/SettingsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,6 +49,7 @@ export function App() {
                 <Route path="services" element={<ServicesPage />} />
                 <Route path="staff" element={<StaffCommissionPage />} />
                 <Route path="reports" element={<ReportsPage />} />
+                <Route path="settings" element={<SettingsPage />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />
