@@ -13,6 +13,8 @@ import { MoneyPage } from './pages/MoneyPage';
 import { MorePage } from './pages/MorePage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { CustomersPage } from './pages/CustomersPage';
+import { ServicesPage } from './pages/ServicesPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,6 +42,8 @@ export function App() {
                 <Route path="jobs" element={<JobsPage />} />
                 <Route path="money" element={<MoneyPage />} />
                 <Route path="more" element={<MorePage />} />
+                <Route path="customers" element={<CustomersPage />} />
+                <Route path="services" element={<ServicesPage />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />
