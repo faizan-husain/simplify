@@ -17,10 +17,32 @@ import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet'
 import { OtherIncomeModal } from '../components/receipts/OtherIncomeModal';
 import { CustomerLedgerModal } from '../components/customers/CustomerLedgerModal';
 import { RemindAllDrawer } from '../components/dues/RemindAllDrawer';
-import { Plus, Search, Share2, Trash2, ChevronDown, ChevronRight, ArrowUpRight } from 'lucide-react';
+import { NewPaymentModal } from '../components/payments/NewPaymentModal';
+import { VendorDetailModal } from '../components/payments/VendorDetailModal';
+import { NewExpenseModal } from '../components/expenses/NewExpenseModal';
+import { NewLoanModal } from '../components/loans/NewLoanModal';
+import { RecordRepaymentModal } from '../components/loans/RecordRepaymentModal';
+import {
+  Plus,
+  Search,
+  Share2,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+  ArrowUpRight,
+  Building,
+} from 'lucide-react';
 import { Database } from '../types/supabase';
 
 type Receipt = Database['public']['Tables']['receipts']['Row'];
+type Payment = Database['public']['Tables']['payments']['Row'] & {
+  vendors?: { id: string; name: string; mobile: string | null };
+};
+type Expense = Database['public']['Tables']['expenses']['Row'] & {
+  expense_categories?: { id: string; name: string };
+};
+
+type MoneyTab = 'dues' | 'receipts' | 'payments' | 'expenses' | 'loans';
 
 interface DuesSummary {
   total_outstanding: number;
@@ -53,17 +75,58 @@ interface CustomerDueItem {
   }>;
 }
 
+interface LoanSummaryData {
+  summary: {
+    total_taken: number;
+    total_principal_repaid: number;
+    total_outstanding: number;
+    total_interest_paid: number;
+  };
+  loans: Array<{
+    loan_id: string;
+    lender_name: string;
+    taken_amount: number;
+    loan_date: string;
+    interest_rate: number | null;
+    notes: string | null;
+    principal_repaid: number;
+    interest_paid: number;
+    outstanding: number;
+    repayments?: Array<{
+      id: string;
+      repayment_date: string;
+      principal: number;
+      interest: number;
+      mode: string;
+      notes: string | null;
+    }>;
+  }>;
+}
+
 export const MoneyPage: React.FC = () => {
   const { business } = useAuth();
   const { showToast } = useToast();
 
-  const [activeTab, setActiveTab] = useState<'dues' | 'receipts'>('dues');
+  const [activeTab, setActiveTab] = useState<MoneyTab>('dues');
 
   // Modals & Sheets
   const [isReceivePaymentOpen, setIsReceivePaymentOpen] = useState(false);
   const [isOtherIncomeOpen, setIsOtherIncomeOpen] = useState(false);
   const [isRemindAllOpen, setIsRemindAllOpen] = useState(false);
   const [ledgerCustomerId, setLedgerCustomerId] = useState<string | null>(null);
+
+  const [isNewPaymentOpen, setIsNewPaymentOpen] = useState(false);
+  const [selectedVendorDetailId, setSelectedVendorDetailId] = useState<string | null>(null);
+
+  const [isNewExpenseOpen, setIsNewExpenseOpen] = useState(false);
+
+  const [isNewLoanOpen, setIsNewLoanOpen] = useState(false);
+  const [repaymentLoan, setRepaymentLoan] = useState<{
+    loan_id: string;
+    lender_name: string;
+    taken_amount: number;
+    outstanding: number;
+  } | null>(null);
 
   // Selected customer for pre-filling receive payment
   const [receivePrefillCustomer, setReceivePrefillCustomer] = useState<{
@@ -93,6 +156,21 @@ export const MoneyPage: React.FC = () => {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Payments state
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [paymentsSearch, setPaymentsSearch] = useState('');
+  const [loadingPayments, setLoadingPayments] = useState(true);
+
+  // Expenses state
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [expensesSearch, setExpensesSearch] = useState('');
+  const [loadingExpenses, setLoadingExpenses] = useState(true);
+
+  // Loans state
+  const [loansData, setLoansData] = useState<LoanSummaryData | null>(null);
+  const [loadingLoans, setLoadingLoans] = useState(true);
+  const [expandedLoans, setExpandedLoans] = useState<{ [id: string]: boolean }>({});
+
   // Fetch dues
   const fetchDues = async () => {
     setLoadingDues(true);
@@ -106,12 +184,14 @@ export const MoneyPage: React.FC = () => {
 
       if (error) throw error;
       const res = data as any;
-      setDuesSummary(res.summary || {
-        total_outstanding: 0,
-        total_overdue: 0,
-        total_bills_due: 0,
-        customer_count: 0,
-      });
+      setDuesSummary(
+        res.summary || {
+          total_outstanding: 0,
+          total_overdue: 0,
+          total_bills_due: 0,
+          customer_count: 0,
+        }
+      );
       setCustomerDues(res.customers || []);
     } catch (err: any) {
       showToast(getErrorMessage(err.message), 'error');
@@ -133,7 +213,9 @@ export const MoneyPage: React.FC = () => {
         .limit(50);
 
       if (receiptsSearch.trim()) {
-        query = query.or(`number.ilike.%${receiptsSearch.trim()}%,reference.ilike.%${receiptsSearch.trim()}%`);
+        query = query.or(
+          `number.ilike.%${receiptsSearch.trim()}%,reference.ilike.%${receiptsSearch.trim()}%`
+        );
       }
 
       const { data, error } = await query;
@@ -146,18 +228,91 @@ export const MoneyPage: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    if (activeTab === 'dues') {
-      fetchDues();
-    } else {
-      fetchReceipts();
+  // Fetch payments
+  const fetchPayments = async () => {
+    setLoadingPayments(true);
+    try {
+      let query = supabase
+        .from('payments')
+        .select('*, vendors(id, name, mobile)')
+        .is('deleted_at', null)
+        .order('payment_date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (paymentsSearch.trim()) {
+        query = query.ilike('description', `%${paymentsSearch.trim()}%`);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setPayments((data as any) || []);
+    } catch (err: any) {
+      showToast(getErrorMessage(err.message), 'error');
+    } finally {
+      setLoadingPayments(false);
     }
+  };
+
+  // Fetch expenses
+  const fetchExpenses = async () => {
+    setLoadingExpenses(true);
+    try {
+      let query = supabase
+        .from('expenses')
+        .select('*, expense_categories(id, name)')
+        .is('deleted_at', null)
+        .order('expense_date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (expensesSearch.trim()) {
+        query = query.ilike('description', `%${expensesSearch.trim()}%`);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setExpenses((data as any) || []);
+    } catch (err: any) {
+      showToast(getErrorMessage(err.message), 'error');
+    } finally {
+      setLoadingExpenses(false);
+    }
+  };
+
+  // Fetch loans
+  const fetchLoans = async () => {
+    setLoadingLoans(true);
+    try {
+      const { data, error } = await supabase.rpc('loans_summary');
+      if (error) throw error;
+      setLoansData(data as any);
+    } catch (err: any) {
+      showToast(getErrorMessage(err.message), 'error');
+    } finally {
+      setLoadingLoans(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'dues') fetchDues();
+    else if (activeTab === 'receipts') fetchReceipts();
+    else if (activeTab === 'payments') fetchPayments();
+    else if (activeTab === 'expenses') fetchExpenses();
+    else if (activeTab === 'loans') fetchLoans();
   }, [activeTab, duesFilter]);
 
   const toggleCustomerExpand = (customerId: string) => {
     setExpandedCustomers((prev) => ({
       ...prev,
       [customerId]: !prev[customerId],
+    }));
+  };
+
+  const toggleLoanExpand = (loanId: string) => {
+    setExpandedLoans((prev) => ({
+      ...prev,
+      [loanId]: !prev[loanId],
     }));
   };
 
@@ -204,6 +359,36 @@ export const MoneyPage: React.FC = () => {
     }
   };
 
+  const handleDeletePayment = async (paymentId: string) => {
+    if (!confirm('Are you sure you want to delete this payment record?')) return;
+    try {
+      const { error } = await supabase.rpc('soft_delete', {
+        p_table: 'payments',
+        p_id: paymentId,
+      });
+      if (error) throw error;
+      showToast('Payment deleted', 'info');
+      fetchPayments();
+    } catch (err: any) {
+      showToast(getErrorMessage(err.message), 'error');
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId: string) => {
+    if (!confirm('Are you sure you want to delete this expense record?')) return;
+    try {
+      const { error } = await supabase.rpc('soft_delete', {
+        p_table: 'expenses',
+        p_id: expenseId,
+      });
+      if (error) throw error;
+      showToast('Expense deleted', 'info');
+      fetchExpenses();
+    } catch (err: any) {
+      showToast(getErrorMessage(err.message), 'error');
+    }
+  };
+
   return (
     <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-4">
       {/* Top Header */}
@@ -211,44 +396,84 @@ export const MoneyPage: React.FC = () => {
         <div>
           <h1 className="text-xl font-bold tracking-tight text-text">{t('nav.money')}</h1>
           <p className="text-xs text-text-muted mt-0.5">
-            Track receivables, receipts, customer advances & cash inflow
+            Track receivables, cash inflow, vendor payments, expenses & capital ledger
           </p>
         </div>
 
+        {/* Tab specific top actions */}
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setIsOtherIncomeOpen(true)}
-          >
-            + Other Income
-          </Button>
-
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => handleOpenReceive()}
-          >
-            <Plus className="w-4 h-4 mr-1.5" />
-            Receive Payment
-          </Button>
+          {activeTab === 'dues' || activeTab === 'receipts' ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsOtherIncomeOpen(true)}
+              >
+                + Other Income
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => handleOpenReceive()}
+              >
+                <Plus className="w-4 h-4 mr-1.5" />
+                Receive Payment
+              </Button>
+            </>
+          ) : activeTab === 'payments' ? (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setIsNewPaymentOpen(true)}
+            >
+              <Plus className="w-4 h-4 mr-1.5" />
+              New Vendor Payment
+            </Button>
+          ) : activeTab === 'expenses' ? (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setIsNewExpenseOpen(true)}
+            >
+              <Plus className="w-4 h-4 mr-1.5" />
+              New Expense
+            </Button>
+          ) : activeTab === 'loans' ? (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setIsNewLoanOpen(true)}
+            >
+              <Plus className="w-4 h-4 mr-1.5" />
+              Record Loan Received
+            </Button>
+          ) : null}
         </div>
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'dues' | 'receipts')}>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as MoneyTab)}>
         <TabsList className="w-full">
           <TabsTrigger value="dues" className="flex-1">
-            Outstanding Dues ({duesSummary.total_bills_due})
+            Dues ({duesSummary.total_bills_due})
           </TabsTrigger>
           <TabsTrigger value="receipts" className="flex-1">
-            Receipts History
+            Receipts (IN)
+          </TabsTrigger>
+          <TabsTrigger value="payments" className="flex-1">
+            Payments (OUT)
+          </TabsTrigger>
+          <TabsTrigger value="expenses" className="flex-1">
+            Expenses
+          </TabsTrigger>
+          <TabsTrigger value="loans" className="flex-1">
+            Loans
           </TabsTrigger>
         </TabsList>
       </Tabs>
 
-      {activeTab === 'dues' ? (
-        /* DUES TAB */
+      {/* TAB 1: DUES */}
+      {activeTab === 'dues' && (
         <div className="space-y-4">
           {/* Prominent Totals Summary Banner */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-border">
@@ -391,7 +616,8 @@ export const MoneyPage: React.FC = () => {
                             </span>
                           </div>
                           <div className="text-xs text-text-muted mt-0.5">
-                            {c.customer_mobile || 'No mobile'} · {c.bill_count} unpaid bill{c.bill_count > 1 ? 's' : ''} · Oldest: {formatDate(c.oldest_bill_date)}
+                            {c.customer_mobile || 'No mobile'} · {c.bill_count} unpaid bill
+                            {c.bill_count > 1 ? 's' : ''} · Oldest: {formatDate(c.oldest_bill_date)}
                             {c.max_days_overdue > 0 && (
                               <span className="text-danger font-bold ml-1.5">
                                 ({c.max_days_overdue}d overdue)
@@ -490,8 +716,10 @@ export const MoneyPage: React.FC = () => {
             </div>
           )}
         </div>
-      ) : (
-        /* RECEIPTS TAB */
+      )}
+
+      {/* TAB 2: RECEIPTS */}
+      {activeTab === 'receipts' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div className="relative flex-1 sm:w-72">
@@ -543,7 +771,8 @@ export const MoneyPage: React.FC = () => {
                     </div>
 
                     <div className="text-xs text-text-muted">
-                      {formatDate(r.receipt_date)} {r.reference && `· Ref: ${r.reference}`} {r.notes && `· ${r.notes}`}
+                      {formatDate(r.receipt_date)} {r.reference && `· Ref: ${r.reference}`}{' '}
+                      {r.notes && `· ${r.notes}`}
                     </div>
                   </div>
 
@@ -563,6 +792,325 @@ export const MoneyPage: React.FC = () => {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: VENDOR PAYMENTS */}
+      {activeTab === 'payments' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="relative flex-1 sm:w-72">
+              <Search className="w-4 h-4 text-text-muted absolute left-3 top-2.5" />
+              <Input
+                type="text"
+                placeholder="Search payments by description..."
+                value={paymentsSearch}
+                onChange={(e) => setPaymentsSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && fetchPayments()}
+                className="pl-9 h-9 text-xs"
+              />
+            </div>
+          </div>
+
+          {loadingPayments ? (
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-16 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : payments.length === 0 ? (
+            <Card className="p-8 text-center">
+              <EmptyState message="No vendor payments recorded yet." />
+            </Card>
+          ) : (
+            <div className="space-y-2">
+              {payments.map((p) => (
+                <div
+                  key={p.id}
+                  className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedVendorDetailId(p.vendor_id)}
+                        className="font-bold text-text text-sm hover:text-primary flex items-center gap-1 group"
+                      >
+                        <Building className="w-3.5 h-3.5 text-text-muted" />
+                        <span>{p.vendors?.name || 'Vendor'}</span>
+                        <ArrowUpRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
+                      </button>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-surface border border-border text-text-muted">
+                        {p.mode}
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-text-muted">
+                      {formatDate(p.payment_date)} · {p.description} {p.notes && `· ${p.notes}`}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <div className="text-right font-bold text-danger text-base">
+                      -{formatINR(p.amount)}
+                    </div>
+
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDeletePayment(p.id)}
+                      title="Delete payment"
+                    >
+                      <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 4: EXPENSES */}
+      {activeTab === 'expenses' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="relative flex-1 sm:w-72">
+              <Search className="w-4 h-4 text-text-muted absolute left-3 top-2.5" />
+              <Input
+                type="text"
+                placeholder="Search expenses by description..."
+                value={expensesSearch}
+                onChange={(e) => setExpensesSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && fetchExpenses()}
+                className="pl-9 h-9 text-xs"
+              />
+            </div>
+          </div>
+
+          {loadingExpenses ? (
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-16 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : expenses.length === 0 ? (
+            <Card className="p-8 text-center">
+              <EmptyState message="No business overhead expenses recorded yet." />
+            </Card>
+          ) : (
+            <div className="space-y-2">
+              {expenses.map((e) => {
+                const isSystemGen = Boolean(e.loan_repayment_id || e.staff_id);
+                return (
+                  <div
+                    key={e.id}
+                    className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-text text-sm">{e.description}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-surface border border-border text-text-muted">
+                          {e.expense_categories?.name || 'Overhead'}
+                        </span>
+                        {e.loan_repayment_id && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                            Loan Interest
+                          </span>
+                        )}
+                        {e.staff_id && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-blue-50 text-blue-800 border border-blue-200">
+                            Commission Payout
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-xs text-text-muted">
+                        {formatDate(e.expense_date)} · Mode: {e.mode}{' '}
+                        {e.payee && `· Payee: ${e.payee}`} {e.notes && `· ${e.notes}`}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="text-right font-bold text-danger text-base">
+                        -{formatINR(e.amount)}
+                      </div>
+
+                      {!isSystemGen && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteExpense(e.id)}
+                          title="Delete expense"
+                        >
+                          <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 5: CAPITAL LEDGER (LOANS) */}
+      {activeTab === 'loans' && (
+        <div className="space-y-4">
+          {/* Prominent Loan Summary Banner */}
+          {loansData && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-border">
+              <div>
+                <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                  Total Taken
+                </div>
+                <div className="text-2xl font-bold text-text mt-1">
+                  {formatINR(loansData.summary.total_taken)}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                  Principal Repaid
+                </div>
+                <div className="text-2xl font-bold text-success mt-1">
+                  {formatINR(loansData.summary.total_principal_repaid)}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                  Loan Outstanding
+                </div>
+                <div className="text-2xl font-bold text-danger mt-1">
+                  {formatINR(loansData.summary.total_outstanding)}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                  Interest Paid
+                </div>
+                <div className="text-2xl font-bold text-amber-700 mt-1">
+                  {formatINR(loansData.summary.total_interest_paid)}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {loadingLoans ? (
+            <div className="space-y-3">
+              {[1, 2].map((i) => (
+                <Skeleton key={i} className="h-24 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : !loansData || loansData.loans.length === 0 ? (
+            <Card className="p-8 text-center">
+              <EmptyState message="No outside loans or udhar recorded in the Capital Ledger." />
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {loansData.loans.map((l) => {
+                const isExpanded = Boolean(expandedLoans[l.loan_id]);
+                return (
+                  <div
+                    key={l.loan_id}
+                    className="bg-white border border-border rounded-xl overflow-hidden transition-shadow shadow-xs"
+                  >
+                    <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => toggleLoanExpand(l.loan_id)}
+                          className="p-1 hover:bg-surface rounded text-text-muted"
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="w-4 h-4" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4" />
+                          )}
+                        </button>
+
+                        <div>
+                          <div className="font-bold text-text text-sm">{l.lender_name}</div>
+                          <div className="text-xs text-text-muted mt-0.5">
+                            Date: {formatDate(l.loan_date)}{' '}
+                            {l.interest_rate ? `· Interest: ${l.interest_rate}% p.a.` : ''}{' '}
+                            {l.notes && `· ${l.notes}`}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between sm:justify-end gap-4 pl-8 sm:pl-0">
+                        <div className="text-right">
+                          <div className="text-xs text-text-muted">
+                            Taken: {formatINR(l.taken_amount)} · Repaid: {formatINR(l.principal_repaid)}
+                          </div>
+                          <div className="text-base font-bold text-danger">
+                            Due: {formatINR(l.outstanding)}
+                          </div>
+                        </div>
+
+                        {l.outstanding > 0 && (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() =>
+                              setRepaymentLoan({
+                                loan_id: l.loan_id,
+                                lender_name: l.lender_name,
+                                taken_amount: l.taken_amount,
+                                outstanding: l.outstanding,
+                              })
+                            }
+                          >
+                            Repay
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Expandable Repayments Timeline */}
+                    {isExpanded && (
+                      <div className="border-t border-border bg-surface/50 p-3">
+                        {!l.repayments || l.repayments.length === 0 ? (
+                          <div className="text-xs text-text-muted text-center py-2">
+                            No repayments recorded yet for this loan.
+                          </div>
+                        ) : (
+                          <div className="border border-border rounded-lg overflow-hidden bg-white text-xs divide-y divide-border/60">
+                            <div className="bg-surface grid grid-cols-12 p-2 font-semibold text-text-muted">
+                              <div className="col-span-3">Date</div>
+                              <div className="col-span-3 text-right">Principal Repaid</div>
+                              <div className="col-span-3 text-right">Interest (Expense)</div>
+                              <div className="col-span-3 text-right">Mode</div>
+                            </div>
+                            {l.repayments.map((rep) => (
+                              <div key={rep.id} className="grid grid-cols-12 p-2 items-center">
+                                <div className="col-span-3 text-text-muted">
+                                  {formatDate(rep.repayment_date)}
+                                </div>
+                                <div className="col-span-3 text-right font-medium text-success">
+                                  {formatINR(rep.principal)}
+                                </div>
+                                <div className="col-span-3 text-right font-medium text-amber-700">
+                                  {formatINR(rep.interest)}
+                                </div>
+                                <div className="col-span-3 text-right text-text-muted">
+                                  {rep.mode}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -603,6 +1151,54 @@ export const MoneyPage: React.FC = () => {
         onReceivePayment={(c) => {
           setLedgerCustomerId(null);
           handleOpenReceive(c);
+        }}
+      />
+
+      {/* New Payment Modal */}
+      <NewPaymentModal
+        open={isNewPaymentOpen}
+        onOpenChange={setIsNewPaymentOpen}
+        onSuccess={() => {
+          fetchPayments();
+        }}
+      />
+
+      {/* Vendor Detail Modal */}
+      <VendorDetailModal
+        open={Boolean(selectedVendorDetailId)}
+        onOpenChange={(v) => !v && setSelectedVendorDetailId(null)}
+        vendorId={selectedVendorDetailId}
+        onRecordPayment={() => {
+          setSelectedVendorDetailId(null);
+          setIsNewPaymentOpen(true);
+        }}
+      />
+
+      {/* New Expense Modal */}
+      <NewExpenseModal
+        open={isNewExpenseOpen}
+        onOpenChange={setIsNewExpenseOpen}
+        onSuccess={() => {
+          fetchExpenses();
+        }}
+      />
+
+      {/* New Loan Modal */}
+      <NewLoanModal
+        open={isNewLoanOpen}
+        onOpenChange={setIsNewLoanOpen}
+        onSuccess={() => {
+          fetchLoans();
+        }}
+      />
+
+      {/* Record Repayment Modal */}
+      <RecordRepaymentModal
+        open={Boolean(repaymentLoan)}
+        onOpenChange={(v) => !v && setRepaymentLoan(null)}
+        loan={repaymentLoan}
+        onSuccess={() => {
+          fetchLoans();
         }}
       />
 
