@@ -12,6 +12,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { BillDetailModal } from '../components/bills/BillDetailModal';
+import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet';
 import { Plus, Search } from 'lucide-react';
 import { Database } from '../types/supabase';
 
@@ -32,6 +33,10 @@ export const BillsPage: React.FC = () => {
   // Selected bill for detail view
   const [selectedInvoice, setSelectedInvoice] = useState<(Invoice & { invoice_items?: InvoiceItem[] }) | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+
+  // Receive payment sheet state
+  const [isReceivePaymentOpen, setIsReceivePaymentOpen] = useState(false);
+  const [receivePaymentInvoice, setReceivePaymentInvoice] = useState<Invoice | null>(null);
 
   const fetchInvoices = async () => {
     setLoading(true);
@@ -204,9 +209,38 @@ export const BillsPage: React.FC = () => {
         invoice={selectedInvoice}
         onInvoiceUpdated={() => fetchInvoices()}
         onReceivePayment={(inv) => {
-          navigate(`/money?tab=receipts&action=receive&invoice_id=${inv.id}&customer_id=${inv.customer_id || ''}`);
+          setReceivePaymentInvoice(inv);
+          setIsReceivePaymentOpen(true);
         }}
       />
+
+      {/* Receive Payment Sheet shortcut from Bill */}
+      {receivePaymentInvoice && (
+        <ReceivePaymentSheet
+          open={isReceivePaymentOpen}
+          onOpenChange={(v) => {
+            setIsReceivePaymentOpen(v);
+            if (!v) setReceivePaymentInvoice(null);
+          }}
+          prefillCustomer={
+            receivePaymentInvoice.customer_id
+              ? {
+                  id: receivePaymentInvoice.customer_id,
+                  name: receivePaymentInvoice.party_name,
+                  mobile: receivePaymentInvoice.party_mobile,
+                }
+              : undefined
+          }
+          prefillInvoice={{
+            id: receivePaymentInvoice.id,
+            number: receivePaymentInvoice.number,
+            balance: Math.max(0, receivePaymentInvoice.total - receivePaymentInvoice.paid_amount),
+          }}
+          onSuccess={() => {
+            fetchInvoices();
+          }}
+        />
+      )}
     </div>
   );
 };

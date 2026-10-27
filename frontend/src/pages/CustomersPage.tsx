@@ -10,7 +10,8 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { DuplicateCustomerModal, MatchingCustomer } from '../components/customers/DuplicateCustomerModal';
-import { Plus, Search, Trash2 } from 'lucide-react';
+import { CustomerLedgerModal } from '../components/customers/CustomerLedgerModal';
+import { Plus, Search, Trash2, BookOpen, Edit } from 'lucide-react';
 import { Database } from '../types/supabase';
 
 type Customer = Database['public']['Tables']['customers']['Row'];
@@ -41,6 +42,9 @@ export const CustomersPage: React.FC = () => {
   // Duplicate modal state
   const [duplicateMatches, setDuplicateMatches] = useState<MatchingCustomer[]>([]);
   const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
+
+  // Ledger modal state
+  const [ledgerCustomerId, setLedgerCustomerId] = useState<string | null>(null);
 
   const fetchCustomers = async () => {
     setLoading(true);
@@ -268,6 +272,26 @@ export const CustomersPage: React.FC = () => {
                     {customer.type}
                   </span>
                   <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLedgerCustomerId(customer.id);
+                    }}
+                    className="p-1 text-text-muted hover:text-primary rounded"
+                    title={t('customers.ledger')}
+                  >
+                    <BookOpen className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenEdit(customer);
+                    }}
+                    className="p-1 text-text-muted hover:text-primary rounded"
+                    title={t('common.edit')}
+                  >
+                    <Edit className="w-4 h-4" />
+                  </button>
+                  <button
                     onClick={(e) => handleDelete(customer, e)}
                     className="p-1 text-text-muted hover:text-danger rounded"
                     title={t('common.delete')}
@@ -374,6 +398,13 @@ export const CustomersPage: React.FC = () => {
         onCreateAnyway={() => {
           saveCustomer(true);
         }}
+      />
+
+      {/* Customer Ledger Modal */}
+      <CustomerLedgerModal
+        open={Boolean(ledgerCustomerId)}
+        onOpenChange={(v) => !v && setLedgerCustomerId(null)}
+        customerId={ledgerCustomerId}
       />
     </div>
   );

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
@@ -12,6 +12,7 @@ import { useToast } from '../ui/Toast';
 import { useAuth } from '../../context/AuthContext';
 import { Printer, Share2 } from 'lucide-react';
 import { Database } from '../../types/supabase';
+import { ApplyAdvanceModal } from './ApplyAdvanceModal';
 
 type Invoice = Database['public']['Tables']['invoices']['Row'];
 type InvoiceItem = Database['public']['Tables']['invoice_items']['Row'];
@@ -37,6 +38,28 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   const [isCancelOpen, setIsCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
+  const [customerAdvance, setCustomerAdvance] = useState(0);
+  const [isAdvanceOpen, setIsAdvanceOpen] = useState(false);
+
+  useEffect(() => {
+    if (open && invoice?.customer_id && invoice.total > invoice.paid_amount) {
+      supabase
+        .from('receipts')
+        .select('unallocated_amount')
+        .eq('customer_id', invoice.customer_id)
+        .is('deleted_at', null)
+        .gt('unallocated_amount', 0)
+        .then(({ data }) => {
+          const tot = (data || []).reduce(
+            (acc: number, r: any) => acc + (parseFloat(r.unallocated_amount) || 0),
+            0
+          );
+          setCustomerAdvance(tot);
+        });
+    } else {
+      setCustomerAdvance(0);
+    }
+  }, [open, invoice?.id, invoice?.customer_id, invoice?.paid_amount]);
 
   if (!invoice) return null;
 
@@ -208,6 +231,18 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
               <span>WhatsApp</span>
             </Button>
 
+            {balance > 0 && customerAdvance > 0 && invoice.status === 'ACTIVE' && (
+              <Button
+                type="button"
+                variant="outline"
+                size="md"
+                className="col-span-2 border-primary text-primary hover:bg-primary/5"
+                onClick={() => setIsAdvanceOpen(true)}
+              >
+                Apply Advance ({formatINR(customerAdvance)} available)
+              </Button>
+            )}
+
             {balance > 0 && invoice.status === 'ACTIVE' && onReceivePayment && (
               <Button
                 type="button"
@@ -275,6 +310,19 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
           </div>
         </div>
       </Dialog>
+      {/* Apply Advance Dialog */}
+      <ApplyAdvanceModal
+        open={isAdvanceOpen}
+        onOpenChange={setIsAdvanceOpen}
+        invoiceId={invoice.id}
+        invoiceNumber={invoice.number}
+        balance={balance}
+        availableAdvance={customerAdvance}
+        onSuccess={() => {
+          onInvoiceUpdated?.();
+          onOpenChange(false);
+        }}
+      />
     </>
   );
 };
