@@ -12,3 +12,4 @@ This file tracks all assumptions, design decisions, and trade-offs made during t
 | 2026-10-27 | M5 | Auto-creation of "Loan Interest" expense inside `record_loan_repayment` | Enforces BR-1 & BR-11: principal is excluded from P&L, while interest is captured atomically as an operating expense. |
 | 2026-10-27 | M5 | RLS restriction on `expenses` with `staff_id` / `loan_repayment_id` | Prevents clients from manually mutating or tampering with automated payout and repayment expenses. |
 | 2026-10-27 | M5 | Dedicated DB triggers for `payments.fy_label` and `expenses.fy_label` | Guarantees financial year consistency from document date regardless of client or server write path. |
+| 2026-10-27 | M6 | Snapshot step isolation & atomic auto-completion in `tick_step` / `untick_step` | Job type steps are snapshotted on bill creation per BR-12; ticking all steps transitions status to COMPLETED and commission to EARNED, while unticking reopens both per BR-13 & BR-15. |
