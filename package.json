@@ -1,0 +1,26 @@
+{
+  "name": "simplify-saas",
+  "version": "1.0.0",
+  "description": "SIMPLIFY - Fast, simple billing, income & expense SaaS for small businesses",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "test": "npm run test:db && npm run test:fe",
+    "test:db": "tsx scripts/run-db-tests.ts",
+    "test:fe": "npm --prefix frontend test",
+    "db:reset": "tsx scripts/db-reset.ts",
+    "seed": "tsx scripts/seed-dev.ts",
+    "gen:types": "supabase gen types typescript --local > frontend/src/types/supabase.ts || tsx scripts/gen-types.ts",
+    "secret-leak-check": "tsx scripts/check-secret-leak.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "dotenv": "^16.4.5",
+    "pg": "^8.12.0",
+    "supabase": "^2.122.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

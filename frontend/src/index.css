@@ -1,0 +1,62 @@
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-white text-text font-sans;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Custom Minimal Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #E5E7EB;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #D1D5DB;
+}
+
+/* Print CSS */
+@media print {
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    background: transparent !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* Thermal 58mm Print */
+@media print {
+  .print-thermal-58 {
+    width: 58mm !important;
+    max-width: 58mm !important;
+    padding: 2mm !important;
+    font-size: 11px !important;
+  }
+  .print-thermal-80 {
+    width: 80mm !important;
+    max-width: 80mm !important;
+    padding: 4mm !important;
+    font-size: 12px !important;
+  }
+}
