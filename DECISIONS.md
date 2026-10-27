@@ -17,3 +17,5 @@ This file tracks all assumptions, design decisions, and trade-offs made during t
 | 2026-10-27 | M8 | Single unified `report()` & `dashboard()` RPCs with BR-1 loan exclusion & Privacy PIN session gating | Consolidates reporting metrics into performant DB queries that strictly separate loans from P&L and protect historical FY data per BR-17. |
 | 2026-10-27 | M9 | Dynamic UPI QR encoding balance due & Web Share API PDF integration with template rendering | Enforces BR-19 with exact balance and business UPI VPA, and provides customizable WhatsApp templates with deep links per BR-20. |
 | 2026-10-27 | M10 | Multi-table soft-delete restoration and FK-ordered 30-day purge with pg_cron | Ensures compliance with BR-18 and data retention regulations while keeping ledger integrity and automated database hygiene. |
+| 2026-10-27 | Local | Added `scripts/local-dev-bridge.ts` for standalone local testing | Provides lightweight zero-Docker Supabase Auth and PostgREST endpoint bridge over local PostgreSQL `simplify_dev`, enabling immediate local browser testing without Docker. |
+

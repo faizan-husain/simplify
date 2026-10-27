@@ -12,7 +12,8 @@
     "db:reset": "tsx scripts/db-reset.ts",
     "seed": "tsx scripts/seed-dev.ts",
     "gen:types": "supabase gen types typescript --local > frontend/src/types/supabase.ts || tsx scripts/gen-types.ts",
-    "secret-leak-check": "tsx scripts/check-secret-leak.ts"
+    "secret-leak-check": "tsx scripts/check-secret-leak.ts",
+    "bridge": "tsx scripts/local-dev-bridge.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
