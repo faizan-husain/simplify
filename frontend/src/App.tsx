@@ -18,6 +18,7 @@ import { ServicesPage } from './pages/ServicesPage';
 import { StaffCommissionPage } from './pages/StaffCommissionPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { RecentlyDeletedPage } from './pages/RecentlyDeletedPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -50,6 +51,7 @@ export function App() {
                 <Route path="staff" element={<StaffCommissionPage />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="settings" element={<SettingsPage />} />
+                <Route path="recently-deleted" element={<RecentlyDeletedPage />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />
