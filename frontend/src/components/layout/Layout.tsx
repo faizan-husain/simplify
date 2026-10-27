@@ -3,16 +3,19 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { Home, FileText, Briefcase, IndianRupee, Menu, Plus } from 'lucide-react';
 import { clsx } from 'clsx';
 import { t } from '../../i18n';
+import { useAuth } from '../../context/AuthContext';
+import { HeaderSearch } from './HeaderSearch';
 
 export const Layout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { business } = useAuth();
 
-  // Navigation items
+  // Navigation items per §10 (Jobs only if job management enabled)
   const navItems = [
     { to: '/', label: t('nav.home'), icon: Home, exact: true },
     { to: '/bills', label: t('nav.bills'), icon: FileText },
-    { to: '/jobs', label: t('nav.jobs'), icon: Briefcase },
+    ...(business?.job_management_enabled ? [{ to: '/jobs', label: t('nav.jobs'), icon: Briefcase }] : []),
     { to: '/money', label: t('nav.money'), icon: IndianRupee },
     { to: '/more', label: t('nav.more'), icon: Menu },
   ];
@@ -69,6 +72,11 @@ export const Layout: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
+        {/* Top Header Bar with Global Search */}
+        <header className="h-14 px-4 border-b border-border bg-white flex items-center justify-between gap-4 flex-shrink-0 z-20">
+          <HeaderSearch />
+        </header>
+
         <div className="flex-1 overflow-y-auto overflow-x-hidden pb-20 md:pb-6">
           <Outlet />
         </div>
