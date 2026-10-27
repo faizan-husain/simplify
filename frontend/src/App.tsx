@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from './components/ui/Toast';
+import { AuthProvider } from './context/AuthContext';
 import { Layout } from './components/layout/Layout';
 
 // Pages
@@ -25,25 +26,27 @@ const queryClient = new QueryClient({
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RegisterPage />} />
+      <AuthProvider>
+        <ToastProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/register" element={<RegisterPage />} />
 
-            <Route path="/" element={<Layout />}>
-              <Route index element={<DashboardPage />} />
-              <Route path="bills" element={<BillsPage />} />
-              <Route path="bills/new" element={<NewBillPage />} />
-              <Route path="jobs" element={<JobsPage />} />
-              <Route path="money" element={<MoneyPage />} />
-              <Route path="more" element={<MorePage />} />
-            </Route>
+              <Route path="/" element={<Layout />}>
+                <Route index element={<DashboardPage />} />
+                <Route path="bills" element={<BillsPage />} />
+                <Route path="bills/new" element={<NewBillPage />} />
+                <Route path="jobs" element={<JobsPage />} />
+                <Route path="money" element={<MoneyPage />} />
+                <Route path="more" element={<MorePage />} />
+              </Route>
 
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </ToastProvider>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </BrowserRouter>
+        </ToastProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

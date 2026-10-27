@@ -1,4 +1,3 @@
--- pgTAP compatibility harness for standard PostgreSQL
 CREATE SCHEMA IF NOT EXISTS tap;
 
 CREATE TABLE IF NOT EXISTS tap.test_state (
@@ -6,6 +5,10 @@ CREATE TABLE IF NOT EXISTS tap.test_state (
   failed_tests int DEFAULT 0,
   plan_count int DEFAULT 0
 );
+
+GRANT USAGE ON SCHEMA tap TO authenticated, anon, public;
+GRANT ALL ON ALL TABLES IN SCHEMA tap TO authenticated, anon, public;
+GRANT ALL ON ALL FUNCTIONS IN SCHEMA tap TO authenticated, anon, public;
 
 CREATE OR REPLACE FUNCTION tap.reset_state() RETURNS void AS $$
 BEGIN

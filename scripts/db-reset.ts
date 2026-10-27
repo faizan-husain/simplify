@@ -45,13 +45,34 @@ export async function resetDatabase(targetDb = DB_NAME) {
 
   await client.connect();
   try {
+    // Ensure Supabase standard roles exist
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+          CREATE ROLE anon NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+          CREATE ROLE authenticated NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
+          CREATE ROLE service_role NOLOGIN;
+        END IF;
+      END $$;
+
+      CREATE SCHEMA IF NOT EXISTS auth;
+      GRANT USAGE ON SCHEMA public, auth TO authenticated, anon;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO authenticated;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO authenticated;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO authenticated;
+    `);
+
     // Enable extensions
     await client.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
     await client.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
 
     // Ensure auth schema exists (mimicking Supabase Auth for local test/dev)
     await client.query(`
-      CREATE SCHEMA IF NOT EXISTS auth;
       CREATE TABLE IF NOT EXISTS auth.users (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         email text UNIQUE,
@@ -88,6 +109,13 @@ export async function resetDatabase(targetDb = DB_NAME) {
         const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
         await client.query(sql);
       }
+
+      await client.query(`
+        GRANT USAGE ON SCHEMA public, app, auth TO authenticated;
+        GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated;
+        GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO authenticated;
+        GRANT ALL ON ALL FUNCTIONS IN SCHEMA public, app TO authenticated;
+      `);
     }
 
     console.log(`Database ${targetDb} reset and migrations applied successfully.`);
