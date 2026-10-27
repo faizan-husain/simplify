@@ -233,7 +233,22 @@
     "pay_staff": "Pay Staff",
     "day": "Day",
     "month": "Month",
-    "year": "Year"
+    "year": "Year (FY)",
+    "all_time": "All Time",
+    "all_staff": "All Staff",
+    "select_staff": "Select Staff Member",
+    "payout_date": "Payout Date",
+    "payout_amount": "Payout Amount",
+    "payout_saved": "Staff payout recorded successfully",
+    "commission_entries": "Commission Entries",
+    "payouts_history": "Payouts History",
+    "team_summary": "Team Balances",
+    "no_entries": "No commission entries found for this period",
+    "no_payouts": "No payouts recorded for this period",
+    "bill": "Bill",
+    "rate_percent": "Rate & %",
+    "status_earned": "Earned",
+    "status_upcoming": "Upcoming"
   },
   "reports": {
     "title": "Reports",
