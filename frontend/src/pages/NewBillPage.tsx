@@ -15,7 +15,6 @@ import {
   Trash2,
   ChevronDown,
   ChevronUp,
-  Briefcase,
   FileText,
   CreditCard,
   Building,
@@ -23,6 +22,8 @@ import {
   Banknote,
   Receipt,
   CheckCircle2,
+  CheckSquare,
+  Square,
   Zap,
 } from 'lucide-react';
 import { Database } from '../types/supabase';
@@ -30,25 +31,18 @@ import { Database } from '../types/supabase';
 type Service = Database['public']['Tables']['services']['Row'];
 type Customer = Database['public']['Tables']['customers']['Row'];
 
-// Distinct state for Tracked Jobs
-interface JobItemState {
-  id: string;
-  service_id: string;
-  job_type_name: string;
-  rate: string;
-  applicant_name: string;
-}
-
-// Distinct state for Regular Products & Services
-interface RegularItemState {
+// Single unified item state for all items & jobs
+interface BillItemState {
   id: string;
   service_id?: string | null;
   description: string;
+  particular: string; // Extra field for Particular / Applicant / Order Details
+  create_job: boolean; // Create Job in Queue checkbox, DEFAULT IS ALWAYS TRUE (checked)
   quantity: string;
   rate: string;
 }
 
-const DRAFT_STORAGE_KEY = 'simplify_new_bill_draft_v2';
+const DRAFT_STORAGE_KEY = 'simplify_new_bill_draft_v3';
 const LAST_PAYMENT_MODE_KEY = 'simplify_last_payment_mode';
 
 const PAYMENT_MODES = [
@@ -65,7 +59,6 @@ export const NewBillPage: React.FC = () => {
 
   // Reference data
   const [services, setServices] = useState<Service[]>([]);
-  const [frequentServices, setFrequentServices] = useState<Service[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
 
   // Customer selection state
@@ -74,12 +67,16 @@ export const NewBillPage: React.FC = () => {
   const [walkInName, setWalkInName] = useState('');
   const [walkInMobile, setWalkInMobile] = useState('');
 
-  // 1. Tracked Jobs List (Multi-step workflows with applicant name & queue tracking)
-  const [jobItems, setJobItems] = useState<JobItemState[]>([]);
-
-  // 2. Regular Products & Items List (Photocopy, Printout, Lamination, etc.)
-  const [regularItems, setRegularItems] = useState<RegularItemState[]>([
-    { id: '1', description: '', quantity: '1', rate: '' },
+  // Single unified items list (Jobs & Items combined with 'create_job' default true)
+  const [items, setItems] = useState<BillItemState[]>([
+    {
+      id: '1',
+      description: '',
+      particular: '',
+      create_job: true, // Default ALWAYS checked per user requirement!
+      quantity: '1',
+      rate: '',
+    },
   ]);
 
   // Discount state
@@ -111,6 +108,8 @@ export const NewBillPage: React.FC = () => {
       .select('*')
       .eq('active', true)
       .is('deleted_at', null)
+      .order('is_job_type', { ascending: false })
+      .order('name')
       .then(({ data }) => {
         if (data) setServices(data as Service[]);
       });
@@ -124,17 +123,12 @@ export const NewBillPage: React.FC = () => {
         if (data) setCustomers(data as Customer[]);
       });
 
-    supabase.rpc('frequent_services').then(({ data }) => {
-      if (data && Array.isArray(data)) setFrequentServices(data as Service[]);
-    });
-
     // Check saved draft
     const draft = localStorage.getItem(DRAFT_STORAGE_KEY);
     if (draft) {
       try {
         const parsed = JSON.parse(draft);
-        if (parsed.jobItems) setJobItems(parsed.jobItems);
-        if (parsed.regularItems) setRegularItems(parsed.regularItems);
+        if (parsed.items && parsed.items.length > 0) setItems(parsed.items);
         if (parsed.walkInName) setWalkInName(parsed.walkInName);
         if (parsed.walkInMobile) setWalkInMobile(parsed.walkInMobile);
         if (parsed.discountType) setDiscountType(parsed.discountType);
@@ -151,8 +145,7 @@ export const NewBillPage: React.FC = () => {
       selectedCustomerId,
       walkInName,
       walkInMobile,
-      jobItems,
-      regularItems,
+      items,
       discountType,
       discountValue,
       paidNow,
@@ -164,8 +157,7 @@ export const NewBillPage: React.FC = () => {
     selectedCustomerId,
     walkInName,
     walkInMobile,
-    jobItems,
-    regularItems,
+    items,
     discountType,
     discountValue,
     paidNow,
@@ -173,79 +165,63 @@ export const NewBillPage: React.FC = () => {
   ]);
 
   // Combined line preview items for decimal.js live calculation
-  const allLines = [
-    ...jobItems.map((j) => ({ quantity: 1, rate: j.rate || '0' })),
-    ...regularItems.map((r) => ({ quantity: r.quantity || '0', rate: r.rate || '0' })),
-  ];
+  const allLines = items.map((it) => ({
+    quantity: it.quantity || '0',
+    rate: it.rate || '0',
+  }));
 
   const totals = computeBillTotals(allLines, discountType, discountValue, paidNow);
 
-  // Job management handlers
-  const handleAddJob = (service: Service) => {
-    const newJob: JobItemState = {
-      id: Math.random().toString(36).substring(2, 9),
-      service_id: service.id,
-      job_type_name: service.name,
-      rate: service.default_rate ? String(service.default_rate) : '',
-      applicant_name: walkInName || '',
-    };
-    setJobItems((prev) => [...prev, newJob]);
-    showToast(`Added '${service.name}' to tracked jobs`, 'success');
-  };
-
-  const handleUpdateJob = (id: string, updates: Partial<JobItemState>) => {
-    setJobItems((prev) => prev.map((j) => (j.id === id ? { ...j, ...updates } : j)));
-  };
-
-  const handleRemoveJob = (id: string) => {
-    setJobItems((prev) => prev.filter((j) => j.id !== id));
-  };
-
-  // Regular items handlers
-  const handleAddRegularItem = (service?: Service) => {
-    const newItem: RegularItemState = {
+  // Item handlers
+  const handleAddItem = (service?: Service) => {
+    const newItem: BillItemState = {
       id: Math.random().toString(36).substring(2, 9),
       service_id: service?.id || null,
       description: service?.name || '',
+      particular: walkInName || '',
+      create_job: true, // Default ALWAYS checked (true) per user requirement!
       quantity: '1',
       rate: service?.default_rate ? String(service.default_rate) : '',
     };
-    if (regularItems.length === 1 && regularItems[0].description.trim() === '' && !regularItems[0].rate) {
-      setRegularItems([newItem]);
+
+    if (items.length === 1 && items[0].description.trim() === '' && !items[0].rate) {
+      setItems([newItem]);
     } else {
-      setRegularItems((prev) => [...prev, newItem]);
+      setItems((prev) => [...prev, newItem]);
     }
   };
 
-  const handleUpdateRegularItem = (id: string, updates: Partial<RegularItemState>) => {
-    setRegularItems((prev) => prev.map((r) => (r.id === id ? { ...r, ...updates } : r)));
+  const handleUpdateItem = (id: string, updates: Partial<BillItemState>) => {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...updates } : it)));
   };
 
-  const handleRemoveRegularItem = (id: string) => {
-    if (regularItems.length === 1 && jobItems.length === 0) {
-      setRegularItems([{ id: '1', description: '', quantity: '1', rate: '' }]);
+  const handleRemoveItem = (id: string) => {
+    if (items.length === 1) {
+      setItems([
+        {
+          id: '1',
+          description: '',
+          particular: '',
+          create_job: true,
+          quantity: '1',
+          rate: '',
+        },
+      ]);
       return;
     }
-    setRegularItems((prev) => prev.filter((r) => r.id !== id));
+    setItems((prev) => prev.filter((it) => it.id !== id));
   };
 
   const handlePaidInFull = () => {
     setPaidNow(totals.total.toString());
   };
 
-  // Available job types and regular services
-  const availableJobServices = services.filter((s) => s.is_job_type);
-  const availableRegularServices = (frequentServices.length > 0 ? frequentServices : services).filter(
-    (s) => !s.is_job_type
-  );
-
   const handleSave = async (saveAndNew = false) => {
     // Collect valid items
-    const validJobs = jobItems.filter((j) => j.job_type_name.trim() !== '');
-    const validRegular = regularItems.filter((r) => r.description.trim() !== '');
+    const validItems = items.filter((it) => it.description.trim() !== '');
 
-    if (validJobs.length === 0 && validRegular.length === 0) {
-      showToast('Please add at least one job or bill item', 'error');
+    if (validItems.length === 0) {
+      showToast('Please add at least one item to the bill', 'error');
       return;
     }
 
@@ -257,32 +233,22 @@ export const NewBillPage: React.FC = () => {
       }
     }
 
-    // If job is added, advise entering mobile for WhatsApp updates
-    if (validJobs.length > 0 && isWalkIn && !walkInMobile.trim()) {
-      showToast('Please enter customer mobile for live job tracking WhatsApp updates', 'info');
+    const hasJobTicked = validItems.some((it) => it.create_job);
+    if (hasJobTicked && isWalkIn && !walkInMobile.trim()) {
+      showToast('Tip: Enter customer mobile to enable WhatsApp updates for tracked jobs', 'info');
     }
 
     setSaving(true);
     try {
-      // Map both job items and regular items into the invoice items array
-      const mappedItems = [
-        ...validJobs.map((j) => ({
-          service_id: j.service_id,
-          description: j.job_type_name.trim(),
-          quantity: 1,
-          rate: parseFloat(j.rate || '0'),
-          is_job: true,
-          applicant_name: j.applicant_name.trim() || walkInName.trim() || null,
-        })),
-        ...validRegular.map((r) => ({
-          service_id: r.service_id || null,
-          description: r.description.trim(),
-          quantity: parseFloat(r.quantity || '1'),
-          rate: parseFloat(r.rate || '0'),
-          is_job: false,
-          applicant_name: null,
-        })),
-      ];
+      // Map items with Particular -> applicant_name & create_job -> is_job
+      const mappedItems = validItems.map((it) => ({
+        service_id: it.service_id || null,
+        description: it.description.trim(),
+        quantity: parseFloat(it.quantity || '1'),
+        rate: parseFloat(it.rate || '0'),
+        is_job: it.create_job, // Explicitly respects user's checkbox (default true)
+        applicant_name: it.particular.trim() || walkInName.trim() || null,
+      }));
 
       const payload: any = {
         invoice_date: invoiceDate,
@@ -319,8 +285,16 @@ export const NewBillPage: React.FC = () => {
       if (saveAndNew) {
         showToast(`Bill #${data.number} created successfully!`, 'success');
         // Reset form
-        setJobItems([]);
-        setRegularItems([{ id: '1', description: '', quantity: '1', rate: '' }]);
+        setItems([
+          {
+            id: '1',
+            description: '',
+            particular: '',
+            create_job: true,
+            quantity: '1',
+            rate: '',
+          },
+        ]);
         setWalkInName('');
         setWalkInMobile('');
         setDiscountType('NONE');
@@ -388,7 +362,7 @@ export const NewBillPage: React.FC = () => {
             <div className="flex items-center gap-2 flex-1 max-w-lg">
               <input
                 type="text"
-                placeholder="Customer Name (optional if paid in full)"
+                placeholder="Customer Name (optional if fully paid)"
                 value={walkInName}
                 onChange={(e) => setWalkInName(e.target.value)}
                 className="w-full h-8 px-2.5 rounded-lg border border-slate-200 text-xs focus:border-primary focus:outline-none"
@@ -421,229 +395,189 @@ export const NewBillPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. FULL-SCREEN 2-COLUMN WORKSPACE (Left: Jobs & Items, Right: POS Terminal & Save) */}
+      {/* 2. FULL-SCREEN 2-COLUMN WORKSPACE */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3 lg:overflow-hidden min-h-0">
-        {/* LEFT COLUMN: Input Workspace (Scrolls internally if items > screen, no whole-page scroll) */}
-        <div className="lg:col-span-7 xl:col-span-8 flex flex-col gap-3 lg:overflow-y-auto pr-0 lg:pr-1.5">
-          {/* SECTION A: MULTI-STEP JOB SERVICES (WORKFLOW & LIVE QUEUE TRACKING) */}
-          <div className="bg-white border border-blue-200/90 rounded-2xl p-3 sm:p-4 shadow-2xs space-y-2.5">
-            <div className="flex items-center justify-between pb-1.5 border-b border-blue-100">
-              <div className="flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg bg-blue-100 text-primary flex items-center justify-center">
-                  <Briefcase className="w-3.5 h-3.5" />
-                </span>
-                <div>
-                  <h2 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight flex items-center gap-1.5">
-                    <span>Multi-Step Job Services</span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-primary">
-                      Live Queue Tracking
-                    </span>
-                  </h2>
-                </div>
-              </div>
-
-              <span className="text-[11px] font-semibold text-slate-500">
-                {jobItems.length} Job{jobItems.length !== 1 ? 's' : ''} Added
-              </span>
-            </div>
-
-            {/* Quick Job Type Clickable Badges */}
-            {availableJobServices.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {availableJobServices.map((srv) => (
-                  <button
-                    key={srv.id}
-                    type="button"
-                    onClick={() => handleAddJob(srv)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50/50 hover:bg-blue-100/70 hover:border-primary text-xs font-semibold text-primary shadow-2xs transition-all cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>{srv.name}</span>
-                    {srv.default_rate && (
-                      <span className="font-bold text-slate-800 text-[11px]">
-                        ({formatINR(srv.default_rate)})
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Added Jobs List (Single-row compact items) */}
-            {jobItems.length > 0 && (
-              <div className="space-y-1.5 pt-1">
-                {jobItems.map((job, idx) => (
-                  <div
-                    key={job.id}
-                    className="p-2 sm:px-3 sm:py-2 rounded-xl border border-blue-200/90 bg-blue-50/20 shadow-2xs flex items-center justify-between gap-2 text-xs"
-                  >
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="w-5 h-5 rounded bg-blue-100 text-primary font-bold text-[10px] flex items-center justify-center">
-                        J{idx + 1}
-                      </span>
-                      <span className="font-bold text-slate-900 truncate max-w-[140px] sm:max-w-[180px]">
-                        {job.job_type_name}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-1 justify-end">
-                      <input
-                        type="text"
-                        placeholder="Applicant Name (Candidate)"
-                        value={job.applicant_name}
-                        onChange={(e) => handleUpdateJob(job.id, { applicant_name: e.target.value })}
-                        className="h-8 px-2 rounded-lg border border-slate-200 text-xs bg-white flex-1 max-w-[200px] focus:border-primary focus:outline-none"
-                      />
-
-                      <div className="w-24 shrink-0">
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="Rate ₹"
-                          value={job.rate}
-                          onChange={(e) => handleUpdateJob(job.id, { rate: e.target.value })}
-                          className="w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-bold text-right bg-white focus:border-primary focus:outline-none"
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveJob(job.id)}
-                        className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors"
-                        title="Remove Job"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* SECTION B: REGULAR BILL ITEMS & PRODUCTS */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-4 shadow-2xs space-y-2 flex-1 flex flex-col min-h-[220px]">
-            <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
-                  <FileText className="w-3.5 h-3.5" />
-                </span>
-                <h2 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight">
-                  Regular Items & Products (Photocopy, Printout, Lamination, etc.)
-                </h2>
-              </div>
-
+        {/* LEFT COLUMN: Single Unified Items & Jobs Table */}
+        <div className="lg:col-span-7 xl:col-span-8 bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-4 shadow-2xs flex flex-col gap-2.5 lg:overflow-hidden min-h-[350px]">
+          {/* Quick Clickable Chips for Services */}
+          <div className="space-y-1 shrink-0 pb-1 border-b border-slate-100">
+            <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+              <span>Quick Add Service / Job:</span>
               <button
                 type="button"
-                onClick={() => handleAddRegularItem()}
-                className="text-xs font-semibold text-primary hover:underline flex items-center gap-1"
+                onClick={() => handleAddItem()}
+                className="text-primary hover:underline flex items-center gap-1 font-bold"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Add Item</span>
+                <span>+ Add Empty Row</span>
               </button>
             </div>
-
-            {/* Quick Chips for Regular Services */}
-            {availableRegularServices.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 shrink-0">
-                {availableRegularServices.map((srv) => (
-                  <button
-                    key={srv.id}
-                    type="button"
-                    onClick={() => handleAddRegularItem(srv)}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-white text-xs font-medium text-slate-800 shadow-2xs transition-all cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3 text-primary" />
-                    <span>{srv.name}</span>
-                    {srv.default_rate && (
-                      <span className="font-bold text-primary text-[11px]">
-                        ({formatINR(srv.default_rate)})
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Fast Table of Regular Items */}
-            <div className="flex-1 overflow-y-auto space-y-1.5 pt-1">
-              {regularItems.map((item, idx) => {
-                const lineAmt = computeLineAmount(item.quantity, item.rate);
-                return (
-                  <div
-                    key={item.id}
-                    className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all shadow-2xs flex items-center gap-2 text-xs"
-                  >
-                    <span className="text-[11px] font-bold text-slate-400 w-4 text-center shrink-0">
-                      {idx + 1}
+            <div className="flex flex-wrap gap-1.5 max-h-16 overflow-y-auto">
+              {services.map((srv) => (
+                <button
+                  key={srv.id}
+                  type="button"
+                  onClick={() => handleAddItem(srv)}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-medium shadow-2xs transition-all cursor-pointer ${
+                    srv.is_job_type
+                      ? 'border-blue-200 bg-blue-50/70 text-primary hover:bg-blue-100'
+                      : 'border-slate-200 bg-slate-50 text-slate-800 hover:bg-slate-100'
+                  }`}
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>{srv.name}</span>
+                  {srv.default_rate && (
+                    <span className="font-bold text-[11px]">
+                      ({formatINR(srv.default_rate)})
                     </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
 
+          {/* Table Header */}
+          <div className="hidden sm:grid grid-cols-12 gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-500 px-2 py-1 bg-slate-50 rounded-lg shrink-0">
+            <div className="col-span-1 text-center">#</div>
+            <div className="col-span-4">Item / Service</div>
+            <div className="col-span-3">Particular (Applicant / Order Details)</div>
+            <div className="col-span-1 text-center" title="Create Job in Live Queue">Create Job</div>
+            <div className="col-span-1 text-center">Qty</div>
+            <div className="col-span-1 text-right">Rate ₹</div>
+            <div className="col-span-1 text-right">Total</div>
+          </div>
+
+          {/* Table Body (Scrolls internally if items > screen, no whole-page scroll) */}
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+            {items.map((item, idx) => {
+              const lineAmt = computeLineAmount(item.quantity, item.rate);
+              return (
+                <div
+                  key={item.id}
+                  className={`p-2 rounded-xl border transition-all shadow-2xs flex flex-col sm:grid sm:grid-cols-12 gap-2 items-center text-xs ${
+                    item.create_job
+                      ? 'border-blue-200/90 bg-blue-50/10'
+                      : 'border-slate-200 bg-white'
+                  }`}
+                >
+                  {/* Row # */}
+                  <div className="hidden sm:block col-span-1 font-bold text-slate-400 text-center">
+                    {idx + 1}
+                  </div>
+
+                  {/* Item / Service Selection or Input */}
+                  <div className="w-full sm:col-span-4">
                     <input
                       type="text"
-                      placeholder="Item name / service description"
+                      placeholder="Item / Service Name"
                       value={item.description}
                       onChange={(e) => {
                         const val = e.target.value;
-                        const matched = availableRegularServices.find(
+                        const matched = services.find(
                           (s) => s.name.toLowerCase() === val.toLowerCase()
                         );
                         if (matched) {
-                          handleUpdateRegularItem(item.id, {
+                          handleUpdateItem(item.id, {
                             description: matched.name,
                             service_id: matched.id,
                             rate: matched.default_rate ? String(matched.default_rate) : item.rate,
+                            create_job: true, // Default ALWAYS checked true!
                           });
                         } else {
-                          handleUpdateRegularItem(item.id, { description: val });
+                          handleUpdateItem(item.id, { description: val });
                         }
                       }}
-                      className="flex-1 h-8 px-2.5 rounded-lg border border-slate-200 text-xs text-slate-800 focus:border-primary focus:outline-none min-w-[120px]"
+                      className="w-full h-8 px-2.5 rounded-lg border border-slate-200 text-xs text-slate-900 font-semibold focus:border-primary focus:outline-none"
                     />
+                  </div>
 
-                    <div className="w-20 shrink-0">
-                      <input
-                        type="number"
-                        step="any"
-                        min="0"
-                        placeholder="Qty"
-                        value={item.quantity}
-                        onChange={(e) => handleUpdateRegularItem(item.id, { quantity: e.target.value })}
-                        className="w-full h-8 px-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-center text-slate-800 focus:border-primary focus:outline-none"
-                      />
-                    </div>
+                  {/* Particular (Applicant Name / Order Note) */}
+                  <div className="w-full sm:col-span-3">
+                    <input
+                      type="text"
+                      placeholder="Particular (e.g. Meena Kumari, Tatkal, A4...)"
+                      value={item.particular}
+                      onChange={(e) => handleUpdateItem(item.id, { particular: e.target.value })}
+                      className="w-full h-8 px-2.5 rounded-lg border border-slate-200 text-xs text-slate-800 focus:border-primary focus:outline-none"
+                    />
+                  </div>
 
-                    <div className="w-24 shrink-0">
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="Rate ₹"
-                        value={item.rate}
-                        onChange={(e) => handleUpdateRegularItem(item.id, { rate: e.target.value })}
-                        className="w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-semibold text-right text-slate-800 focus:border-primary focus:outline-none"
-                      />
-                    </div>
+                  {/* Create Job Checkbox (Default ALWAYS Checked true!) */}
+                  <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-center">
+                    <span className="sm:hidden text-slate-500 font-medium">Create Job Queue:</span>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateItem(item.id, { create_job: !item.create_job })}
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                        item.create_job
+                          ? 'bg-blue-100 text-primary border border-blue-200'
+                          : 'bg-slate-100 text-slate-400 border border-slate-200'
+                      }`}
+                      title="Default checked: creates live job in Queue. Uncheck for random non-job entry."
+                    >
+                      {item.create_job ? (
+                        <>
+                          <CheckSquare className="w-3.5 h-3.5 text-primary" />
+                          <span className="sm:hidden">Job Queue</span>
+                        </>
+                      ) : (
+                        <>
+                          <Square className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="sm:hidden">Off</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
 
-                    <div className="font-bold text-xs text-slate-900 text-right w-16 shrink-0 truncate">
+                  {/* Qty */}
+                  <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-center">
+                    <span className="sm:hidden text-slate-500 font-medium">Qty:</span>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={item.quantity}
+                      onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
+                      className="w-16 sm:w-full h-8 px-1 rounded-lg border border-slate-200 text-xs font-semibold text-center text-slate-800 focus:border-primary focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Rate */}
+                  <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-end">
+                    <span className="sm:hidden text-slate-500 font-medium">Rate:</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.00"
+                      value={item.rate}
+                      onChange={(e) => handleUpdateItem(item.id, { rate: e.target.value })}
+                      className="w-20 sm:w-full h-8 px-1.5 rounded-lg border border-slate-200 text-xs font-bold text-right text-slate-800 focus:border-primary focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Total & Delete */}
+                  <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-end gap-1">
+                    <div className="font-bold text-xs text-slate-900 text-right truncate">
                       {formatINR(lineAmt)}
                     </div>
 
                     <button
                       type="button"
-                      onClick={() => handleRemoveRegularItem(item.id)}
+                      onClick={() => handleRemoveItem(item.id)}
                       className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors shrink-0"
-                      title="Remove Item"
+                      title="Remove Row"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {/* RIGHT COLUMN: POS Billing Terminal (Sticks in full-screen view without scrolling) */}
+        {/* RIGHT COLUMN: POS Billing Terminal (Fixed Full-Screen View) */}
         <div className="lg:col-span-5 xl:col-span-4 bg-white rounded-2xl border border-slate-200/90 shadow-2xs p-3.5 sm:p-4 lg:p-5 flex flex-col justify-between gap-3 overflow-hidden">
           {/* TOP: Big Bold POS Total Display */}
           <div className="bg-blue-50/80 border border-blue-100 rounded-2xl p-3 sm:p-4 text-center">

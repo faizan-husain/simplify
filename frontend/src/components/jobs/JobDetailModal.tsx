@@ -241,7 +241,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({
               </div>
               {jobData.applicant_name && (
                 <div className="text-xs text-text-muted mt-0.5">
-                  {t('jobs.applicant')}: <span className="font-medium text-text">{jobData.applicant_name}</span>
+                  Particular: <span className="font-semibold text-text">{jobData.applicant_name}</span>
                 </div>
               )}
             </div>

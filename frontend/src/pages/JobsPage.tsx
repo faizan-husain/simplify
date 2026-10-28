@@ -473,10 +473,10 @@ export const JobsPage: React.FC = () => {
                       </span>
                     </div>
 
-                    {/* Row 3: Applicant Box */}
+                    {/* Row 3: Particular Details Box */}
                     <div>
-                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#F8FAFC] border border-slate-100/90 text-xs">
-                        <span className="text-slate-500 font-medium">Applicant:</span>
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#F8FAFC] border border-slate-200/80 text-xs shadow-2xs">
+                        <span className="text-slate-500 font-medium">Particular:</span>
                         <span className="font-bold text-slate-900">
                           {job.applicant_name || job.party_name}
                         </span>

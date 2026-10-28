@@ -645,65 +645,118 @@ BEGIN
     )
     RETURNING id INTO v_item_id;
 
-    -- Job creation if service is job type or marked as job
-    IF (v_item->>'service_id') IS NOT NULL THEN
-      SELECT * INTO v_service_row
-      FROM public.services
-      WHERE id = (v_item->>'service_id')::uuid;
+    -- Job creation if create_job (is_job) is explicitly true (checked by default)
+    IF COALESCE((v_item->>'is_job')::boolean, false) = true THEN
+      IF NOT v_biz.job_management_enabled THEN
+        UPDATE public.businesses SET job_management_enabled = true WHERE id = v_biz_id;
+        v_biz.job_management_enabled := true;
+      END IF;
 
-      IF FOUND AND (v_service_row.is_job_type OR COALESCE((v_item->>'is_job')::boolean, false)) THEN
-        -- Auto-enable job_management_enabled if needed
-        IF NOT v_biz.job_management_enabled THEN
-          UPDATE public.businesses SET job_management_enabled = true WHERE id = v_biz_id;
-          v_biz.job_management_enabled := true;
+      v_service_id := NULL;
+      v_job_type_name := v_item->>'description';
+      v_deadline_date := v_invoice_date + 15;
+      v_comm_percent := 0;
+
+      IF (v_item->>'service_id') IS NOT NULL THEN
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE id = (v_item->>'service_id')::uuid;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
         END IF;
+      ELSE
+        -- Look up service by name or auto-create for custom entries
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE business_id = v_biz_id AND LOWER(TRIM(name)) = LOWER(TRIM(v_item->>'description')) AND deleted_at IS NULL
+        LIMIT 1;
 
-        v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
-        v_job_staff_id := CASE WHEN v_role = 'STAFF' THEN v_member_id ELSE NULL END;
-        v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        ELSE
+          INSERT INTO public.services (
+            business_id,
+            name,
+            default_rate,
+            is_job_type,
+            deadline_days,
+            commission_percent,
+            active,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            TRIM(v_item->>'description'),
+            v_rate,
+            true,
+            15,
+            0,
+            true,
+            v_member_id,
+            v_member_id
+          )
+          RETURNING * INTO v_service_row;
 
-        INSERT INTO public.jobs (
-          business_id,
-          invoice_id,
-          invoice_item_id,
-          service_id,
-          job_type_name,
-          party_name,
-          party_mobile,
-          applicant_name,
-          amount,
-          deadline_date,
-          assigned_staff_id,
-          commission_percent,
-          status,
-          created_by,
-          updated_by
-        )
-        VALUES (
-          v_biz_id,
-          v_invoice_id,
-          v_item_id,
-          v_service_row.id,
-          v_service_row.name,
-          v_party_name,
-          v_party_mobile,
-          v_item->>'applicant_name',
-          v_line_amount,
-          v_deadline_date,
-          v_job_staff_id,
-          v_comm_percent,
-          'IN_PROGRESS',
-          v_member_id,
-          v_member_id
-        )
-        RETURNING id INTO v_job_id;
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + 15;
+          v_comm_percent := 0;
+        END IF;
+      END IF;
 
-        -- Snapshot steps (BR-12)
-        v_step_count := 0;
+      v_job_staff_id := CASE WHEN v_role = 'STAFF' THEN v_member_id ELSE NULL END;
+
+      INSERT INTO public.jobs (
+        business_id,
+        invoice_id,
+        invoice_item_id,
+        service_id,
+        job_type_name,
+        party_name,
+        party_mobile,
+        applicant_name,
+        amount,
+        deadline_date,
+        assigned_staff_id,
+        commission_percent,
+        status,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        v_biz_id,
+        v_invoice_id,
+        v_item_id,
+        v_service_id,
+        v_job_type_name,
+        v_party_name,
+        v_party_mobile,
+        v_item->>'applicant_name',
+        v_line_amount,
+        v_deadline_date,
+        v_job_staff_id,
+        v_comm_percent,
+        'IN_PROGRESS',
+        v_member_id,
+        v_member_id
+      )
+      RETURNING id INTO v_job_id;
+
+      -- Snapshot steps (BR-12)
+      v_step_count := 0;
+      IF v_service_id IS NOT NULL THEN
         FOR v_step_row IN
           SELECT position, name, whatsapp_message
           FROM public.job_type_steps
-          WHERE service_id = v_service_row.id AND deleted_at IS NULL
+          WHERE service_id = v_service_id AND deleted_at IS NULL
           ORDER BY position ASC
         LOOP
           v_step_count := v_step_count + 1;
@@ -728,30 +781,30 @@ BEGIN
             v_member_id
           );
         END LOOP;
+      END IF;
 
-        -- Fallback if service had 0 steps defined
-        IF v_step_count = 0 THEN
-          INSERT INTO public.job_steps (
-            business_id,
-            job_id,
-            position,
-            name,
-            whatsapp_message,
-            ticked,
-            created_by,
-            updated_by
-          )
-          VALUES (
-            v_biz_id,
-            v_job_id,
-            1,
-            'Processing / Document Verification',
-            'Hello {party_name}, your {job_name} ({bill_no}) is currently in process. - {business_name}',
-            false,
-            v_member_id,
-            v_member_id
-          );
-        END IF;
+      IF v_step_count = 0 THEN
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          1,
+          'Processing / Document Verification',
+          'Hello {party_name}, your {job_name} ({bill_no}) is currently in process. - {business_name}',
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END IF;
 
         -- Commission entry if staff assigned & commission > 0 (BR-15)
         IF v_job_staff_id IS NOT NULL AND v_comm_percent > 0 THEN
