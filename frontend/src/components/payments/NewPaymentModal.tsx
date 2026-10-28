@@ -86,10 +86,6 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedVendor) {
-      showToast('Please select or create a vendor', 'error');
-      return;
-    }
 
     const amtNum = parseFloat(amount);
     if (isNaN(amtNum) || amtNum <= 0) {
@@ -104,8 +100,26 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
 
     setSaving(true);
     try {
+      let vendorToUse = selectedVendor;
+      if (!vendorToUse) {
+        if (vendorSearch.trim()) {
+          // Auto create vendor inline if user entered name
+          const { data: newV, error: vErr } = await supabase
+            .from('vendors')
+            .insert({ name: vendorSearch.trim() })
+            .select()
+            .single();
+          if (vErr) throw vErr;
+          vendorToUse = newV as Vendor;
+        } else {
+          showToast('Please select or enter a vendor name', 'error');
+          setSaving(false);
+          return;
+        }
+      }
+
       const { error } = await supabase.from('payments').insert({
-        vendor_id: selectedVendor.id,
+        vendor_id: vendorToUse.id,
         amount: amtNum,
         mode,
         payment_date: paymentDate,

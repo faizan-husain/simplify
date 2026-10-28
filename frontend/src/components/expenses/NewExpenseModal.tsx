@@ -88,9 +88,28 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCategoryId) {
-      showToast('Please select a category', 'error');
-      return;
+
+    let catId = selectedCategoryId;
+    if (!catId) {
+      if (newCategoryName.trim()) {
+        const { data: newCat, error: cErr } = await supabase
+          .from('expense_categories')
+          .insert({ name: newCategoryName.trim(), system: false })
+          .select()
+          .single();
+        if (cErr) throw cErr;
+        catId = (newCat as ExpenseCategory).id;
+      } else if (categories.length > 0) {
+        catId = categories[0].id;
+      } else {
+        const { data: newCat, error: cErr } = await supabase
+          .from('expense_categories')
+          .insert({ name: 'General Expense', system: false })
+          .select()
+          .single();
+        if (cErr) throw cErr;
+        catId = (newCat as ExpenseCategory).id;
+      }
     }
 
     const amtNum = parseFloat(amount);
@@ -107,7 +126,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     setSaving(true);
     try {
       const { error } = await supabase.from('expenses').insert({
-        category_id: selectedCategoryId,
+        category_id: catId,
         amount: amtNum,
         mode,
         expense_date: expenseDate,

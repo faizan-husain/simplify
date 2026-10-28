@@ -31,6 +31,7 @@ import {
   ChevronRight,
   ArrowUpRight,
   Building,
+  Banknote,
 } from 'lucide-react';
 import { Database } from '../types/supabase';
 
@@ -170,6 +171,58 @@ export const MoneyPage: React.FC = () => {
   const [loansData, setLoansData] = useState<LoanSummaryData | null>(null);
   const [loadingLoans, setLoadingLoans] = useState(true);
   const [expandedLoans, setExpandedLoans] = useState<{ [id: string]: boolean }>({});
+
+  // Mode filter for Receipts, Payments, Expenses (All vs Bank/UPI vs Cash)
+  const [modeFilter, setModeFilter] = useState<'ALL' | 'BANK_UPI' | 'CASH'>('ALL');
+
+  // Computed Bank vs Cash statistics
+  const receiptStats = React.useMemo(() => {
+    let total = 0;
+    let bankUpi = 0;
+    let cash = 0;
+    for (const r of receipts) {
+      const amt = parseFloat(String(r.amount || '0'));
+      total += amt;
+      if (['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode)) {
+        bankUpi += amt;
+      } else {
+        cash += amt;
+      }
+    }
+    return { total, bankUpi, cash };
+  }, [receipts]);
+
+  const paymentStats = React.useMemo(() => {
+    let total = 0;
+    let bankUpi = 0;
+    let cash = 0;
+    for (const p of payments) {
+      const amt = parseFloat(String(p.amount || '0'));
+      total += amt;
+      if (['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(p.mode)) {
+        bankUpi += amt;
+      } else {
+        cash += amt;
+      }
+    }
+    return { total, bankUpi, cash };
+  }, [payments]);
+
+  const expenseStats = React.useMemo(() => {
+    let total = 0;
+    let bankUpi = 0;
+    let cash = 0;
+    for (const e of expenses) {
+      const amt = parseFloat(String(e.amount || '0'));
+      total += amt;
+      if (['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(e.mode)) {
+        bankUpi += amt;
+      } else {
+        cash += amt;
+      }
+    }
+    return { total, bankUpi, cash };
+  }, [expenses]);
 
   // Fetch dues
   const fetchDues = async () => {
@@ -721,7 +774,78 @@ export const MoneyPage: React.FC = () => {
       {/* TAB 2: RECEIPTS */}
       {activeTab === 'receipts' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
+          {/* Bank vs Cash Summary Banner */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-white p-4 rounded-xl border border-border shadow-2xs">
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Total Income (IN)
+              </div>
+              <div className="text-2xl font-bold text-success mt-1">
+                +{formatINR(receiptStats.total)}
+              </div>
+            </div>
+
+            <div className="p-3 bg-blue-50/60 rounded-lg border border-blue-100">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-primary uppercase tracking-wider">
+                <Building className="w-3.5 h-3.5" />
+                <span>Bank & UPI (Online)</span>
+              </div>
+              <div className="text-2xl font-bold text-primary mt-1">
+                +{formatINR(receiptStats.bankUpi)}
+              </div>
+            </div>
+
+            <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-100">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-800 uppercase tracking-wider">
+                <Banknote className="w-3.5 h-3.5" />
+                <span>Cash in Hand</span>
+              </div>
+              <div className="text-2xl font-bold text-emerald-700 mt-1">
+                +{formatINR(receiptStats.cash)}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* Mode Filter Chips */}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setModeFilter('ALL')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                  modeFilter === 'ALL'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                All Receipts ({receipts.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeFilter('BANK_UPI')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1 ${
+                  modeFilter === 'BANK_UPI'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <Building className="w-3 h-3" />
+                <span>Bank & UPI</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeFilter('CASH')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1 ${
+                  modeFilter === 'CASH'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <Banknote className="w-3 h-3" />
+                <span>Cash Only</span>
+              </button>
+            </div>
+
             <div className="relative flex-1 sm:w-72">
               <Search className="w-4 h-4 text-text-muted absolute left-3 top-2.5" />
               <Input
@@ -747,51 +871,64 @@ export const MoneyPage: React.FC = () => {
             </Card>
           ) : (
             <div className="space-y-2">
-              {receipts.map((r) => (
-                <div
-                  key={r.id}
-                  className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-text text-sm">#{r.number}</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-surface border border-border text-text-muted">
-                        {r.mode}
-                      </span>
-                      {r.kind === 'OTHER_INCOME' && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                          {r.income_category || 'Other Income'}
+              {receipts
+                .filter((r) => {
+                  if (modeFilter === 'ALL') return true;
+                  if (modeFilter === 'CASH') return r.mode === 'CASH';
+                  if (modeFilter === 'BANK_UPI') return ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode);
+                  return true;
+                })
+                .map((r) => (
+                  <div
+                    key={r.id}
+                    className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors shadow-2xs"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-text text-sm">#{r.number}</span>
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
+                            ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode)
+                              ? 'bg-blue-50 text-primary border-blue-200'
+                              : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          }`}
+                        >
+                          {r.mode === 'BANK' ? '🏦 Bank' : r.mode === 'UPI' ? '📱 UPI' : r.mode}
                         </span>
-                      )}
-                      {r.unallocated_amount > 0 && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-primary/10 text-primary border border-primary/20">
-                          Advance: {formatINR(r.unallocated_amount)}
-                        </span>
-                      )}
+                        {r.kind === 'OTHER_INCOME' && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                            {r.income_category || 'Other Income'}
+                          </span>
+                        )}
+                        {r.unallocated_amount > 0 && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-primary/10 text-primary border border-primary/20">
+                            Advance: {formatINR(r.unallocated_amount)}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-xs text-text-muted">
+                        {formatDate(r.receipt_date)} {r.reference && `· Ref: ${r.reference}`}{' '}
+                        {r.notes && `· ${r.notes}`}
+                      </div>
                     </div>
 
-                    <div className="text-xs text-text-muted">
-                      {formatDate(r.receipt_date)} {r.reference && `· Ref: ${r.reference}`}{' '}
-                      {r.notes && `· ${r.notes}`}
+                    <div className="flex items-center gap-3">
+                      <div className="text-right font-bold text-success text-base">
+                        +{formatINR(r.amount)}
+                      </div>
+
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteReceiptClick(r.id)}
+                        title="Delete Receipt (Reverses Allocations)"
+                      >
+                        <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
+                      </Button>
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="text-right font-bold text-success text-base">
-                      +{formatINR(r.amount)}
-                    </div>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDeleteReceiptClick(r.id)}
-                      title="Delete Receipt (Reverses Allocations)"
-                    >
-                      <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                ))}
             </div>
           )}
         </div>
@@ -800,7 +937,78 @@ export const MoneyPage: React.FC = () => {
       {/* TAB 3: VENDOR PAYMENTS */}
       {activeTab === 'payments' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
+          {/* Bank vs Cash Summary Banner */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-white p-4 rounded-xl border border-border shadow-2xs">
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Total Payments (OUT)
+              </div>
+              <div className="text-2xl font-bold text-danger mt-1">
+                -{formatINR(paymentStats.total)}
+              </div>
+            </div>
+
+            <div className="p-3 bg-blue-50/60 rounded-lg border border-blue-100">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-primary uppercase tracking-wider">
+                <Building className="w-3.5 h-3.5" />
+                <span>Bank & UPI Paid</span>
+              </div>
+              <div className="text-2xl font-bold text-primary mt-1">
+                -{formatINR(paymentStats.bankUpi)}
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-100">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 uppercase tracking-wider">
+                <Banknote className="w-3.5 h-3.5" />
+                <span>Cash Paid</span>
+              </div>
+              <div className="text-2xl font-bold text-amber-700 mt-1">
+                -{formatINR(paymentStats.cash)}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* Mode Filter Chips */}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setModeFilter('ALL')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                  modeFilter === 'ALL'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                All Payments ({payments.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeFilter('BANK_UPI')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1 ${
+                  modeFilter === 'BANK_UPI'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <Building className="w-3 h-3" />
+                <span>Bank & UPI</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeFilter('CASH')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1 ${
+                  modeFilter === 'CASH'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <Banknote className="w-3 h-3" />
+                <span>Cash Only</span>
+              </button>
+            </div>
+
             <div className="relative flex-1 sm:w-72">
               <Search className="w-4 h-4 text-text-muted absolute left-3 top-2.5" />
               <Input
@@ -826,48 +1034,61 @@ export const MoneyPage: React.FC = () => {
             </Card>
           ) : (
             <div className="space-y-2">
-              {payments.map((p) => (
-                <div
-                  key={p.id}
-                  className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedVendorDetailId(p.vendor_id)}
-                        className="font-bold text-text text-sm hover:text-primary flex items-center gap-1 group"
+              {payments
+                .filter((p) => {
+                  if (modeFilter === 'ALL') return true;
+                  if (modeFilter === 'CASH') return p.mode === 'CASH';
+                  if (modeFilter === 'BANK_UPI') return ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(p.mode);
+                  return true;
+                })
+                .map((p) => (
+                  <div
+                    key={p.id}
+                    className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors shadow-2xs"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedVendorDetailId(p.vendor_id)}
+                          className="font-bold text-text text-sm hover:text-primary flex items-center gap-1 group"
+                        >
+                          <Building className="w-3.5 h-3.5 text-text-muted" />
+                          <span>{p.vendors?.name || 'Vendor'}</span>
+                          <ArrowUpRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
+                        </button>
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
+                            ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(p.mode)
+                              ? 'bg-blue-50 text-primary border-blue-200'
+                              : 'bg-slate-100 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          {p.mode === 'BANK' ? '🏦 Bank' : p.mode === 'UPI' ? '📱 UPI' : p.mode}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-text-muted">
+                        {formatDate(p.payment_date)} · {p.description} {p.notes && `· ${p.notes}`}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="text-right font-bold text-danger text-base">
+                        -{formatINR(p.amount)}
+                      </div>
+
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeletePayment(p.id)}
+                        title="Delete payment"
                       >
-                        <Building className="w-3.5 h-3.5 text-text-muted" />
-                        <span>{p.vendors?.name || 'Vendor'}</span>
-                        <ArrowUpRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
-                      </button>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-surface border border-border text-text-muted">
-                        {p.mode}
-                      </span>
-                    </div>
-
-                    <div className="text-xs text-text-muted">
-                      {formatDate(p.payment_date)} · {p.description} {p.notes && `· ${p.notes}`}
+                        <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
+                      </Button>
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="text-right font-bold text-danger text-base">
-                      -{formatINR(p.amount)}
-                    </div>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDeletePayment(p.id)}
-                      title="Delete payment"
-                    >
-                      <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                ))}
             </div>
           )}
         </div>
@@ -876,7 +1097,78 @@ export const MoneyPage: React.FC = () => {
       {/* TAB 4: EXPENSES */}
       {activeTab === 'expenses' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
+          {/* Bank vs Cash Summary Banner */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-white p-4 rounded-xl border border-border shadow-2xs">
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Total Expenses (OUT)
+              </div>
+              <div className="text-2xl font-bold text-danger mt-1">
+                -{formatINR(expenseStats.total)}
+              </div>
+            </div>
+
+            <div className="p-3 bg-blue-50/60 rounded-lg border border-blue-100">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-primary uppercase tracking-wider">
+                <Building className="w-3.5 h-3.5" />
+                <span>Bank & UPI Paid</span>
+              </div>
+              <div className="text-2xl font-bold text-primary mt-1">
+                -{formatINR(expenseStats.bankUpi)}
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-100">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 uppercase tracking-wider">
+                <Banknote className="w-3.5 h-3.5" />
+                <span>Cash Paid</span>
+              </div>
+              <div className="text-2xl font-bold text-amber-700 mt-1">
+                -{formatINR(expenseStats.cash)}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* Mode Filter Chips */}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setModeFilter('ALL')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                  modeFilter === 'ALL'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                All Expenses ({expenses.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeFilter('BANK_UPI')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1 ${
+                  modeFilter === 'BANK_UPI'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <Building className="w-3 h-3" />
+                <span>Bank & UPI</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeFilter('CASH')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1 ${
+                  modeFilter === 'CASH'
+                    ? 'bg-primary text-white border-primary shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <Banknote className="w-3 h-3" />
+                <span>Cash Only</span>
+              </button>
+            </div>
+
             <div className="relative flex-1 sm:w-72">
               <Search className="w-4 h-4 text-text-muted absolute left-3 top-2.5" />
               <Input
@@ -902,56 +1194,72 @@ export const MoneyPage: React.FC = () => {
             </Card>
           ) : (
             <div className="space-y-2">
-              {expenses.map((e) => {
-                const isSystemGen = Boolean(e.loan_repayment_id || e.staff_id);
-                return (
-                  <div
-                    key={e.id}
-                    className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-text text-sm">{e.description}</span>
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-surface border border-border text-text-muted">
-                          {e.expense_categories?.name || 'Overhead'}
-                        </span>
-                        {e.loan_repayment_id && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                            Loan Interest
+              {expenses
+                .filter((e) => {
+                  if (modeFilter === 'ALL') return true;
+                  if (modeFilter === 'CASH') return e.mode === 'CASH';
+                  if (modeFilter === 'BANK_UPI') return ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(e.mode);
+                  return true;
+                })
+                .map((e) => {
+                  const isSystemGen = Boolean(e.loan_repayment_id || e.staff_id);
+                  return (
+                    <div
+                      key={e.id}
+                      className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors shadow-2xs"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-text text-sm">{e.description}</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-surface border border-border text-text-muted">
+                            {e.expense_categories?.name || 'Overhead'}
                           </span>
-                        )}
-                        {e.staff_id && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-blue-50 text-blue-800 border border-blue-200">
-                            Commission Payout
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
+                              ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(e.mode)
+                                ? 'bg-blue-50 text-primary border-blue-200'
+                                : 'bg-slate-100 text-slate-700 border-slate-200'
+                            }`}
+                          >
+                            {e.mode === 'BANK' ? '🏦 Bank' : e.mode === 'UPI' ? '📱 UPI' : e.mode}
                           </span>
-                        )}
+                          {e.loan_repayment_id && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                              Loan Interest
+                            </span>
+                          )}
+                          {e.staff_id && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-blue-50 text-blue-800 border border-blue-200">
+                              Commission Payout
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="text-xs text-text-muted">
+                          {formatDate(e.expense_date)} · Mode: {e.mode}{' '}
+                          {e.payee && `· Payee: ${e.payee}`} {e.notes && `· ${e.notes}`}
+                        </div>
                       </div>
 
-                      <div className="text-xs text-text-muted">
-                        {formatDate(e.expense_date)} · Mode: {e.mode}{' '}
-                        {e.payee && `· Payee: ${e.payee}`} {e.notes && `· ${e.notes}`}
+                      <div className="flex items-center gap-3">
+                        <div className="text-right font-bold text-danger text-base">
+                          -{formatINR(e.amount)}
+                        </div>
+
+                        {!isSystemGen && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteExpense(e.id)}
+                            title="Delete expense"
+                          >
+                            <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
+                          </Button>
+                        )}
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-3">
-                      <div className="text-right font-bold text-danger text-base">
-                        -{formatINR(e.amount)}
-                      </div>
-
-                      {!isSystemGen && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteExpense(e.id)}
-                          title="Delete expense"
-                        >
-                          <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           )}
         </div>
