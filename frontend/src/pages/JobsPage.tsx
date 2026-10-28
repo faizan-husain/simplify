@@ -17,11 +17,9 @@ import {
   Clock,
   User,
   CheckCircle2,
-  AlertTriangle,
   AlertCircle,
   FileText,
   ListOrdered,
-  Zap,
   TrendingUp,
   ChevronRight,
   MessageCircle,
@@ -34,7 +32,7 @@ export const JobsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'CURRENT' | 'COMPLETED' | 'DUE' | 'YELLOW' | 'RED'>('CURRENT');
   const [search, setSearch] = useState('');
   const [selectedServiceId, setSelectedServiceId] = useState('');
-  const [sortOrder, setSortOrder] = useState<'QUEUE' | 'URGENT' | 'PROGRESS'>('QUEUE');
+  const [sortOrder, setSortOrder] = useState<'QUEUE' | 'PROGRESS'>('QUEUE');
   const [jobTypes, setJobTypes] = useState<any[]>([]);
 
   const [loading, setLoading] = useState(true);
@@ -134,62 +132,57 @@ export const JobsPage: React.FC = () => {
         }
         return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
       }
-      if (sortOrder === 'URGENT') {
-        const aDays = parseInt(String(a.days_left || '0'), 10);
-        const bDays = parseInt(String(b.days_left || '0'), 10);
-        return aDays - bDays;
-      }
       // 'QUEUE' (FIFO): earliest created_at first
       return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     });
   }, [jobs, sortOrder]);
 
-  // Clean Deadline Badge
+  // Standard Fixed-Size Deadline Badge (never affects card size or height)
   const getDeadlineBadge = (job: any) => {
     if (job.status === 'COMPLETED') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-          Completed
+        <span className="w-[76px] h-6 inline-flex items-center justify-center gap-1 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+          Done
         </span>
       );
     }
     const days = parseInt(String(job.days_left), 10);
     if (days < 0) {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-red-50 text-red-700 border border-red-200">
-          <AlertCircle className="w-3.5 h-3.5 text-red-600" />
-          {Math.abs(days)}d Overdue
+        <span className="w-[76px] h-6 inline-flex items-center justify-center gap-1 rounded text-[11px] font-bold bg-red-50 text-red-700 border border-red-200 shrink-0">
+          <AlertCircle className="w-3 h-3 text-red-600" />
+          {Math.abs(days)}d late
         </span>
       );
     }
     if (days === 0) {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-red-500 text-white shadow-sm animate-pulse">
-          <Clock className="w-3.5 h-3.5" />
-          Due Today
+        <span className="w-[76px] h-6 inline-flex items-center justify-center gap-1 rounded text-[11px] font-bold bg-red-50 text-red-700 border border-red-200 shrink-0">
+          <Clock className="w-3 h-3 text-red-600" />
+          Today
         </span>
       );
     }
     if (job.deadline_bucket === 'RED') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-red-50 text-red-700 border border-red-200">
-          <Clock className="w-3.5 h-3.5 text-red-600" />
-          {days}d left (Red Alert)
+        <span className="w-[76px] h-6 inline-flex items-center justify-center gap-1 rounded text-[11px] font-bold bg-red-50 text-red-700 border border-red-200 shrink-0">
+          <Clock className="w-3 h-3 text-red-600" />
+          {days}d left
         </span>
       );
     }
     if (job.deadline_bucket === 'YELLOW') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-amber-50 text-amber-800 border border-amber-300">
-          <Clock className="w-3.5 h-3.5 text-amber-600" />
-          {days}d left (Yellow Alert)
+        <span className="w-[76px] h-6 inline-flex items-center justify-center gap-1 rounded text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-300 shrink-0">
+          <Clock className="w-3 h-3 text-amber-600" />
+          {days}d left
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
-        <Clock className="w-3.5 h-3.5 text-slate-500" />
+      <span className="w-[76px] h-6 inline-flex items-center justify-center gap-1 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+        <Clock className="w-3 h-3 text-slate-500" />
         {days}d left
       </span>
     );
@@ -208,18 +201,18 @@ export const JobsPage: React.FC = () => {
             isCompleted
               ? 'bg-emerald-500'
               : isDone
-              ? 'bg-[#0B67F6]'
+              ? 'bg-primary'
               : 'bg-slate-200'
           }`}
         />
       );
     }
     return (
-      <div className="w-full space-y-1">
+      <div className="w-full space-y-0.5">
         <div className="flex items-center gap-1 w-full">{segments}</div>
         <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium">
           <span>
-            {ticked} of {total} steps done
+            {ticked}/{total} steps
           </span>
           <span className="font-semibold text-slate-700">
             {isCompleted ? '100%' : `${Math.round((ticked / count) * 100)}%`}
@@ -240,7 +233,7 @@ export const JobsPage: React.FC = () => {
           </p>
         </div>
 
-        {/* Sort Order Selector */}
+        {/* Sort Order Selector (Only Queue and Progress) */}
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg border border-slate-200/80">
           <button
             type="button"
@@ -250,23 +243,10 @@ export const JobsPage: React.FC = () => {
                 ? 'bg-white text-primary shadow-sm border border-slate-200'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
-            title="First In, First Out — Serve customers in order of arrival"
+            title="Queue (FIFO) — Serve customers in order of arrival"
           >
             <ListOrdered className="w-3.5 h-3.5 text-primary" />
-            <span>Queue (FIFO)</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSortOrder('URGENT')}
-            className={`px-3 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              sortOrder === 'URGENT'
-                ? 'bg-white text-danger shadow-sm border border-slate-200'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-            title="Nearest deadline and late jobs first"
-          >
-            <Zap className="w-3.5 h-3.5 text-danger" />
-            <span>Urgent Deadlines</span>
+            <span>Queue</span>
           </button>
           <button
             type="button"
@@ -288,7 +268,7 @@ export const JobsPage: React.FC = () => {
       {business && !business.job_management_enabled && (
         <div className="p-4 rounded-xl border border-amber-200 bg-amber-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
+            <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />
             <div>
               <div className="text-sm font-semibold text-amber-900">
                 {t('jobs.disabled_notice')}
@@ -355,7 +335,7 @@ export const JobsPage: React.FC = () => {
         </TabsList>
       </Tabs>
 
-      {/* Single-Row FIFO Work Queue List */}
+      {/* Single-Row Uniform Fixed-Height Work Queue List */}
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-500">
           {t('common.loading')}
@@ -365,7 +345,7 @@ export const JobsPage: React.FC = () => {
           message="No jobs found in this queue."
         />
       ) : (
-        <div className="space-y-2.5">
+        <div className="space-y-2">
           {sortedJobs.map((job, idx) => {
             const days = parseInt(String(job.days_left), 10);
             const isLate = days < 0;
@@ -374,133 +354,135 @@ export const JobsPage: React.FC = () => {
 
             // Left accent border color based on status
             const leftBorderClass = isLate
-              ? 'border-l-[5px] border-l-red-500'
+              ? 'border-l-[4px] border-l-red-500'
               : isToday || job.deadline_bucket === 'RED'
-              ? 'border-l-[5px] border-l-red-500'
+              ? 'border-l-[4px] border-l-red-500'
               : job.deadline_bucket === 'YELLOW'
-              ? 'border-l-[5px] border-l-amber-400'
+              ? 'border-l-[4px] border-l-amber-400'
               : isCompleted
-              ? 'border-l-[5px] border-l-emerald-500'
-              : 'border-l-[5px] border-l-[#0B67F6]';
+              ? 'border-l-[4px] border-l-emerald-500'
+              : 'border-l-[4px] border-l-primary';
 
             return (
               <div
                 key={job.id}
                 onClick={() => setSelectedJobId(job.id)}
-                className={`group relative bg-white hover:bg-slate-50/70 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer p-3 sm:p-4 ${leftBorderClass}`}
+                className={`group relative bg-white hover:bg-slate-50/70 rounded-xl border border-slate-200 shadow-2xs hover:shadow-subtle transition-all cursor-pointer p-2.5 sm:px-4 sm:py-2.5 min-h-[70px] flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 sm:gap-3 ${leftBorderClass}`}
               >
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4">
-                  {/* Left Column: Queue Rank & Customer Info */}
-                  <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
-                    {/* Queue Rank Squircle Badge */}
-                    <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-800 font-bold text-xs sm:text-sm flex items-center justify-center border border-slate-200/90 shrink-0 group-hover:bg-blue-50 group-hover:text-primary group-hover:border-blue-200 transition-colors shadow-2xs">
-                      #{idx + 1}
-                    </div>
-
-                    {/* Customer & Bill details */}
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-slate-900 text-sm sm:text-base group-hover:text-primary transition-colors">
-                          {job.party_name}
-                        </span>
-
-                        {job.party_mobile && (
-                          <div className="inline-flex items-center gap-1 text-xs text-slate-500 font-medium bg-slate-50 px-2 py-0.5 rounded border border-slate-200/70">
-                            <span>{job.party_mobile}</span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const waUrl = getWhatsAppUrl(
-                                  job.party_mobile,
-                                  `Hello ${job.party_name}, this is regarding your ${job.job_type_name} (Bill #${job.invoice_number}).`
-                                );
-                                window.open(waUrl, '_blank');
-                              }}
-                              className="text-emerald-600 hover:text-emerald-700 p-0.5 hover:bg-emerald-50 rounded"
-                              title="Chat on WhatsApp"
-                            >
-                              <MessageCircle className="w-3 h-3" />
-                            </button>
-                          </div>
-                        )}
-
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-primary border border-blue-100">
-                          <Briefcase className="w-3 h-3" />
-                          {job.job_type_name}
-                        </span>
-
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 bg-slate-50 px-2 py-0.5 rounded border border-slate-200/70">
-                          <FileText className="w-3 h-3 text-slate-400" />
-                          {job.invoice_number}
-                        </span>
-                      </div>
-
-                      {/* Sub-line: Applicant and Next Action Step Callout */}
-                      <div className="flex items-center gap-2.5 text-xs text-slate-600 flex-wrap pt-0.5">
-                        {job.applicant_name && (
-                          <span className="font-medium">
-                            Applicant:{' '}
-                            <strong className="text-slate-800 font-semibold">{job.applicant_name}</strong>
-                          </span>
-                        )}
-
-                        {job.next_step_name && !isCompleted ? (
-                          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-blue-50/80 border border-blue-200/80 text-xs text-slate-800 font-medium">
-                            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0 animate-pulse"></span>
-                            <span className="text-primary font-semibold text-[11px] uppercase tracking-wider">Next:</span>
-                            <span className="font-semibold text-slate-900">{job.next_step_name}</span>
-                          </div>
-                        ) : isCompleted ? (
-                          <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-200/60">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                            <span>All steps completed</span>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
+                {/* Left Section: Rank, Customer info, Job Badge, Subtitle info */}
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  {/* Queue Rank Badge */}
+                  <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 font-bold text-xs flex items-center justify-center border border-slate-200 shrink-0 group-hover:bg-blue-50 group-hover:text-primary group-hover:border-blue-200 transition-colors">
+                    #{idx + 1}
                   </div>
 
-                  {/* Right Section: Progress Segments, Deadline, Staff, Amount, Action Button */}
-                  <div className="flex items-center justify-between lg:justify-end gap-3 sm:gap-4 shrink-0 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100">
-                    {/* Visual Step Segments */}
-                    <div className="w-32 sm:w-36 shrink-0">
-                      {renderStepSegments(job.total_steps, job.ticked_steps, isCompleted)}
+                  {/* Customer and Job Info */}
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-slate-900 text-sm group-hover:text-primary transition-colors truncate max-w-[180px] sm:max-w-[240px]">
+                        {job.party_name}
+                      </span>
+
+                      {job.party_mobile && (
+                        <div className="inline-flex items-center gap-1 text-[11px] text-slate-500 font-medium bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
+                          <span>{job.party_mobile}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const waUrl = getWhatsAppUrl(
+                                job.party_mobile,
+                                `Hello ${job.party_name}, this is regarding your ${job.job_type_name} (Bill #${job.invoice_number}).`
+                              );
+                              window.open(waUrl, '_blank');
+                            }}
+                            className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded"
+                            title="Chat on WhatsApp"
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
+
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-50 text-primary border border-blue-100 shrink-0">
+                        <Briefcase className="w-3 h-3" />
+                        {job.job_type_name}
+                      </span>
+
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
+                        <FileText className="w-3 h-3 text-slate-400" />
+                        {job.invoice_number}
+                      </span>
                     </div>
 
-                    {/* Deadline Badge */}
-                    <div className="shrink-0">{getDeadlineBadge(job)}</div>
+                    {/* Sub-line: Applicant and Next Action Step Callout */}
+                    <div className="flex items-center gap-2 text-xs text-slate-600 flex-wrap">
+                      {job.applicant_name && (
+                        <span className="text-[11px] font-medium truncate max-w-[150px]">
+                          Applicant: <strong className="text-slate-800">{job.applicant_name}</strong>
+                        </span>
+                      )}
 
-                    {/* Assigned Staff (Hidden on mobile, visible on desktop) */}
-                    <div className="hidden xl:flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-md border border-slate-200/70 w-28 truncate">
-                      <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="truncate">{job.assigned_staff_name || 'Unassigned'}</span>
+                      {job.next_step_name && !isCompleted ? (
+                        <div
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50/80 border border-blue-200/70 text-[11px] text-slate-800 font-medium truncate max-w-[200px]"
+                          title={job.next_step_name}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0 animate-pulse"></span>
+                          <span className="text-primary font-semibold text-[10px] uppercase">Next:</span>
+                          <span className="truncate">{job.next_step_name}</span>
+                        </div>
+                      ) : isCompleted ? (
+                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px] font-medium border border-emerald-200/60 shrink-0">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          <span>All steps completed</span>
+                        </div>
+                      ) : null}
                     </div>
-
-                    {/* Bill Amount */}
-                    <div className="text-right shrink-0 min-w-[70px]">
-                      <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Total</div>
-                      <div className="text-sm sm:text-base font-bold text-slate-900">{formatINR(job.amount)}</div>
-                    </div>
-
-                    {/* Primary Action Button */}
-                    <Button
-                      size="sm"
-                      variant={isCompleted ? 'outline' : 'primary'}
-                      className={`shrink-0 h-9 px-3 font-semibold text-xs rounded-lg transition-all flex items-center gap-1 ${
-                        isCompleted
-                          ? 'border-slate-300 text-slate-700 hover:bg-slate-100'
-                          : 'bg-gradient-to-r from-primary to-primary-hover text-white shadow-soft hover:opacity-95'
-                      }`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedJobId(job.id);
-                      }}
-                    >
-                      <span>{isCompleted ? 'View' : 'Tick Steps'}</span>
-                      <ChevronRight className="w-3.5 h-3.5 ml-0.5" />
-                    </Button>
                   </div>
+                </div>
+
+                {/* Right Section: Progress Segments, Fixed-Size Deadline, Staff, Amount, Button */}
+                <div className="flex items-center justify-between lg:justify-end gap-3 shrink-0 pt-1 lg:pt-0 border-t lg:border-t-0 border-slate-100">
+                  {/* Step Segments */}
+                  <div className="w-28 shrink-0">
+                    {renderStepSegments(job.total_steps, job.ticked_steps, isCompleted)}
+                  </div>
+
+                  {/* Fixed-size Deadline Badge */}
+                  <div className="w-[76px] shrink-0 flex items-center justify-center">
+                    {getDeadlineBadge(job)}
+                  </div>
+
+                  {/* Assigned Staff */}
+                  <div className="hidden xl:flex items-center gap-1 text-[11px] text-slate-600 bg-slate-50 px-2 py-1 rounded border border-slate-200 w-[100px] shrink-0">
+                    <User className="w-3 h-3 text-slate-400 shrink-0" />
+                    <span className="truncate">{job.assigned_staff_name || 'Unassigned'}</span>
+                  </div>
+
+                  {/* Amount */}
+                  <div className="w-[75px] shrink-0 text-right">
+                    <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 leading-none">Total</div>
+                    <div className="text-sm font-bold text-slate-900 mt-0.5">{formatINR(job.amount)}</div>
+                  </div>
+
+                  {/* Action Button */}
+                  <Button
+                    size="sm"
+                    variant={isCompleted ? 'outline' : 'primary'}
+                    className={`w-[92px] shrink-0 h-8 px-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-0.5 ${
+                      isCompleted
+                        ? 'border-slate-300 text-slate-700 hover:bg-slate-100'
+                        : 'bg-primary text-white hover:bg-primary-hover shadow-2xs'
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedJobId(job.id);
+                    }}
+                  >
+                    <span>{isCompleted ? 'View' : 'Tick Steps'}</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Button>
                 </div>
               </div>
             );
