@@ -113,7 +113,11 @@ BEGIN
     LEFT JOIN job_steps_agg jsa ON jsa.job_id = j.id
     WHERE j.business_id = v_biz_id
       AND j.deleted_at IS NULL
-      AND (p_service_id IS NULL OR j.service_id = p_service_id)
+      AND (
+        p_service_id IS NULL 
+        OR j.service_id = p_service_id 
+        OR j.job_type_name = (SELECT name FROM public.services WHERE id = p_service_id)
+      )
       AND (
         p_search IS NULL
         OR p_search = ''
