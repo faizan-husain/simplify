@@ -152,7 +152,7 @@ export const JobsPage: React.FC = () => {
     const days = parseInt(String(job.days_left), 10);
     if (days < 0) {
       return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-danger-bg text-danger border border-danger/20">
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-danger-bg text-danger border border-danger/30">
           <AlertTriangle className="w-3.5 h-3.5 mr-1" />
           {Math.abs(days)}d late
         </span>
@@ -168,17 +168,17 @@ export const JobsPage: React.FC = () => {
     }
     if (job.deadline_bucket === 'RED') {
       return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-danger-bg text-danger border border-danger/20">
-          <Clock className="w-3.5 h-3.5 mr-1" />
-          {days}d left
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
+          <Clock className="w-3.5 h-3.5 mr-1 text-red-600" />
+          {days}d left (Red Alert)
         </span>
       );
     }
     if (job.deadline_bucket === 'YELLOW') {
       return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-          <Clock className="w-3.5 h-3.5 mr-1" />
-          {days}d left
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300">
+          <Clock className="w-3.5 h-3.5 mr-1 text-amber-600" />
+          {days}d left (Yellow Alert)
         </span>
       );
     }
@@ -301,14 +301,14 @@ export const JobsPage: React.FC = () => {
           <TabsTrigger value="CURRENT" className="flex-1">
             Current Queue ({tabCounts.current})
           </TabsTrigger>
-          <TabsTrigger value="DUE" className="flex-1">
-            Due Today / Late ({tabCounts.due})
+          <TabsTrigger value="DUE" className="flex-1 font-semibold text-danger">
+            Late Jobs ({tabCounts.due})
           </TabsTrigger>
-          <TabsTrigger value="YELLOW" className="flex-1">
-            Approaching ({tabCounts.yellow})
+          <TabsTrigger value="YELLOW" className="flex-1 font-semibold text-amber-700">
+            Yellow Box Jobs ({tabCounts.yellow})
           </TabsTrigger>
-          <TabsTrigger value="RED" className="flex-1">
-            Urgent Red ({tabCounts.red})
+          <TabsTrigger value="RED" className="flex-1 font-semibold text-red-600">
+            Red Box Jobs ({tabCounts.red})
           </TabsTrigger>
           <TabsTrigger value="COMPLETED" className="flex-1">
             Completed ({tabCounts.completed})
@@ -348,11 +348,15 @@ export const JobsPage: React.FC = () => {
                     </span>
                     {/* Status Dot */}
                     <span className="relative flex h-2.5 w-2.5">
-                      {isLate || isToday ? (
+                      {isLate ? (
                         <>
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-danger opacity-75"></span>
                           <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-danger"></span>
                         </>
+                      ) : isToday || job.deadline_bucket === 'RED' ? (
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                      ) : job.deadline_bucket === 'YELLOW' ? (
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
                       ) : isCompleted ? (
                         <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-success"></span>
                       ) : (

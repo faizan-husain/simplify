@@ -41,12 +41,15 @@ BEGIN
   WHERE id = v_biz_id;
 
   -- Compute tab counts across all non-deleted jobs in business
+  -- Late: strictly days_left < 0 (deadline has passed)
+  -- Yellow: red_days < days_left <= yellow_days (e.g. 4 to 5 days left)
+  -- Red: 0 <= days_left <= red_days (e.g. 0 to 3 days left)
   SELECT
     COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS'),
     COUNT(*) FILTER (WHERE j.status = 'COMPLETED'),
-    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) <= 0),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0),
     COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days),
-    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) <= v_red_days)
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days)
   INTO
     v_count_current,
     v_count_completed,
@@ -99,8 +102,9 @@ BEGIN
         ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
       END AS progress_percent,
       CASE
-        WHEN (j.deadline_date - v_today) <= v_red_days THEN 'RED'
-        WHEN (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+        WHEN (j.deadline_date - v_today) < 0 THEN 'LATE'
+        WHEN (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+        WHEN (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
         ELSE 'NORMAL'
       END AS deadline_bucket
     FROM public.jobs j
@@ -123,9 +127,10 @@ BEGIN
         CASE UPPER(p_tab)
           WHEN 'CURRENT' THEN j.status = 'IN_PROGRESS'
           WHEN 'COMPLETED' THEN j.status = 'COMPLETED'
-          WHEN 'DUE' THEN j.status = 'IN_PROGRESS'
-          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) <= v_red_days
+          WHEN 'DUE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'LATE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
           WHEN 'YELLOW' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days
+          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days
           ELSE j.status = 'IN_PROGRESS'
         END
       )
