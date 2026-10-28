@@ -47,6 +47,8 @@
   "auth": {
     "login": "Login",
     "register": "Create Account",
+    "email_label": "Email Address",
+    "email_placeholder": "name@business.com",
     "mobile_label": "Mobile Number",
     "mobile_placeholder": "10-digit mobile number",
     "password_label": "Password",
@@ -56,6 +58,7 @@
     "sign_up": "Sign Up",
     "logout": "Log Out",
     "finish_setup": "Finish Setup",
+    "invalid_email": "Please enter a valid email address",
     "invalid_mobile": "Enter a valid 10-digit mobile number",
     "password_min": "Password must be at least 8 characters",
     "required": "This field is required"

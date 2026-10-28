@@ -13,7 +13,7 @@ export default defineConfig({
         name: 'SIMPLIFY Billing & SaaS',
         short_name: 'SIMPLIFY',
         description: 'Fast, simple billing, income & expense app for small businesses',
-        theme_color: '#0F766E',
+        theme_color: '#0862EC',
         background_color: '#FFFFFF',
         display: 'standalone',
         orientation: 'portrait',
@@ -50,6 +50,16 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
+    proxy: {
+      '/auth/v1': {
+        target: 'http://127.0.0.1:54321',
+        changeOrigin: true,
+      },
+      '/rest/v1': {
+        target: 'http://127.0.0.1:54321',
+        changeOrigin: true,
+      },
+    },
   },
   test: {
     globals: true,

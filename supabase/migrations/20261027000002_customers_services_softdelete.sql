@@ -175,6 +175,14 @@ CREATE POLICY job_type_steps_update ON public.job_type_steps
     AND (SELECT app.current_role()) = 'OWNER'
   );
 
+DROP POLICY IF EXISTS job_type_steps_delete ON public.job_type_steps;
+CREATE POLICY job_type_steps_delete ON public.job_type_steps
+  FOR DELETE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
 -- Helper RPC: check_customer_mobile
 CREATE OR REPLACE FUNCTION public.check_customer_mobile(
   mobile text,

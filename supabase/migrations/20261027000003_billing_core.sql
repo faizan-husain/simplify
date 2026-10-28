@@ -443,6 +443,7 @@ DECLARE
 
   v_service_row public.services%ROWTYPE;
   v_step_row record;
+  v_step_count int := 0;
   v_job_id uuid;
   v_job_staff_id uuid;
   v_comm_percent numeric(5,2);
@@ -644,13 +645,19 @@ BEGIN
     )
     RETURNING id INTO v_item_id;
 
-    -- Job creation if is_job is true and Job Management enabled
-    IF COALESCE((v_item->>'is_job')::boolean, false) AND v_biz.job_management_enabled AND (v_item->>'service_id') IS NOT NULL THEN
+    -- Job creation if service is job type or marked as job
+    IF (v_item->>'service_id') IS NOT NULL THEN
       SELECT * INTO v_service_row
       FROM public.services
       WHERE id = (v_item->>'service_id')::uuid;
 
-      IF FOUND THEN
+      IF FOUND AND (v_service_row.is_job_type OR COALESCE((v_item->>'is_job')::boolean, false)) THEN
+        -- Auto-enable job_management_enabled if needed
+        IF NOT v_biz.job_management_enabled THEN
+          UPDATE public.businesses SET job_management_enabled = true WHERE id = v_biz_id;
+          v_biz.job_management_enabled := true;
+        END IF;
+
         v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
         v_job_staff_id := CASE WHEN v_role = 'STAFF' THEN v_member_id ELSE NULL END;
         v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
@@ -692,12 +699,14 @@ BEGIN
         RETURNING id INTO v_job_id;
 
         -- Snapshot steps (BR-12)
+        v_step_count := 0;
         FOR v_step_row IN
           SELECT position, name, whatsapp_message
           FROM public.job_type_steps
           WHERE service_id = v_service_row.id AND deleted_at IS NULL
           ORDER BY position ASC
         LOOP
+          v_step_count := v_step_count + 1;
           INSERT INTO public.job_steps (
             business_id,
             job_id,
@@ -719,6 +728,30 @@ BEGIN
             v_member_id
           );
         END LOOP;
+
+        -- Fallback if service had 0 steps defined
+        IF v_step_count = 0 THEN
+          INSERT INTO public.job_steps (
+            business_id,
+            job_id,
+            position,
+            name,
+            whatsapp_message,
+            ticked,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            v_job_id,
+            1,
+            'Processing / Document Verification',
+            'Hello {party_name}, your {job_name} ({bill_no}) is currently in process. - {business_name}',
+            false,
+            v_member_id,
+            v_member_id
+          );
+        END IF;
 
         -- Commission entry if staff assigned & commission > 0 (BR-15)
         IF v_job_staff_id IS NOT NULL AND v_comm_percent > 0 THEN

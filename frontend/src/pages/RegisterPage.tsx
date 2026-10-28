@@ -1,24 +1,32 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { mobileToEmail, isValidIndianMobile } from '../lib/auth';
+import { isValidEmail, isValidIndianMobile } from '../lib/auth';
 import { t, getErrorMessage } from '../i18n';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { useToast } from '../components/ui/Toast';
 import { useAuth } from '../context/AuthContext';
+import { Building2, User, Mail, Phone, Lock, ArrowRight } from 'lucide-react';
 
 export const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const { refreshProfile } = useAuth();
+  const { user, refreshProfile } = useAuth();
 
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
+  const [email, setEmail] = useState('');
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (user) {
+      navigate('/', { replace: true });
+    }
+  }, [user, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,6 +40,10 @@ export const RegisterPage: React.FC = () => {
       setError(t('auth.required'));
       return;
     }
+    if (!isValidEmail(email)) {
+      setError(t('auth.invalid_email'));
+      return;
+    }
     if (!isValidIndianMobile(mobile)) {
       setError(t('auth.invalid_mobile'));
       return;
@@ -43,11 +55,11 @@ export const RegisterPage: React.FC = () => {
 
     setLoading(true);
     try {
-      const email = mobileToEmail(mobile);
+      const cleanEmail = email.trim().toLowerCase();
 
-      // 1. Sign up auth user
+      // 1. Sign up auth user directly with real Email ID
       const { data: authData, error: signUpError } = await supabase.auth.signUp({
-        email,
+        email: cleanEmail,
         password,
       });
 
@@ -58,9 +70,9 @@ export const RegisterPage: React.FC = () => {
       // If already signed in or newly created, invoke register_business RPC
       if (authData.session || authData.user) {
         const { error: rpcError } = await supabase.rpc('register_business', {
-          business_name: businessName,
-          owner_name: ownerName,
-          mobile: mobile,
+          business_name: businessName.trim(),
+          owner_name: ownerName.trim(),
+          mobile: mobile.trim(),
         });
 
         if (rpcError) {
@@ -79,23 +91,26 @@ export const RegisterPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-surface">
-      <div className="w-full max-w-sm bg-white p-6 rounded-card border border-border shadow-soft">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-[#F8FAFC]">
+      <div className="w-full max-w-[440px] bg-white p-8 rounded-2xl border border-slate-200/80 shadow-[0_10px_35px_-5px_rgba(8,98,236,0.08)]">
+        {/* Header */}
         <div className="text-center mb-6">
-          <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center text-white font-bold text-2xl mx-auto mb-3">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-b from-[#0B67F6] to-[#073897] text-white flex items-center justify-center font-bold text-2xl mx-auto mb-3 shadow-md shadow-[#0862EC]/20">
             S
           </div>
-          <h1 className="text-xl font-bold tracking-tight text-text">{t('auth.sign_up')}</h1>
-          <p className="text-xs text-text-muted mt-1">{t('app.tagline')}</p>
+          <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">{t('auth.sign_up')}</h1>
+          <p className="text-xs font-medium text-slate-500 mt-1">{t('app.tagline')}</p>
         </div>
 
+        {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-3.5">
           <Input
             label={t('auth.business_name_label')}
-            placeholder="e.g. Sharma Xerox & Services"
+            placeholder="e.g. Apex Digital & Doc Center"
             value={businessName}
             onChange={(e) => setBusinessName(e.target.value)}
             disabled={loading}
+            leftIcon={<Building2 className="w-4 h-4 text-slate-400" />}
           />
 
           <Input
@@ -104,6 +119,18 @@ export const RegisterPage: React.FC = () => {
             value={ownerName}
             onChange={(e) => setOwnerName(e.target.value)}
             disabled={loading}
+            leftIcon={<User className="w-4 h-4 text-slate-400" />}
+          />
+
+          <Input
+            label={t('auth.email_label')}
+            type="email"
+            inputMode="email"
+            placeholder="owner@business.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={loading}
+            leftIcon={<Mail className="w-4 h-4 text-slate-400" />}
           />
 
           <Input
@@ -114,6 +141,7 @@ export const RegisterPage: React.FC = () => {
             value={mobile}
             onChange={(e) => setMobile(e.target.value)}
             disabled={loading}
+            leftIcon={<Phone className="w-4 h-4 text-slate-400" />}
           />
 
           <Input
@@ -123,18 +151,30 @@ export const RegisterPage: React.FC = () => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={loading}
+            leftIcon={<Lock className="w-4 h-4 text-slate-400" />}
           />
 
-          {error && <div className="text-xs text-danger font-medium">{error}</div>}
+          {error && (
+            <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 p-2.5 rounded-lg font-medium">
+              {error}
+            </div>
+          )}
 
-          <Button type="submit" variant="primary" size="md" className="w-full mt-2" loading={loading}>
-            {t('auth.sign_up')}
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            className="w-full font-semibold bg-[#0862EC] hover:bg-[#0652CA] text-white shadow-md shadow-[#0862EC]/20 transition-all mt-2"
+            loading={loading}
+          >
+            <span>{t('auth.sign_up')}</span>
+            <ArrowRight className="w-4 h-4 ml-1.5" />
           </Button>
         </form>
 
-        <div className="mt-6 text-center text-xs text-text-muted">
+        <div className="mt-6 text-center text-xs text-slate-500 font-medium">
           Already have an account?{' '}
-          <Link to="/login" className="text-primary font-semibold hover:underline">
+          <Link to="/login" className="text-[#0862EC] font-semibold hover:underline">
             {t('auth.login')}
           </Link>
         </div>

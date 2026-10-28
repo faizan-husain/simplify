@@ -22,7 +22,7 @@ import {
 
 export const SettingsPage: React.FC = () => {
   const navigate = useNavigate();
-  const { business, role, refreshProfile } = useAuth();
+  const { business, member, role, refreshProfile } = useAuth();
   const { showToast } = useToast();
 
   const [saving, setSaving] = useState(false);
@@ -115,6 +115,14 @@ export const SettingsPage: React.FC = () => {
       });
 
       if (error) throw error;
+
+      // Update current member's name as well to guarantee immediate sync
+      if (member?.id && form.owner_name.trim()) {
+        await supabase
+          .from('members')
+          .update({ name: form.owner_name.trim() })
+          .eq('id', member.id);
+      }
 
       await refreshProfile();
       showToast('Settings updated successfully', 'success');

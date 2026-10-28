@@ -28,8 +28,8 @@ async function runSeed() {
 
     // Clean previous demo business and demo auth users if re-running seed
     await client.query(`
-      DELETE FROM public.businesses WHERE mobile = '9876543210';
-      DELETE FROM auth.users WHERE email IN ('919876543210@simplify.local', '919876543211@simplify.local');
+      DELETE FROM public.businesses WHERE mobile = '9876543210' OR email = 'owner@simplify.com';
+      DELETE FROM auth.users WHERE email IN ('owner@simplify.com', 'staff@simplify.com', '919876543210@simplify.local', '919876543211@simplify.local');
     `);
 
     // 1. Create Business
@@ -82,14 +82,16 @@ async function runSeed() {
     console.log('Seeding Auth Users & Team Members...');
     const userRes = await client.query(`
       INSERT INTO auth.users (id, email) VALUES
-        ($1, '919876543210@simplify.local'),
-        ($2, '919876543211@simplify.local')
+        ($1, 'owner@simplify.com'),
+        ($2, 'staff@simplify.com'),
+        (gen_random_uuid(), '919876543210@simplify.local'),
+        (gen_random_uuid(), '919876543211@simplify.local')
       ON CONFLICT (email) DO UPDATE SET updated_at = now()
       RETURNING id, email
     `, [ownerAuthId, staff1AuthId]);
 
-    const actualOwnerAuthId = userRes.rows.find(r => r.email === '919876543210@simplify.local')?.id || ownerAuthId;
-    const actualStaff1AuthId = userRes.rows.find(r => r.email === '919876543211@simplify.local')?.id || staff1AuthId;
+    const actualOwnerAuthId = userRes.rows.find(r => r.email === 'owner@simplify.com')?.id || ownerAuthId;
+    const actualStaff1AuthId = userRes.rows.find(r => r.email === 'staff@simplify.com')?.id || staff1AuthId;
 
     const ownerMemberId = uuid();
     const staff1MemberId = uuid();
@@ -393,8 +395,8 @@ async function runSeed() {
     console.log('✅ Demo dataset seeded successfully!');
     console.log('----------------------------------------------------------------');
     console.log('Business:    Global Xerox & Doc Services');
-    console.log('Owner Login: 9876543210 / password123 (Privacy PIN: 1234)');
-    console.log('Staff Login: 9876543211 / password123');
+    console.log('Owner Login: owner@simplify.com (or 9876543210) / password123 (Privacy PIN: 1234)');
+    console.log('Staff Login: staff@simplify.com (or 9876543211) / password123');
     console.log('Staff 2:     Suresh Verma (offline member, no auth user)');
     console.log('Customers:   30 customers (20 regular, 10 walk-in with ledger)');
     console.log('Invoices:    150 invoices spread across dates');

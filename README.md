@@ -54,21 +54,27 @@ npm run seed
 ```
 
 ### Seed Demo Logins
-| Role | Mobile | Password | Privacy PIN | Notes |
-|---|---|---|---|---|
-| **Owner** | `9876543210` | `password123` | `1234` | Full access to all modules, settings & reports |
-| **Staff** | `9876543211` | `password123` | — | Create bills, tick job steps, view own commission |
-| **Staff (Offline)** | `9876543212` | — | — | Offline helper without app login, assigned jobs |
+| Role | Email ID | Mobile | Password | Privacy PIN | Notes |
+|---|---|---|---|---|---|
+| **Owner** | `owner@simplify.com` | `9876543210` | `password123` | `1234` | Full access to all modules, settings & reports |
+| **Staff** | `staff@simplify.com` | `9876543211` | `password123` | — | Create bills, tick job steps, view own commission |
+| **Staff (Offline)** | — | `9876543212` | — | — | Offline helper without app login, assigned jobs |
 
 ---
 
 ## 4. Running the App
 
-Start the Vite development server:
+### Start Full Project (Frontend + Backend Bridge)
+With a single command, start both the Supabase API bridge (port 54321) and the frontend Vite PWA (port 5173):
 ```bash
 npm run dev
-# App will run at http://localhost:5173
+# Backend running at:  http://localhost:54321
+# Frontend running at: http://localhost:5173
 ```
+
+Or run them individually in separate terminals:
+- **Backend API bridge only:** `npm run bridge`
+- **Frontend only:** `npm run dev:fe`
 
 Build for production (generates PWA bundle in `frontend/dist`):
 ```bash
@@ -125,4 +131,4 @@ Or run individually:
 - **Tenant Isolation:** Enforced via PostgreSQL Row Level Security (RLS) on every table in `public`.
 - **Money Correctness:** All financial arithmetic computed in PostgreSQL (`numeric(14,2)` half-up). Client uses `decimal.js` for live preview only.
 - **Ledger Immutability:** Invoices, receipts, allocations, and jobs are read-only for clients via direct table access; changes must go through `supabase.rpc()`.
-- **UI Design System:** Mobile-first PWA, `#FFFFFF` surfaces, `#0F766E` teal accent, minimal clutter.
+- **UI Design System:** Mobile-first PWA, modern premium `#FFFFFF` & `#F8FAFC` surfaces, `#0D2256` deep luxury navy accent, minimal clutter.

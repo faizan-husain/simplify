@@ -17,6 +17,14 @@ export function normaliseMobile(input: string): string {
 }
 
 /**
+ * Validate standard email format
+ */
+export function isValidEmail(email: string): boolean {
+  if (!email) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+/**
  * Validate standard 10-digit Indian mobile number
  */
 export function isValidIndianMobile(mobile: string): boolean {

@@ -6,8 +6,9 @@ CREATE OR REPLACE FUNCTION public.list_jobs(
   p_tab text DEFAULT 'CURRENT',
   p_service_id uuid DEFAULT NULL,
   p_search text DEFAULT NULL,
-  p_limit int DEFAULT 50,
-  p_offset int DEFAULT 0
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0,
+  p_sort text DEFAULT 'QUEUE'
 )
 RETURNS jsonb AS $$
 DECLARE
@@ -60,7 +61,14 @@ BEGIN
     SELECT
       js.job_id,
       COUNT(*)::int AS total_steps,
-      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps
+      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps,
+      (
+        SELECT s2.name 
+        FROM public.job_steps s2 
+        WHERE s2.job_id = js.job_id AND s2.ticked = false AND s2.deleted_at IS NULL 
+        ORDER BY s2.position ASC 
+        LIMIT 1
+      ) AS next_step_name
     FROM public.job_steps js
     WHERE js.business_id = v_biz_id AND js.deleted_at IS NULL
     GROUP BY js.job_id
@@ -85,6 +93,7 @@ BEGIN
       j.created_at,
       COALESCE(jsa.total_steps, 0) AS total_steps,
       COALESCE(jsa.ticked_steps, 0) AS ticked_steps,
+      jsa.next_step_name,
       CASE
         WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
         ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
@@ -122,16 +131,20 @@ BEGIN
       )
     ORDER BY
       CASE UPPER(p_tab)
-        WHEN 'CURRENT' THEN NULL -- hand off to secondary order
         WHEN 'COMPLETED' THEN j.completed_at
         ELSE NULL
       END DESC NULLS LAST,
-      -- Order for CURRENT: progress % descending, then deadline_date ascending, then created_at (BR-13)
-      CASE WHEN UPPER(p_tab) = 'CURRENT' THEN (COALESCE(jsa.ticked_steps, 0)::numeric / GREATEST(1, jsa.total_steps)::numeric) END DESC NULLS LAST,
-      -- Order for DUE: overdue first (days_left <= 0), then nearest deadline
-      CASE WHEN UPPER(p_tab) = 'DUE' THEN (j.deadline_date - v_today) END ASC,
-      -- Generic tie-breaker
-      j.deadline_date ASC,
+      -- If user requested URGENT sort or tab is DUE/RED/YELLOW:
+      CASE 
+        WHEN UPPER(p_tab) IN ('DUE', 'RED', 'YELLOW') OR UPPER(p_sort) = 'URGENT' 
+        THEN (j.deadline_date - v_today) 
+      END ASC,
+      -- If user requested PROGRESS sort:
+      CASE 
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN (COALESCE(jsa.ticked_steps, 0)::numeric / GREATEST(1, jsa.total_steps)::numeric) 
+      END DESC NULLS LAST,
+      -- Primary Work Queue Order: FIFO by creation time (First In, First Out)
       j.created_at ASC
     LIMIT p_limit OFFSET p_offset
   )
@@ -153,7 +166,8 @@ END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
 
 REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int) FROM anon, public;
-GRANT EXECUTE ON FUNCTION public.list_jobs(text, uuid, text, int, int) TO authenticated;
+REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) TO authenticated;
 
 
 -- RPC: job_detail

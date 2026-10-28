@@ -64,13 +64,21 @@ async function getPgClient(): Promise<Client> {
   return client;
 }
 
+function getCorsHeaders(req?: http.IncomingMessage): Record<string, string> {
+  const reqHeaders = req?.headers['access-control-request-headers'];
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': reqHeaders || 'authorization, x-client-info, apikey, content-type, prefer, range, accept, x-requested-with, cache-control, pragma',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD',
+    'Access-Control-Expose-Headers': 'content-range, range, x-total-count',
+    'Access-Control-Max-Age': '86400',
+  };
+}
+
 function sendJson(res: http.ServerResponse, statusCode: number, data: any, headers?: Record<string, string>) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, prefer, range',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Expose-Headers': 'content-range, range',
+    ...getCorsHeaders(),
     ...(headers || {}),
   });
   res.end(JSON.stringify(data));
@@ -94,12 +102,7 @@ function readBody(req: http.IncomingMessage): Promise<any> {
 const server = http.createServer(async (req, res) => {
   // CORS Preflight
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, prefer, range',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Expose-Headers': 'content-range, range',
-    });
+    res.writeHead(204, getCorsHeaders(req));
     res.end();
     return;
   }
@@ -109,18 +112,105 @@ const server = http.createServer(async (req, res) => {
 
   const { userId, role } = extractJwtSub(req.headers['authorization']);
 
+  // --- 0. ROOT HEALTH / STATUS ENDPOINT ---
+  if ((pathname === '/' || pathname === '/health') && req.method === 'GET') {
+    const isBrowser = req.headers['accept']?.includes('text/html');
+    if (isBrowser) {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SIMPLIFY Backend Bridge — Online</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 32px; max-width: 480px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); text-align: center; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(16, 185, 129, 0.15); color: #10b981; padding: 6px 14px; border-radius: 9999px; font-weight: 600; font-size: 13px; margin-bottom: 16px; }
+    .badge-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; }
+    h1 { font-size: 20px; font-weight: 700; margin: 0 0 8px 0; color: #fff; }
+    p { font-size: 14px; color: #94a3b8; margin: 0 0 24px 0; }
+    .info-box { background: #0f172a; border-radius: 8px; padding: 14px; text-align: left; font-family: monospace; font-size: 13px; color: #cbd5e1; margin-bottom: 24px; line-height: 1.6; }
+    .btn { display: block; background: #0f766e; color: #fff; text-decoration: none; font-weight: 600; padding: 12px 20px; border-radius: 8px; transition: background 0.2s; }
+    .btn:hover { background: #115e59; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge"><span class="badge-dot"></span> Backend Online</div>
+    <h1>SIMPLIFY Backend Bridge</h1>
+    <p>The Supabase API Bridge is running and connected to PostgreSQL.</p>
+    <div class="info-box">
+      <div>🟢 Status: Healthy & Ready</div>
+      <div>⚡ Port: 54321</div>
+      <div>📦 Database: simplify_dev</div>
+      <div>🔑 Auth & PostgREST: Active</div>
+    </div>
+    <a href="http://localhost:5173" class="btn">Open Frontend App (localhost:5173) &rarr;</a>
+  </div>
+</body>
+</html>`);
+      return;
+    }
+
+    sendJson(res, 200, {
+      status: 'online',
+      service: 'SIMPLIFY Supabase Local Dev Bridge',
+      port: PORT,
+      database: DB_NAME,
+      message: 'Backend is running and healthy',
+    });
+    return;
+  }
+
   // --- 1. AUTH ENDPOINTS ---
   if (pathname === '/auth/v1/token' && req.method === 'POST') {
     const body = await readBody(req);
-    const email = body.email;
+    const grantType = reqUrl.searchParams.get('grant_type') || body.grant_type || 'password';
     const client = await getPgClient();
+
     try {
-      const result = await client.query('SELECT id, email FROM auth.users WHERE email = $1', [email]);
-      if (result.rows.length === 0) {
+      let user: any = null;
+
+      if (grantType === 'refresh_token' || body.refresh_token) {
+        const tokenSub = extractJwtSub('Bearer ' + body.refresh_token);
+        if (tokenSub.userId) {
+          const result = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [tokenSub.userId]);
+          if (result.rows.length > 0) {
+            user = result.rows[0];
+          }
+        }
+      } else {
+        const input = (body.email || '').trim().toLowerCase();
+        let result = await client.query('SELECT id, email FROM auth.users WHERE LOWER(email) = $1', [input]);
+        if (result.rows.length === 0) {
+          const cleanDigits = input.replace(/\D/g, '');
+          if (cleanDigits.length >= 10) {
+            const memberRes = await client.query(
+              `SELECT m.auth_user_id, u.email 
+               FROM members m 
+               JOIN auth.users u ON u.id = m.auth_user_id 
+               WHERE (m.mobile = $1 OR m.mobile = $2 OR u.email = '91' || $1 || '@simplify.local')
+               LIMIT 1`,
+              [cleanDigits.slice(-10), cleanDigits]
+            );
+            if (memberRes.rows.length > 0) {
+              result = { rows: [{ id: memberRes.rows[0].auth_user_id, email: memberRes.rows[0].email }] } as any;
+            }
+          }
+        }
+        if (result.rows.length > 0) {
+          user = result.rows[0];
+        }
+      }
+
+      if (!user) {
         sendJson(res, 400, { error: 'invalid_grant', error_description: 'Invalid login credentials' });
         return;
       }
-      const user = result.rows[0];
+
       const nowSec = Math.floor(Date.now() / 1000);
       const token = signJwt({
         sub: user.id,
@@ -140,6 +230,8 @@ const server = http.createServer(async (req, res) => {
           aud: 'authenticated',
           role: 'authenticated',
           email: user.email,
+          user_metadata: {},
+          app_metadata: { provider: 'email', providers: ['email'] },
         },
       });
     } finally {
@@ -160,7 +252,15 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { error: 'not_found' });
         return;
       }
-      sendJson(res, 200, result.rows[0]);
+      const user = result.rows[0];
+      sendJson(res, 200, {
+        id: user.id,
+        aud: 'authenticated',
+        role: 'authenticated',
+        email: user.email,
+        user_metadata: {},
+        app_metadata: { provider: 'email', providers: ['email'] },
+      });
     } finally {
       await client.end();
     }
@@ -191,7 +291,14 @@ const server = http.createServer(async (req, res) => {
         token_type: 'bearer',
         expires_in: 86400 * 7,
         refresh_token: token,
-        user,
+        user: {
+          id: user.id,
+          aud: 'authenticated',
+          role: 'authenticated',
+          email: user.email,
+          user_metadata: {},
+          app_metadata: { provider: 'email', providers: ['email'] },
+        },
       });
     } finally {
       await client.end();
@@ -217,20 +324,26 @@ const server = http.createServer(async (req, res) => {
         await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [role || 'authenticated']);
       }
 
-      // Check if function has parameters
       const keys = Object.keys(body);
       let queryStr = '';
       let values: any[] = [];
 
       if (keys.length === 0) {
         queryStr = `SELECT public.${funcName}() as result`;
-      } else if (keys.length === 1 && (keys[0] === 'payload' || typeof body[keys[0]] === 'object')) {
-        queryStr = `SELECT public.${funcName}($1) as result`;
-        values = [JSON.stringify(body[keys[0]])];
       } else {
-        const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
-        queryStr = `SELECT public.${funcName}(${placeholders}) as result`;
-        values = keys.map(k => body[k]);
+        const args: string[] = [];
+        keys.forEach((k, idx) => {
+          const val = body[k];
+          const placeholder = `$${idx + 1}`;
+          if (val !== null && typeof val === 'object') {
+            args.push(`"${k}" => ${placeholder}::jsonb`);
+            values.push(JSON.stringify(val));
+          } else {
+            args.push(`"${k}" => ${placeholder}`);
+            values.push(val);
+          }
+        });
+        queryStr = `SELECT public.${funcName}(${args.join(', ')}) as result`;
       }
 
       const resDb = await client.query(queryStr, values);
@@ -273,33 +386,75 @@ const server = http.createServer(async (req, res) => {
         reqUrl.searchParams.forEach((val, key) => {
           if (['select', 'order', 'limit', 'offset'].includes(key)) return;
 
+          if (key === 'or') {
+            const rawOr = val.replace(/^\(|\)$/g, '');
+            const subConds = rawOr.split(',').map(part => {
+              const segs = part.split('.');
+              const cName = segs[0];
+              const op = segs[1];
+              const searchVal = segs.slice(2).join('.');
+              if (op === 'ilike') {
+                values.push(searchVal);
+                return `"${cName}" ILIKE $${pIndex++}`;
+              }
+              if (op === 'eq') {
+                values.push(searchVal);
+                return `"${cName}" = $${pIndex++}`;
+              }
+              return '';
+            }).filter(Boolean);
+            if (subConds.length > 0) {
+              conditions.push(`(${subConds.join(' OR ')})`);
+            }
+            return;
+          }
+
           if (val === 'is.null') {
-            conditions.push(`${key} IS NULL`);
+            conditions.push(`"${key}" IS NULL`);
           } else if (val === 'is.not.null') {
-            conditions.push(`${key} IS NOT NULL`);
+            conditions.push(`"${key}" IS NOT NULL`);
           } else if (val.startsWith('eq.')) {
-            conditions.push(`${key} = $${pIndex++}`);
+            conditions.push(`"${key}" = $${pIndex++}`);
             values.push(val.slice(3));
           } else if (val.startsWith('neq.')) {
-            conditions.push(`${key} != $${pIndex++}`);
+            conditions.push(`"${key}" != $${pIndex++}`);
+            values.push(val.slice(4));
+          } else if (val.startsWith('gt.')) {
+            conditions.push(`"${key}" > $${pIndex++}`);
+            values.push(val.slice(3));
+          } else if (val.startsWith('gte.')) {
+            conditions.push(`"${key}" >= $${pIndex++}`);
+            values.push(val.slice(4));
+          } else if (val.startsWith('lt.')) {
+            conditions.push(`"${key}" < $${pIndex++}`);
+            values.push(val.slice(3));
+          } else if (val.startsWith('lte.')) {
+            conditions.push(`"${key}" <= $${pIndex++}`);
             values.push(val.slice(4));
           } else if (val.startsWith('ilike.')) {
-            conditions.push(`${key} ILIKE $${pIndex++}`);
+            conditions.push(`"${key}" ILIKE $${pIndex++}`);
             values.push(val.slice(6));
+          } else if (val.startsWith('like.')) {
+            conditions.push(`"${key}" LIKE $${pIndex++}`);
+            values.push(val.slice(5));
           }
         });
 
         const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
         let orderClause = '';
         if (orderParam) {
-          const [col, dir] = orderParam.split('.');
-          orderClause = `ORDER BY ${col} ${dir === 'desc' ? 'DESC' : 'ASC'}`;
+          const parts = orderParam.split(',').map(item => {
+            const [col, dir] = item.split('.');
+            return `"${col}" ${dir?.toLowerCase() === 'desc' ? 'DESC' : 'ASC'}`;
+          });
+          orderClause = `ORDER BY ${parts.join(', ')}`;
         }
+
         let limitClause = '';
         if (limitParam) limitClause += ` LIMIT ${parseInt(limitParam, 10)}`;
         if (offsetParam) limitClause += ` OFFSET ${parseInt(offsetParam, 10)}`;
 
-        // Handle nested select if present (e.g. invoice_items(*))
+        // Handle nested select if present
         let querySql = '';
         if (selectParam.includes('invoice_items(*)')) {
           querySql = `
@@ -309,15 +464,15 @@ const server = http.createServer(async (req, res) => {
             FROM public.${table} i
             ${whereClause} ${orderClause} ${limitClause}
           `;
-        } else if (selectParam.includes('vendors(name)')) {
+        } else if (selectParam.includes('vendors(')) {
           querySql = `
-            SELECT p.*, (SELECT json_build_object('name', v.name) FROM public.vendors v WHERE v.id = p.vendor_id) as vendors
+            SELECT p.*, (SELECT json_build_object('id', v.id, 'name', v.name, 'mobile', v.mobile) FROM public.vendors v WHERE v.id = p.vendor_id) as vendors
             FROM public.${table} p
             ${whereClause} ${orderClause} ${limitClause}
           `;
-        } else if (selectParam.includes('expense_categories(name)')) {
+        } else if (selectParam.includes('expense_categories(')) {
           querySql = `
-            SELECT e.*, (SELECT json_build_object('name', ec.name) FROM public.expense_categories ec WHERE ec.id = e.category_id) as expense_categories
+            SELECT e.*, (SELECT json_build_object('id', ec.id, 'name', ec.name) FROM public.expense_categories ec WHERE ec.id = e.category_id) as expense_categories
             FROM public.${table} e
             ${whereClause} ${orderClause} ${limitClause}
           `;
@@ -348,7 +503,7 @@ const server = http.createServer(async (req, res) => {
         const insertedRows: any[] = [];
         for (const item of rows) {
           const keys = Object.keys(item);
-          const cols = keys.join(', ');
+          const cols = keys.map(k => `"${k}"`).join(', ');
           const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
           const vals = keys.map(k => item[k]);
 
@@ -364,26 +519,27 @@ const server = http.createServer(async (req, res) => {
 
       if (req.method === 'PATCH') {
         const body = await readBody(req);
-        const conditions: string[] = [];
-        const values: any[] = [];
         let pIndex = 1;
 
+        const setAssignments: string[] = [];
+        const setValues: any[] = [];
+        for (const k of Object.keys(body)) {
+          setAssignments.push(`"${k}" = $${pIndex++}`);
+          setValues.push(body[k]);
+        }
+
+        const conditions: string[] = [];
+        const whereValues: any[] = [];
         reqUrl.searchParams.forEach((val, key) => {
           if (val.startsWith('eq.')) {
-            conditions.push(`${key} = $${pIndex++}`);
-            values.push(val.slice(3));
+            conditions.push(`"${key}" = $${pIndex++}`);
+            whereValues.push(val.slice(3));
           }
         });
 
-        const setAssignments: string[] = [];
-        for (const k of Object.keys(body)) {
-          setAssignments.push(`${k} = $${pIndex++}`);
-          values.push(body[k]);
-        }
-
         const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
         const sql = `UPDATE public.${table} SET ${setAssignments.join(', ')} ${whereClause} RETURNING *`;
-        const patchRes = await client.query(sql, values);
+        const patchRes = await client.query(sql, [...setValues, ...whereValues]);
         await client.query('COMMIT');
         sendJson(res, 200, patchRes.rows);
         return;
@@ -396,7 +552,7 @@ const server = http.createServer(async (req, res) => {
 
         reqUrl.searchParams.forEach((val, key) => {
           if (val.startsWith('eq.')) {
-            conditions.push(`${key} = $${pIndex++}`);
+            conditions.push(`"${key}" = $${pIndex++}`);
             values.push(val.slice(3));
           }
         });
@@ -421,7 +577,17 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { message: 'Not found' });
 });
 
-server.listen(PORT, () => {
-  console.log(`🚀 Supabase Local Dev Bridge running on port ${PORT} (dual-stack IPv4/IPv6)`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Supabase Local Dev Bridge running on port ${PORT} (dual-stack IPv4/IPv6 ready)`);
   console.log(`Connected to PostgreSQL: postgresql://${DB_USER}:***@${DB_HOST}:${DB_PORT}/${DB_NAME}`);
 });
+
+// Also bind to IPv6 loopback if available so 'localhost' resolves seamlessly
+try {
+  const serverIpv6 = http.createServer((req, res) => server.emit('request', req, res));
+  serverIpv6.listen(PORT, '::1', () => {
+    console.log(`🚀 IPv6 loopback [::1]:${PORT} bound successfully`);
+  }).on('error', () => {
+    // IPv6 not available or already mapped
+  });
+} catch {}

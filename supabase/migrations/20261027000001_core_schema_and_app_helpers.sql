@@ -338,10 +338,12 @@ RETURNS jsonb AS $$
 DECLARE
   v_biz_id uuid;
   v_role text;
+  v_member_id uuid;
   v_updated public.businesses%ROWTYPE;
 BEGIN
   v_biz_id := (SELECT app.current_business_id());
   v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
 
   IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
     RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
@@ -373,6 +375,13 @@ BEGIN
     timezone = COALESCE(payload->>'timezone', timezone)
   WHERE id = v_biz_id
   RETURNING * INTO v_updated;
+
+  -- Also keep the owner member's name in sync with owner_name
+  IF payload ? 'owner_name' AND COALESCE(payload->>'owner_name', '') <> '' THEN
+    UPDATE public.members
+    SET name = payload->>'owner_name'
+    WHERE id = v_member_id;
+  END IF;
 
   RETURN to_jsonb(v_updated);
 END;

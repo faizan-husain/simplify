@@ -4,7 +4,8 @@
   "description": "SIMPLIFY - Fast, simple billing, income & expense SaaS for small businesses",
   "private": true,
   "scripts": {
-    "dev": "npm --prefix frontend run dev",
+    "dev": "tsx scripts/start-local.ts",
+    "dev:fe": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
     "test": "npm run test:db && npm run test:fe",
     "test:db": "tsx scripts/run-db-tests.ts",

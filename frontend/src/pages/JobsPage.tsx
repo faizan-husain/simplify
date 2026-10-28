@@ -18,6 +18,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   FileText,
+  ListOrdered,
+  Zap,
+  TrendingUp,
 } from 'lucide-react';
 
 export const JobsPage: React.FC = () => {
@@ -27,6 +30,7 @@ export const JobsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'CURRENT' | 'COMPLETED' | 'DUE' | 'YELLOW' | 'RED'>('CURRENT');
   const [search, setSearch] = useState('');
   const [selectedServiceId, setSelectedServiceId] = useState('');
+  const [sortOrder, setSortOrder] = useState<'QUEUE' | 'URGENT' | 'PROGRESS'>('QUEUE');
   const [jobTypes, setJobTypes] = useState<any[]>([]);
 
   const [loading, setLoading] = useState(true);
@@ -65,6 +69,7 @@ export const JobsPage: React.FC = () => {
         p_search: search.trim() || null,
         p_limit: 100,
         p_offset: 0,
+        p_sort: sortOrder,
       });
 
       if (error) throw error;
@@ -87,7 +92,7 @@ export const JobsPage: React.FC = () => {
       loadJobs();
     }, 200);
     return () => clearTimeout(timer);
-  }, [activeTab, search, selectedServiceId]);
+  }, [activeTab, search, selectedServiceId, sortOrder]);
 
   const handleEnableJobManagement = async () => {
     if (!business) return;
@@ -112,34 +117,34 @@ export const JobsPage: React.FC = () => {
   const getDeadlineBadge = (job: any) => {
     if (job.status === 'COMPLETED') {
       return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-primary/10 text-primary">
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-success/10 text-success border border-success/20">
           <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
-          {t('jobs.completed_badge')}
+          Completed
         </span>
       );
     }
     const days = parseInt(String(job.days_left), 10);
     if (days < 0) {
       return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-danger-bg text-danger">
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-danger-bg text-danger border border-danger/20">
           <AlertTriangle className="w-3.5 h-3.5 mr-1" />
-          {t('jobs.days_late', { days: Math.abs(days) })}
+          {Math.abs(days)}d late
         </span>
       );
     }
     if (days === 0) {
       return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-danger-bg text-danger">
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-danger-bg text-danger border border-danger/30 animate-pulse">
           <Clock className="w-3.5 h-3.5 mr-1" />
-          {t('jobs.due_today')}
+          Due Today
         </span>
       );
     }
     if (job.deadline_bucket === 'RED') {
       return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-danger-bg text-danger">
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-danger-bg text-danger border border-danger/20">
           <Clock className="w-3.5 h-3.5 mr-1" />
-          {t('jobs.days_left', { days })}
+          {days}d left
         </span>
       );
     }
@@ -147,14 +152,14 @@ export const JobsPage: React.FC = () => {
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
           <Clock className="w-3.5 h-3.5 mr-1" />
-          {t('jobs.days_left', { days })}
+          {days}d left
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-surface text-text-muted">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-surface text-text-muted border border-border">
         <Clock className="w-3.5 h-3.5 mr-1" />
-        {t('jobs.days_left', { days })}
+        {days}d left
       </span>
     );
   };
@@ -164,10 +169,53 @@ export const JobsPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-text">{t('jobs.title')}</h1>
+          <h1 className="text-xl font-bold tracking-tight text-text">Customer Work Queue (Jobs)</h1>
           <p className="text-xs text-text-muted">
-            Track multi-step customer orders, deadlines, and staff progress
+            Track multi-step customer orders in FIFO queue order, deadlines, and staff commission
           </p>
+        </div>
+
+        {/* Sort Order Selector */}
+        <div className="flex items-center gap-1.5 bg-surface p-1 rounded-lg border border-border">
+          <button
+            type="button"
+            onClick={() => setSortOrder('QUEUE')}
+            className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1 transition-all ${
+              sortOrder === 'QUEUE'
+                ? 'bg-white text-primary shadow-sm border border-border/80'
+                : 'text-text-muted hover:text-text'
+            }`}
+            title="First In, First Out — Serve customers in order of arrival"
+          >
+            <ListOrdered className="w-3.5 h-3.5" />
+            <span>Queue Order (FIFO)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSortOrder('URGENT')}
+            className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1 transition-all ${
+              sortOrder === 'URGENT'
+                ? 'bg-white text-danger shadow-sm border border-border/80'
+                : 'text-text-muted hover:text-text'
+            }`}
+            title="Nearest deadline and late jobs first"
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span>Urgent Deadlines</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSortOrder('PROGRESS')}
+            className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1 transition-all ${
+              sortOrder === 'PROGRESS'
+                ? 'bg-white text-primary shadow-sm border border-border/80'
+                : 'text-text-muted hover:text-text'
+            }`}
+            title="Most completed steps first"
+          >
+            <TrendingUp className="w-3.5 h-3.5" />
+            <span>Progress</span>
+          </button>
         </div>
       </div>
 
@@ -181,7 +229,7 @@ export const JobsPage: React.FC = () => {
                 {t('jobs.disabled_notice')}
               </div>
               <div className="text-xs text-amber-700 mt-0.5">
-                Enable job management to automatically create jobs from passport, license or service bill items.
+                Enable job management to automatically track multi-step customer orders, deadlines, and staff commission.
               </div>
             </div>
           </div>
@@ -205,7 +253,7 @@ export const JobsPage: React.FC = () => {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search party, mobile, bill #, applicant, job type..."
+            placeholder="Search customer, mobile, bill #, applicant, job type..."
             className="pl-9"
           />
         </div>
@@ -225,97 +273,155 @@ export const JobsPage: React.FC = () => {
       <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as any)}>
         <TabsList className="w-full">
           <TabsTrigger value="CURRENT" className="flex-1">
-            {t('jobs.current')} ({tabCounts.current})
-          </TabsTrigger>
-          <TabsTrigger value="COMPLETED" className="flex-1">
-            {t('jobs.completed')} ({tabCounts.completed})
+            Current Queue ({tabCounts.current})
           </TabsTrigger>
           <TabsTrigger value="DUE" className="flex-1">
-            {t('jobs.due')} ({tabCounts.due})
+            Due Today / Late ({tabCounts.due})
           </TabsTrigger>
           <TabsTrigger value="YELLOW" className="flex-1">
-            {t('jobs.yellow')} ({tabCounts.yellow})
+            Approaching ({tabCounts.yellow})
           </TabsTrigger>
           <TabsTrigger value="RED" className="flex-1">
-            {t('jobs.red')} ({tabCounts.red})
+            Urgent Red ({tabCounts.red})
+          </TabsTrigger>
+          <TabsTrigger value="COMPLETED" className="flex-1">
+            Completed ({tabCounts.completed})
           </TabsTrigger>
         </TabsList>
       </Tabs>
 
-      {/* Jobs List */}
+      {/* Single-Row FIFO Work Queue List */}
       {loading ? (
         <div className="py-12 text-center text-sm text-text-muted">
           {t('common.loading')}
         </div>
       ) : jobs.length === 0 ? (
         <EmptyState
-          message={t('jobs.no_jobs')}
+          message="No jobs found in this queue."
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {jobs.map((job) => {
+        <div className="space-y-2">
+          {jobs.map((job, idx) => {
+            const days = parseInt(String(job.days_left), 10);
+            const isLate = days < 0;
+            const isToday = days === 0;
+            const isCompleted = job.status === 'COMPLETED';
+
             return (
               <div
                 key={job.id}
                 onClick={() => setSelectedJobId(job.id)}
-                className="p-4 bg-white rounded-card border border-border hover:border-primary/40 hover:shadow-subtle transition-all cursor-pointer flex flex-col justify-between gap-3 group"
+                className="group relative bg-white hover:bg-slate-50/90 rounded-xl border border-border/80 hover:border-primary/50 hover:shadow-subtle transition-all cursor-pointer p-3 sm:px-4 sm:py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3"
               >
-                <div>
-                  {/* Top Bar: Job Type & Deadline Badge */}
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-surface text-text border border-border group-hover:border-primary/30">
-                      <Briefcase className="w-3.5 h-3.5 mr-1 text-primary" />
-                      {job.job_type_name}
+                {/* Left Section: Queue Rank, Pulse indicator, Party Name, Mobile, Applicant, Bill */}
+                <div className="flex items-start md:items-center gap-3 min-w-0 flex-1">
+                  {/* Queue Rank Badge */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="w-8 h-8 rounded-lg bg-primary/10 text-primary font-bold text-xs flex items-center justify-center border border-primary/20">
+                      #{idx + 1}
                     </span>
-                    <div>{getDeadlineBadge(job)}</div>
+                    {/* Status Dot */}
+                    <span className="relative flex h-2.5 w-2.5">
+                      {isLate || isToday ? (
+                        <>
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-danger opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-danger"></span>
+                        </>
+                      ) : isCompleted ? (
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-success"></span>
+                      ) : (
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-primary"></span>
+                      )}
+                    </span>
                   </div>
 
-                  {/* Customer / Party details */}
-                  <div className="font-semibold text-text text-base">
-                    {job.party_name}
-                    {job.party_mobile && (
-                      <span className="text-xs text-text-muted font-normal ml-1.5">
-                        ({job.party_mobile})
+                  {/* Customer and Work info */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-text text-sm sm:text-base group-hover:text-primary transition-colors">
+                        {job.party_name}
                       </span>
-                    )}
-                  </div>
-
-                  {job.applicant_name && (
-                    <div className="text-xs text-text-muted mt-0.5">
-                      {t('jobs.applicant')}:{' '}
-                      <span className="font-medium text-text">{job.applicant_name}</span>
+                      {job.party_mobile && (
+                        <span className="text-xs text-text-muted">
+                          ({job.party_mobile})
+                        </span>
+                      )}
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-surface text-text border border-border">
+                        <Briefcase className="w-3 h-3 mr-1 text-primary" />
+                        {job.job_type_name}
+                      </span>
+                      <span className="text-xs font-semibold text-text-muted flex items-center gap-1">
+                        <FileText className="w-3 h-3" />
+                        {job.invoice_number}
+                      </span>
                     </div>
-                  )}
 
-                  <div className="text-xs text-text-muted mt-1 flex items-center gap-2">
-                    <span className="flex items-center gap-1">
-                      <FileText className="w-3.5 h-3.5" />
-                      {job.invoice_number}
-                    </span>
-                    <span>•</span>
-                    <span className="font-medium text-text">{formatINR(job.amount)}</span>
+                    {/* Applicant & Next Action */}
+                    <div className="flex items-center gap-3 text-xs text-text-muted mt-1 flex-wrap">
+                      {job.applicant_name && (
+                        <span>
+                          Applicant: <strong className="text-text font-semibold">{job.applicant_name}</strong>
+                        </span>
+                      )}
+                      {job.next_step_name && !isCompleted ? (
+                        <span className="text-primary font-medium flex items-center gap-1">
+                          👉 Next: <span className="font-semibold underline">{job.next_step_name}</span>
+                        </span>
+                      ) : isCompleted ? (
+                        <span className="text-success font-medium flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> All steps completed
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
 
-                {/* Bottom Bar: Progress Bar and Assigned Staff */}
-                <div className="space-y-2 pt-2 border-t border-border/60">
-                  <div className="flex items-center justify-between text-xs text-text-muted">
-                    <span className="font-medium text-text">
-                      {job.ticked_steps} / {job.total_steps} {t('jobs.steps')} ({job.progress_percent}%)
-                    </span>
-                    <span className="flex items-center gap-1 text-[11px]">
-                      <User className="w-3 h-3 text-text-muted" />
-                      {job.assigned_staff_name || t('jobs.unassigned')}
-                    </span>
+                {/* Middle / Right Section: Progress Bar, Deadline, Assigned Staff, Action */}
+                <div className="flex items-center justify-between md:justify-end gap-3 sm:gap-4 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-border/50">
+                  {/* Progress Bar & Step counts */}
+                  <div className="w-28 sm:w-36 space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-text">
+                        {job.ticked_steps}/{job.total_steps} Steps
+                      </span>
+                      <span className="text-text-muted font-medium">{job.progress_percent}%</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-surface rounded-full overflow-hidden border border-border/60">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          isCompleted ? 'bg-success' : 'bg-primary'
+                        }`}
+                        style={{ width: `${job.progress_percent}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="w-full h-1.5 bg-surface rounded-full overflow-hidden border border-border">
-                    <div
-                      className={`h-full transition-all duration-300 ${
-                        job.status === 'COMPLETED' ? 'bg-primary' : 'bg-primary/80'
-                      }`}
-                      style={{ width: `${job.progress_percent}%` }}
-                    />
+
+                  {/* Deadline badge */}
+                  <div className="shrink-0">{getDeadlineBadge(job)}</div>
+
+                  {/* Assigned Staff */}
+                  <div className="hidden lg:flex items-center gap-1 text-xs text-text-muted w-24 truncate">
+                    <User className="w-3.5 h-3.5 text-text-muted shrink-0" />
+                    <span className="truncate">{job.assigned_staff_name || 'Unassigned'}</span>
                   </div>
+
+                  {/* Amount */}
+                  <div className="font-bold text-sm text-text shrink-0 w-16 text-right">
+                    {formatINR(job.amount)}
+                  </div>
+
+                  {/* Quick Action button */}
+                  <Button
+                    size="sm"
+                    variant={isCompleted ? 'outline' : 'primary'}
+                    className="shrink-0 h-8 text-xs font-semibold px-2.5"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedJobId(job.id);
+                    }}
+                  >
+                    {isCompleted ? 'View' : 'Tick Steps'}
+                  </Button>
                 </div>
               </div>
             );

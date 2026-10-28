@@ -32,9 +32,9 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
             type={type}
             className={twMerge(
               clsx(
-                'w-full h-11 px-3.5 rounded-lg border bg-white text-text text-sm transition-colors',
+                'w-full h-11 px-3.5 rounded-xl border bg-white text-text text-sm transition-all shadow-soft',
                 'min-h-[44px]', // Touch target
-                'border-border hover:border-gray-400 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary',
+                'border-border hover:border-slate-300 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20',
                 'disabled:bg-surface disabled:text-text-muted disabled:cursor-not-allowed',
                 leftIcon && 'pl-10',
                 rightIcon && 'pr-10',

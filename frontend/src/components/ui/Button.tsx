@@ -10,14 +10,14 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'primary', size = 'md', loading, disabled, children, ...props }, ref) => {
-    const baseStyles = 'inline-flex items-center justify-center font-medium transition-colors select-none rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]';
+    const baseStyles = 'inline-flex items-center justify-center font-semibold transition-all select-none rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]';
 
     const variants = {
-      primary: 'bg-primary text-white hover:bg-primary-hover shadow-sm',
-      secondary: 'bg-surface text-text hover:bg-gray-100 border border-border',
+      primary: 'bg-gradient-to-r from-[#0B67F6] to-[#0656E6] text-white hover:brightness-105 active:brightness-95 shadow-md shadow-[#0B67F6]/20',
+      secondary: 'bg-white text-text hover:bg-slate-50 border border-border shadow-soft',
       outline: 'border border-border text-text hover:bg-surface',
       danger: 'bg-danger text-white hover:bg-red-700 shadow-sm',
-      ghost: 'text-text hover:bg-surface',
+      ghost: 'text-text-muted hover:text-text hover:bg-surface',
     };
 
     const sizes = {
