@@ -25,6 +25,8 @@ This file tracks all assumptions, design decisions, and trade-offs made during t
 | 2026-10-28 | Jobs/Queue | Job Steps Admin Builder, Guaranteed Bill-to-Job Auto-creation, and FIFO Single-Row Work Queue | Added visual workflow step builder with WhatsApp message templates and variable tags in ServicesPage, hardened `create_invoice` to guarantee job creation and step snapshots for any job-type item, and transformed JobsPage into an ultra-clean Single-Row FIFO Work Queue with rank badges (#1, #2), live pulse dots, and sort options. |
 | 2026-10-28 | Jobs/Sort | Priority Progress Ordering (`ticked_steps DESC` & `progress_percent DESC`) | Enhanced both DB function `list_jobs` and client-side `useMemo` so that selecting 'Progress' immediately prioritizes jobs by most completed steps first, followed by percentage and earliest arrival. |
 | 2026-10-28 | Jobs/Tabs | Strict Tab Filtering: Late Jobs (strictly `days_left < 0`), Yellow Box Jobs, Red Box Jobs | Separated deadline tabs into strictly late jobs (`days_left < 0`), Yellow Box Jobs (within settings window `red_days < days_left <= yellow_days`), and Red Box Jobs (`0 <= days_left <= red_days`), with updated tab titles and badge colors. |
+| 2026-10-28 | Jobs/UI | Premium Single-Row Job Card Design & Visual Step Segments | Replaced cramped inline text with structured 3-part layout: color-coded left urgency border strip, queue squircle (#1, #2), customer phone with direct WhatsApp link, highlighted Next Action Step, discrete step segment bars ([■][■][ ]), and clean action button. |
+
 
 
 
