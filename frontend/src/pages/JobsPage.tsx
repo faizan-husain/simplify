@@ -11,18 +11,16 @@ import { Tabs, TabsList, TabsTrigger } from '../components/ui/Tabs';
 import { EmptyState } from '../components/ui/EmptyState';
 import { JobDetailModal } from '../components/jobs/JobDetailModal';
 import {
-  Briefcase,
   Search,
   Clock,
   User,
   CheckCircle2,
   AlertCircle,
-  FileText,
   ListOrdered,
   TrendingUp,
-  ChevronRight,
   ChevronDown,
   MessageCircle,
+  Check,
 } from 'lucide-react';
 
 export const JobsPage: React.FC = () => {
@@ -166,88 +164,99 @@ export const JobsPage: React.FC = () => {
     });
   }, [jobs, search, selectedServiceId, jobTypes, sortOrder]);
 
-  // Standard Fixed-Size Deadline Badge (exact w-[84px] h-7, never shifts card height or width)
+  // Connected Circle Stepper (exact match to user design)
+  const renderConnectedStepper = (totalSteps: number, tickedSteps: number, isCompleted: boolean) => {
+    const count = Math.max(1, totalSteps || 1);
+    const nodes = [];
+
+    for (let i = 0; i < count; i++) {
+      const isDone = isCompleted || i < tickedSteps;
+
+      nodes.push(
+        <div key={`node-${i}`} className="flex items-center flex-1 last:flex-initial">
+          {/* Circular Node */}
+          <div
+            className={`w-3.5 h-3.5 rounded-full shrink-0 transition-all ${
+              isCompleted
+                ? 'bg-emerald-500 ring-4 ring-emerald-100'
+                : isDone
+                ? 'bg-primary ring-4 ring-blue-100'
+                : 'border-2 border-slate-300 bg-white'
+            }`}
+          />
+          {/* Connecting Track between nodes */}
+          {i < count - 1 && (
+            <div
+              className={`h-1 flex-1 mx-1.5 rounded-full transition-all ${
+                isCompleted
+                  ? 'bg-emerald-400'
+                  : i < tickedSteps - 1
+                  ? 'bg-primary'
+                  : i === tickedSteps - 1
+                  ? 'bg-gradient-to-r from-primary to-blue-200'
+                  : 'bg-slate-200'
+              }`}
+            />
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="w-full flex items-center justify-between py-1">
+        {nodes}
+      </div>
+    );
+  };
+
+  // Standard Pill Deadline Badge
   const getDeadlineBadge = (job: any) => {
     if (job.status === 'COMPLETED') {
       return (
-        <span className="w-[84px] h-7 inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-          Done
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#ECFDF5] text-[#059669] shrink-0">
+          <CheckCircle2 className="w-3.5 h-3.5 text-[#059669]" />
+          <span>Done</span>
         </span>
       );
     }
     const days = parseInt(String(job.days_left), 10);
     if (days < 0) {
       return (
-        <span className="w-[84px] h-7 inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-700 border border-red-200 shrink-0">
-          <AlertCircle className="w-3.5 h-3.5 text-red-600" />
-          {Math.abs(days)}d late
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FEF2F2] text-[#EF4444] shrink-0">
+          <AlertCircle className="w-3.5 h-3.5 text-[#EF4444]" />
+          <span>{Math.abs(days)}d late</span>
         </span>
       );
     }
     if (days === 0) {
       return (
-        <span className="w-[84px] h-7 inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-700 border border-red-200 shrink-0">
-          <Clock className="w-3.5 h-3.5 text-red-600" />
-          Today
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FEF2F2] text-[#EF4444] shrink-0">
+          <Clock className="w-3.5 h-3.5 text-[#EF4444]" />
+          <span>Today</span>
         </span>
       );
     }
     if (job.deadline_bucket === 'RED') {
       return (
-        <span className="w-[84px] h-7 inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-700 border border-red-200 shrink-0">
-          <Clock className="w-3.5 h-3.5 text-red-600" />
-          {days}d left
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FEF2F2] text-[#EF4444] shrink-0">
+          <Clock className="w-3.5 h-3.5 text-[#EF4444]" />
+          <span>{days}d left</span>
         </span>
       );
     }
     if (job.deadline_bucket === 'YELLOW') {
       return (
-        <span className="w-[84px] h-7 inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-bold bg-amber-50 text-amber-800 border border-amber-300 shrink-0">
-          <Clock className="w-3.5 h-3.5 text-amber-600" />
-          {days}d left
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FFFBEB] text-[#D97706] shrink-0">
+          <Clock className="w-3.5 h-3.5 text-[#D97706]" />
+          <span>{days}d left</span>
         </span>
       );
     }
     return (
-      <span className="w-[84px] h-7 inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 shrink-0">
         <Clock className="w-3.5 h-3.5 text-slate-500" />
-        {days}d left
+        <span>{days}d left</span>
       </span>
-    );
-  };
-
-  // Step Segments Visualizer
-  const renderStepSegments = (total: number, ticked: number, isCompleted: boolean) => {
-    const count = Math.max(1, total || 1);
-    const segments = [];
-    for (let i = 0; i < count; i++) {
-      const isDone = i < ticked;
-      segments.push(
-        <div
-          key={i}
-          className={`h-2 flex-1 rounded-full transition-all duration-300 ${
-            isCompleted
-              ? 'bg-emerald-500'
-              : isDone
-              ? 'bg-primary'
-              : 'bg-slate-200'
-          }`}
-        />
-      );
-    }
-    return (
-      <div className="w-full space-y-1">
-        <div className="flex items-center gap-1.5 w-full">{segments}</div>
-        <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-          <span>
-            {ticked} of {total} steps
-          </span>
-          <span className="font-semibold text-slate-800">
-            {isCompleted ? '100%' : `${Math.round((ticked / count) * 100)}%`}
-          </span>
-        </div>
-      </div>
     );
   };
 
@@ -379,7 +388,7 @@ export const JobsPage: React.FC = () => {
         </TabsList>
       </Tabs>
 
-      {/* Spacious, Elegant, Premium Job Cards */}
+      {/* Professional Job Card matching reference layout */}
       {loading ? (
         <div className="py-16 text-center text-sm font-medium text-slate-500">
           {t('common.loading')}
@@ -396,138 +405,151 @@ export const JobsPage: React.FC = () => {
             const isToday = days === 0;
             const isCompleted = job.status === 'COMPLETED';
 
-            // Distinctive left accent border for quick visual hierarchy
-            const leftBorderClass = isLate
-              ? 'border-l-[5px] border-l-red-500'
-              : isToday || job.deadline_bucket === 'RED'
-              ? 'border-l-[5px] border-l-red-500'
+            // Left Urgency Strip color matching reference
+            const accentBgClass = isLate || isToday || job.deadline_bucket === 'RED'
+              ? 'bg-[#F85149]'
               : job.deadline_bucket === 'YELLOW'
-              ? 'border-l-[5px] border-l-amber-400'
+              ? 'bg-[#F59E0B]'
               : isCompleted
-              ? 'border-l-[5px] border-l-emerald-500'
-              : 'border-l-[5px] border-l-primary';
+              ? 'bg-[#10B981]'
+              : 'bg-[#0862EC]';
+
+            const count = Math.max(1, job.total_steps || 1);
+            const ticked = job.ticked_steps || 0;
+            const percent = isCompleted
+              ? 100
+              : Math.round((ticked / count) * 100);
 
             return (
               <div
                 key={job.id}
                 onClick={() => setSelectedJobId(job.id)}
-                className={`group relative bg-white hover:bg-slate-50/70 rounded-2xl border border-slate-200/90 shadow-2xs hover:shadow-subtle transition-all cursor-pointer p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${leftBorderClass}`}
+                className="group relative bg-white hover:bg-slate-50/50 rounded-2xl border border-slate-200/80 shadow-[0_2px_12px_rgba(0,0,0,0.03)] hover:shadow-subtle transition-all cursor-pointer p-4 sm:p-5 pl-5 sm:pl-6 overflow-hidden"
               >
-                {/* Left Section: Rank, Customer info, Job Badge, Subtitle info */}
-                <div className="flex items-start sm:items-center gap-3.5 min-w-0 flex-1">
-                  {/* Queue Rank Badge */}
-                  <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 font-extrabold text-sm flex items-center justify-center border border-slate-200 shrink-0 group-hover:bg-blue-50 group-hover:text-primary group-hover:border-blue-200 transition-colors">
-                    #{idx + 1}
-                  </div>
+                {/* Left Urgency Color Strip (rounded matching card corner) */}
+                <div className={`absolute left-0 top-0 bottom-0 w-1.5 rounded-l-2xl ${accentBgClass}`} />
 
-                  {/* Customer and Job Info */}
-                  <div className="min-w-0 flex-1 space-y-2">
-                    {/* Top Row: Customer Name, Phone, Job Type, Bill # */}
-                    <div className="flex items-center gap-2.5 flex-wrap">
-                      <span className="font-bold text-slate-900 text-base sm:text-lg group-hover:text-primary transition-colors tracking-tight">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+                  {/* Left Section: Customer Name, Phone, Badges, Applicant */}
+                  <div className="space-y-2.5 min-w-[260px] lg:max-w-[340px]">
+                    {/* Row 1: Customer Name + WhatsApp Phone Pill */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h3 className="font-bold text-slate-900 text-base sm:text-[17px] tracking-tight group-hover:text-primary transition-colors">
                         {job.party_name}
-                      </span>
+                      </h3>
 
                       {job.party_mobile && (
-                        <div className="inline-flex items-center gap-1.5 text-xs text-slate-700 font-medium bg-slate-100/90 px-2.5 py-1 rounded-lg border border-slate-200 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const waUrl = getWhatsAppUrl(
+                              job.party_mobile,
+                              `Hello ${job.party_name}, this is regarding your ${job.job_type_name} (Bill #${job.invoice_number}).`
+                            );
+                            window.open(waUrl, '_blank');
+                          }}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#E8FAF0] text-[#047857] hover:bg-[#D1FAE5] text-xs font-semibold transition-colors"
+                          title="Chat on WhatsApp"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 fill-[#047857] text-[#047857]" />
                           <span>{job.party_mobile}</span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const waUrl = getWhatsAppUrl(
-                                job.party_mobile,
-                                `Hello ${job.party_name}, this is regarding your ${job.job_type_name} (Bill #${job.invoice_number}).`
-                              );
-                              window.open(waUrl, '_blank');
-                            }}
-                            className="text-emerald-600 hover:text-emerald-700 p-0.5 rounded transition-colors"
-                            title="Chat on WhatsApp"
-                          >
-                            <MessageCircle className="w-3.5 h-3.5 fill-emerald-600/10 text-emerald-600" />
-                          </button>
-                        </div>
+                        </button>
                       )}
+                    </div>
 
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-50 text-primary border border-blue-100 shrink-0">
-                        <Briefcase className="w-3.5 h-3.5" />
+                    {/* Row 2: #1, Job Type, Bill Number Badges */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-[#EFF6FF] text-[#0862EC]">
+                        #{idx + 1}
+                      </span>
+
+                      <span className="px-3 py-1 rounded-lg text-xs font-bold bg-[#EFF6FF] text-[#0862EC]">
                         {job.job_type_name}
                       </span>
 
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 bg-slate-50 px-2 py-1 rounded-lg border border-slate-200 shrink-0">
-                        <FileText className="w-3.5 h-3.5 text-slate-400" />
+                      <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#F1F5F9] text-[#64748B]">
                         {job.invoice_number}
                       </span>
+                    </div>
 
-                      {job.applicant_name && (
-                        <span className="text-xs text-slate-600 font-medium bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 shrink-0">
-                          Applicant: <strong className="text-slate-800 font-semibold">{job.applicant_name}</strong>
+                    {/* Row 3: Applicant Box */}
+                    <div>
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#F8FAFC] border border-slate-100/90 text-xs">
+                        <span className="text-slate-500 font-medium">Applicant:</span>
+                        <span className="font-bold text-slate-900">
+                          {job.applicant_name || job.party_name}
                         </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Center Section: Connected Stepper & Status Row */}
+                  <div className="flex-1 lg:border-l lg:border-slate-200/70 lg:pl-6 space-y-2.5 min-w-[280px]">
+                    {/* Stepper with Circles & Connector Bar */}
+                    <div className="max-w-md">
+                      {renderConnectedStepper(job.total_steps, job.ticked_steps, isCompleted)}
+                    </div>
+
+                    {/* Status Meta Row: Step Ratio | Percent, Deadline Badge, Staff Badge */}
+                    <div className="flex items-center gap-3 text-xs flex-wrap">
+                      <div className="flex items-center gap-1.5 text-slate-600 font-medium shrink-0">
+                        <span>
+                          {ticked} of {job.total_steps || 0} steps
+                        </span>
+                        <span className="text-slate-300 font-light">|</span>
+                        <span className="font-bold text-[#0862EC]">
+                          {percent}%
+                        </span>
+                      </div>
+
+                      {/* Deadline Badge */}
+                      {getDeadlineBadge(job)}
+
+                      {/* Staff Badge */}
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#F1F5F9] text-slate-700 text-xs font-semibold shrink-0">
+                        <User className="w-3.5 h-3.5 text-slate-400" />
+                        <span className="max-w-[100px] truncate">{job.assigned_staff_name || 'Unassigned'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Section: Total Amount & Tick Steps Action Button */}
+                  <div className="flex items-center justify-between lg:justify-end gap-5 lg:border-l lg:border-slate-200/70 lg:pl-6 shrink-0 pt-3 lg:pt-0 border-t lg:border-t-0 border-slate-100">
+                    {/* Amount */}
+                    <div className="text-right">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">TOTAL</div>
+                      <div className="text-2xl font-black text-[#0F172A] tracking-tight">
+                        {formatINR(job.amount)}
+                      </div>
+                    </div>
+
+                    {/* Action Button: Deep Royal Navy with White Checkmark */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedJobId(job.id);
+                      }}
+                      className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold shadow-xs transition-all shrink-0 cursor-pointer ${
+                        isCompleted
+                          ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                          : 'bg-[#103D88] hover:bg-[#0C306B] text-white active:scale-[0.98]'
+                      }`}
+                    >
+                      {isCompleted ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                          <span>Completed</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4 stroke-[3]" />
+                          <span>Tick Steps</span>
+                        </>
                       )}
-                    </div>
-
-                    {/* Middle Row: Next Action Callout */}
-                    <div className="flex items-center gap-2">
-                      {job.next_step_name && !isCompleted ? (
-                        <div
-                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50/70 border border-blue-200/60 text-xs text-slate-800"
-                          title={job.next_step_name}
-                        >
-                          <span className="w-2 h-2 rounded-full bg-primary shrink-0 animate-pulse" />
-                          <span className="text-primary font-bold text-[10px] uppercase tracking-wider">Next Step:</span>
-                          <span className="font-semibold text-slate-900">{job.next_step_name}</span>
-                        </div>
-                      ) : isCompleted ? (
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-800 text-xs font-semibold border border-emerald-200/60 shrink-0">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>All workflow steps completed</span>
-                        </div>
-                      ) : null}
-                    </div>
+                    </button>
                   </div>
-                </div>
-
-                {/* Right Section: Progress Segments, Fixed-Size Deadline, Staff, Amount, Button */}
-                <div className="flex flex-wrap sm:flex-nowrap items-center justify-between lg:justify-end gap-3.5 shrink-0 pt-3 lg:pt-0 border-t lg:border-t-0 border-slate-100">
-                  {/* Step Segments */}
-                  <div className="w-36 shrink-0">
-                    {renderStepSegments(job.total_steps, job.ticked_steps, isCompleted)}
-                  </div>
-
-                  {/* Fixed-size Deadline Badge (Exact w-[84px] h-7) */}
-                  <div className="w-[84px] shrink-0 flex items-center justify-center">
-                    {getDeadlineBadge(job)}
-                  </div>
-
-                  {/* Assigned Staff */}
-                  <div className="hidden xl:flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200 w-[120px] shrink-0">
-                    <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span className="truncate">{job.assigned_staff_name || 'Unassigned'}</span>
-                  </div>
-
-                  {/* Amount */}
-                  <div className="w-[88px] shrink-0 text-right">
-                    <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 leading-none">Total</div>
-                    <div className="text-base font-bold text-slate-900 mt-0.5">{formatINR(job.amount)}</div>
-                  </div>
-
-                  {/* Action Button */}
-                  <Button
-                    size="sm"
-                    variant={isCompleted ? 'outline' : 'primary'}
-                    className={`w-[104px] shrink-0 h-9 px-3 text-xs font-semibold rounded-xl transition-all flex items-center justify-center gap-1 ${
-                      isCompleted
-                        ? 'border-slate-300 text-slate-700 hover:bg-slate-100'
-                        : 'bg-primary text-white hover:bg-primary-hover shadow-2xs'
-                    }`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedJobId(job.id);
-                    }}
-                  >
-                    <span>{isCompleted ? 'View' : 'Tick Steps'}</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </Button>
                 </div>
               </div>
             );
