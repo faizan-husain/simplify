@@ -23,5 +23,7 @@ This file tracks all assumptions, design decisions, and trade-offs made during t
 | 2026-10-28 | Layout | Collapsible ChatGPT-style Sidebar with `Ctrl+B` shortcut | Built smooth sliding collapsible sidebar with state persistence in `localStorage`, `PanelLeftClose`/`PanelLeft` controls, mobile blur drawer, and keyboard shortcut for an ultra-premium desktop experience. |
 | 2026-10-28 | Theme/UI | Electric Royal Blue (#0862EC) Theme & Pixel-Perfect Sidebar matching user reference | Replaced deep navy with vibrant electric royal blue (#0862EC), implemented gradient squircle branding, white circle plus icon on "+ New Bill", active item pill with ice-blue card (#E8F2FD), and squircle icons with chevrons matching reference design. |
 | 2026-10-28 | Jobs/Queue | Job Steps Admin Builder, Guaranteed Bill-to-Job Auto-creation, and FIFO Single-Row Work Queue | Added visual workflow step builder with WhatsApp message templates and variable tags in ServicesPage, hardened `create_invoice` to guarantee job creation and step snapshots for any job-type item, and transformed JobsPage into an ultra-clean Single-Row FIFO Work Queue with rank badges (#1, #2), live pulse dots, and sort options. |
+| 2026-10-28 | Jobs/Sort | Priority Progress Ordering (`ticked_steps DESC` & `progress_percent DESC`) | Enhanced both DB function `list_jobs` and client-side `useMemo` so that selecting 'Progress' immediately prioritizes jobs by most completed steps first, followed by percentage and earliest arrival. |
+
 
 

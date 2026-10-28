@@ -134,17 +134,21 @@ BEGIN
         WHEN 'COMPLETED' THEN j.completed_at
         ELSE NULL
       END DESC NULLS LAST,
-      -- If user requested URGENT sort or tab is DUE/RED/YELLOW:
+      -- 1. PROGRESS sort: jobs with most completed steps come first
       CASE 
-        WHEN UPPER(p_tab) IN ('DUE', 'RED', 'YELLOW') OR UPPER(p_sort) = 'URGENT' 
-        THEN (j.deadline_date - v_today) 
-      END ASC,
-      -- If user requested PROGRESS sort:
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN COALESCE(jsa.ticked_steps, 0)
+      END DESC NULLS LAST,
       CASE 
         WHEN UPPER(p_sort) = 'PROGRESS' 
         THEN (COALESCE(jsa.ticked_steps, 0)::numeric / GREATEST(1, jsa.total_steps)::numeric) 
       END DESC NULLS LAST,
-      -- Primary Work Queue Order: FIFO by creation time (First In, First Out)
+      -- 2. URGENT sort: nearest deadline and late jobs first
+      CASE 
+        WHEN UPPER(p_sort) = 'URGENT' OR (UPPER(p_tab) IN ('DUE', 'RED', 'YELLOW') AND UPPER(p_sort) != 'PROGRESS')
+        THEN (j.deadline_date - v_today) 
+      END ASC,
+      -- 3. Primary FIFO Queue Order: earliest created_at first
       j.created_at ASC
     LIMIT p_limit OFFSET p_offset
   )

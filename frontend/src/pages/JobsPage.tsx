@@ -46,6 +46,32 @@ export const JobsPage: React.FC = () => {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [enablingJobs, setEnablingJobs] = useState(false);
 
+  // Client-side instant sort priority (guarantees Progress brings jobs with most completed steps to the top immediately)
+  const sortedJobs = React.useMemo(() => {
+    return [...jobs].sort((a, b) => {
+      if (sortOrder === 'PROGRESS') {
+        const aTicked = a.ticked_steps || 0;
+        const bTicked = b.ticked_steps || 0;
+        if (bTicked !== aTicked) {
+          return bTicked - aTicked; // Most ticked steps come to the top!
+        }
+        const aProg = parseFloat(String(a.progress_percent || '0'));
+        const bProg = parseFloat(String(b.progress_percent || '0'));
+        if (bProg !== aProg) {
+          return bProg - aProg; // Highest percentage next
+        }
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      }
+      if (sortOrder === 'URGENT') {
+        const aDays = parseInt(String(a.days_left || '0'), 10);
+        const bDays = parseInt(String(b.days_left || '0'), 10);
+        return aDays - bDays;
+      }
+      // 'QUEUE' (FIFO): earliest created_at first
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+  }, [jobs, sortOrder]);
+
   // Load available job types for filtering
   useEffect(() => {
     supabase
@@ -301,7 +327,7 @@ export const JobsPage: React.FC = () => {
         />
       ) : (
         <div className="space-y-2">
-          {jobs.map((job, idx) => {
+          {sortedJobs.map((job, idx) => {
             const days = parseInt(String(job.days_left), 10);
             const isLate = days < 0;
             const isToday = days === 0;
