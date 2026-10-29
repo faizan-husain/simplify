@@ -61,6 +61,9 @@ export const DashboardPage: React.FC = () => {
     loadDashboard();
   }, []);
 
+  type TimePeriod = 'TODAY' | 'THIS_MONTH' | 'THIS_YEAR';
+  const [period, setPeriod] = useState<TimePeriod>('THIS_MONTH');
+
   const todayStr = formatDate(new Date());
   const fyLabel = getFYLabel();
 
@@ -72,16 +75,30 @@ export const DashboardPage: React.FC = () => {
     return 'Good Evening';
   }, []);
 
-  // Profit margin calculation for monthly overview
-  const monthlyIncome = data?.this_month?.income || 0;
-  const monthlyProfit = data?.this_month?.net_profit || 0;
-  const profitMargin =
-    monthlyIncome > 0
-      ? Math.round((monthlyProfit / monthlyIncome) * 100)
-      : 0;
+  // Active period dataset
+  const activeData = useMemo(() => {
+    if (!data) return null;
+    if (period === 'TODAY') return data.today;
+    if (period === 'THIS_YEAR') return data.this_year;
+    return data.this_month;
+  }, [data, period]);
+
+  const periodLabel = useMemo(() => {
+    if (period === 'TODAY') return 'Today';
+    if (period === 'THIS_YEAR') return `FY ${fyLabel}`;
+    return 'This Month';
+  }, [period, fyLabel]);
+
+  // Financial figures for active period
+  const income = activeData?.income || 0;
+  const outgoing = activeData?.outgoing || 0;
+  const payments = activeData?.payments || 0;
+  const expenses = activeData?.expenses || 0;
+  const netProfit = activeData?.net_profit || 0;
+  const profitMargin = income > 0 ? Math.round((netProfit / income) * 100) : 0;
 
   // Payment methods calculation for donut chart
-  const pm = data?.payment_methods || { cash: 0, upi: 0, bank: 0, card: 0, total: 0 };
+  const pm = activeData?.payment_methods || data?.payment_methods || { cash: 0, upi: 0, bank: 0, card: 0, total: 0 };
   const totalReceived = Number(pm.total || 0);
   const hasPayments = totalReceived > 0;
 
@@ -90,10 +107,20 @@ export const DashboardPage: React.FC = () => {
   const bankPct = hasPayments ? Math.round(((pm.bank || 0) / totalReceived) * 100) : 0;
   const cardPct = hasPayments ? Math.max(0, 100 - (cashPct + upiPct + bankPct)) : 0;
 
-  // Chart data normalization
+  // Top services for active period
+  const topServices = activeData?.top_services || data?.top_services || [];
+
+  // Chart data normalization for active period
   const chartPoints = useMemo(() => {
-    const raw = data?.chart_data || [];
+    const raw = activeData?.chart_data || data?.chart_data || [];
     if (raw.length === 0) {
+      if (period === 'THIS_YEAR') {
+        return ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'].map((m) => ({
+          label: m,
+          income: 0,
+          expenses: 0,
+        }));
+      }
       const currentMonthShort = new Date().toLocaleString('en-US', { month: 'short' });
       return [1, 5, 10, 15, 20, 25, 28].map((day) => ({
         label: `${day} ${currentMonthShort}`,
@@ -104,7 +131,7 @@ export const DashboardPage: React.FC = () => {
     if (raw.length <= 7) return raw;
     const step = Math.ceil(raw.length / 7);
     return raw.filter((_: any, idx: number) => idx % step === 0 || idx === raw.length - 1);
-  }, [data?.chart_data]);
+  }, [activeData?.chart_data, data?.chart_data, period]);
 
   const hasChartActivity = useMemo(() => {
     return chartPoints.some((p: any) => (p.income || 0) > 0 || (p.expenses || 0) > 0);
@@ -143,12 +170,49 @@ export const DashboardPage: React.FC = () => {
             <span className="text-lg inline-block animate-bounce">👋</span>
           </h1>
           <p className="text-[11px] text-slate-400 font-medium">
-            Here's your business overview for today.
+            Here's your business overview for {period === 'TODAY' ? 'today' : period === 'THIS_YEAR' ? `FY ${fyLabel}` : 'this month'}.
           </p>
         </div>
 
-        {/* Right: Quick Controls & "+ New Bill" Action Button */}
-        <div className="flex items-center gap-2 self-start md:self-auto shrink-0">
+        {/* Right: Period Toggle (Today | This Month | This Year), Refresh & "+ New Bill" */}
+        <div className="flex items-center gap-2 self-start md:self-auto shrink-0 flex-wrap">
+          {/* Time Period Filter Pill Buttons */}
+          <div className="flex items-center p-0.5 bg-slate-100/90 rounded-xl border border-slate-200/80 shadow-2xs">
+            <button
+              type="button"
+              onClick={() => setPeriod('TODAY')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                period === 'TODAY'
+                  ? 'bg-white text-[#0862EC] shadow-2xs'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              onClick={() => setPeriod('THIS_MONTH')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                period === 'THIS_MONTH'
+                  ? 'bg-white text-[#0862EC] shadow-2xs'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              This Month
+            </button>
+            <button
+              type="button"
+              onClick={() => setPeriod('THIS_YEAR')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                period === 'THIS_YEAR'
+                  ? 'bg-white text-[#0862EC] shadow-2xs'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+            >
+              This Year
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={() => loadDashboard(true)}
@@ -444,7 +508,7 @@ export const DashboardPage: React.FC = () => {
                 </span>
               </div>
               <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                This Month
+                {periodLabel}
               </span>
             </div>
           </div>
@@ -455,7 +519,7 @@ export const DashboardPage: React.FC = () => {
               <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex flex-col items-center justify-center pointer-events-none z-10 px-2 text-center">
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 shadow-2xs">
                   <BarChart3 className="w-3 h-3 text-slate-400" />
-                  No transactions recorded yet
+                  No transactions recorded for {periodLabel}
                 </span>
               </div>
             )}
@@ -500,7 +564,7 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* COL 2: Payment Methods (Receipts) Donut Chart */}
+        {/* COL 2: Payment Methods (Receipts) Circle Chart */}
         <div className="bg-white rounded-2xl border border-slate-200/80 p-2.5 sm:p-3 shadow-2xs flex flex-col justify-between">
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-center gap-1.5">
@@ -508,16 +572,16 @@ export const DashboardPage: React.FC = () => {
               <h3 className="text-xs font-bold text-slate-800">Payment Methods (Receipts)</h3>
             </div>
             <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-              This Month
+              {periodLabel}
             </span>
           </div>
 
-          <div className="flex items-center justify-between gap-3 my-auto py-1">
-            {/* Donut Chart SVG */}
-            <div className="relative w-24 h-24 sm:w-26 sm:h-26 shrink-0 flex items-center justify-center">
+          <div className="flex items-center justify-between gap-3 sm:gap-4 my-auto py-1">
+            {/* Perfectly Sized Big Circle Chart SVG */}
+            <div className="relative w-32 h-32 sm:w-36 sm:h-36 shrink-0 flex items-center justify-center">
               <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
                 {/* Background Track */}
-                <circle cx="18" cy="18" r="14" fill="transparent" stroke={hasPayments ? "#F1F5F9" : "#E2E8F0"} strokeWidth="4.5" />
+                <circle cx="18" cy="18" r="14" fill="transparent" stroke={hasPayments ? "#F1F5F9" : "#E2E8F0"} strokeWidth="3.8" />
                 {hasPayments && (
                   <>
                     {/* UPI Segment (Blue) */}
@@ -528,7 +592,7 @@ export const DashboardPage: React.FC = () => {
                         r="14"
                         fill="transparent"
                         stroke="#0862EC"
-                        strokeWidth="4.5"
+                        strokeWidth="3.8"
                         strokeDasharray={`${upiPct} ${100 - upiPct}`}
                         strokeDashoffset="0"
                       />
@@ -541,7 +605,7 @@ export const DashboardPage: React.FC = () => {
                         r="14"
                         fill="transparent"
                         stroke="#10B981"
-                        strokeWidth="4.5"
+                        strokeWidth="3.8"
                         strokeDasharray={`${cashPct} ${100 - cashPct}`}
                         strokeDashoffset={`${-upiPct}`}
                       />
@@ -554,7 +618,7 @@ export const DashboardPage: React.FC = () => {
                         r="14"
                         fill="transparent"
                         stroke="#F97316"
-                        strokeWidth="4.5"
+                        strokeWidth="3.8"
                         strokeDasharray={`${bankPct} ${100 - bankPct}`}
                         strokeDashoffset={`${-(upiPct + cashPct)}`}
                       />
@@ -567,7 +631,7 @@ export const DashboardPage: React.FC = () => {
                         r="14"
                         fill="transparent"
                         stroke="#8B5CF6"
-                        strokeWidth="4.5"
+                        strokeWidth="3.8"
                         strokeDasharray={`${cardPct} ${100 - cardPct}`}
                         strokeDashoffset={`${-(upiPct + cashPct + bankPct)}`}
                       />
@@ -575,57 +639,57 @@ export const DashboardPage: React.FC = () => {
                   </>
                 )}
               </svg>
-              {/* Center Total Text */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-1">
-                <span className="text-xs sm:text-sm font-black text-slate-900 leading-tight">
+              {/* Center Total Text with Perfect Typography */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-2 pointer-events-none">
+                <span className="text-sm sm:text-base md:text-lg font-black text-slate-900 leading-tight">
                   {formatINR(totalReceived)}
                 </span>
-                <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider">
+                <span className="text-[8px] sm:text-[9px] text-slate-400 font-extrabold uppercase tracking-wider mt-0.5">
                   {hasPayments ? 'Total Received' : 'No Receipts'}
                 </span>
               </div>
             </div>
 
             {/* Legend Breakdown */}
-            <div className="flex-1 space-y-1 text-[11px] min-w-0">
+            <div className="flex-1 space-y-1.5 sm:space-y-2 text-[11px] sm:text-xs min-w-0">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-slate-600 truncate mr-1">
-                  <span className="w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#10B981] shrink-0" />
                   <span className="truncate">Cash {cashPct}%</span>
                 </span>
-                <span className="font-bold text-slate-800 shrink-0">{formatINR(pm.cash || 0)}</span>
+                <span className="font-extrabold text-slate-800 shrink-0">{formatINR(pm.cash || 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-slate-600 truncate mr-1">
-                  <span className="w-2 h-2 rounded-full bg-[#0862EC] shrink-0" />
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#0862EC] shrink-0" />
                   <span className="truncate">UPI {upiPct}%</span>
                 </span>
-                <span className="font-bold text-slate-800 shrink-0">{formatINR(pm.upi || 0)}</span>
+                <span className="font-extrabold text-slate-800 shrink-0">{formatINR(pm.upi || 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-slate-600 truncate mr-1">
-                  <span className="w-2 h-2 rounded-full bg-[#F97316] shrink-0" />
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#F97316] shrink-0" />
                   <span className="truncate">Bank {bankPct}%</span>
                 </span>
-                <span className="font-bold text-slate-800 shrink-0">{formatINR(pm.bank || 0)}</span>
+                <span className="font-extrabold text-slate-800 shrink-0">{formatINR(pm.bank || 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-slate-600 truncate mr-1">
-                  <span className="w-2 h-2 rounded-full bg-[#8B5CF6] shrink-0" />
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#8B5CF6] shrink-0" />
                   <span className="truncate">Card {cardPct}%</span>
                 </span>
-                <span className="font-bold text-slate-800 shrink-0">{formatINR(pm.card || 0)}</span>
+                <span className="font-extrabold text-slate-800 shrink-0">{formatINR(pm.card || 0)}</span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* COL 3: Top Services (This Month) Table */}
+        {/* COL 3: Top Services Table */}
         <div className="bg-white rounded-2xl border border-slate-200/80 p-2.5 sm:p-3 shadow-2xs flex flex-col justify-between">
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-[#0862EC]" />
-              <h3 className="text-xs font-bold text-slate-800">Top Services (This Month)</h3>
+              <h3 className="text-xs font-bold text-slate-800">Top Services ({periodLabel})</h3>
             </div>
             <button
               onClick={() => navigate('/services')}
@@ -638,14 +702,14 @@ export const DashboardPage: React.FC = () => {
 
           {/* Services Table or Clean Empty State */}
           <div className="space-y-1 flex-1 flex flex-col justify-center">
-            {(data?.top_services || []).length === 0 ? (
+            {topServices.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center p-3 text-center my-auto min-h-[120px]">
                 <div className="w-7 h-7 rounded-lg bg-blue-50 text-[#0862EC] flex items-center justify-center mb-1 shadow-2xs">
                   <Sparkles className="w-3.5 h-3.5" />
                 </div>
                 <div className="text-xs font-bold text-slate-800">No Services Billed Yet</div>
                 <p className="text-[10px] text-slate-400 max-w-[200px] mt-0.5 leading-tight">
-                  Top billed services will automatically appear here once bills are created.
+                  Top services for {periodLabel} will appear here once bills are issued.
                 </p>
                 <button
                   type="button"
@@ -664,8 +728,8 @@ export const DashboardPage: React.FC = () => {
                   <div className="col-span-4 text-right">Orders</div>
                 </div>
 
-                {data.top_services.slice(0, 5).map((srv: any, idx: number) => {
-                  const maxCount = data.top_services[0]?.count || 1;
+                {topServices.slice(0, 5).map((srv: any, idx: number) => {
+                  const maxCount = topServices[0]?.count || 1;
                   const barWidth = Math.round((srv.count / maxCount) * 100);
 
                   return (
@@ -702,14 +766,14 @@ export const DashboardPage: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-bold text-slate-600">Total Income (Receipts)</span>
                 <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-100 text-emerald-700">
-                  {profitMargin > 0 ? `↑ ${profitMargin}%` : 'This Month'}
+                  {periodLabel}
                 </span>
               </div>
               <div className="text-lg sm:text-xl md:text-2xl font-black text-slate-900 leading-snug">
-                {loading ? <Skeleton className="h-6 w-24" /> : formatINR(data?.this_month?.income || 0)}
+                {loading ? <Skeleton className="h-6 w-24" /> : formatINR(income)}
               </div>
               <p className="text-[10px] text-slate-400 font-medium truncate">
-                All customer payments &amp; other income
+                Customer payments &amp; other income ({periodLabel})
               </p>
             </div>
           </div>
@@ -725,14 +789,14 @@ export const DashboardPage: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-bold text-slate-600">Total Outgoing</span>
                 <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-orange-100 text-orange-700">
-                  This Month
+                  {periodLabel}
                 </span>
               </div>
               <div className="text-lg sm:text-xl md:text-2xl font-black text-slate-900 leading-snug">
-                {loading ? <Skeleton className="h-6 w-24" /> : formatINR(data?.this_month?.outgoing || 0)}
+                {loading ? <Skeleton className="h-6 w-24" /> : formatINR(outgoing)}
               </div>
               <p className="text-[10px] text-slate-400 font-medium truncate">
-                {formatINR(data?.this_month?.payments || 0)} vendors + {formatINR(data?.this_month?.expenses || 0)} expenses
+                {formatINR(payments)} vendors + {formatINR(expenses)} expenses
               </p>
             </div>
           </div>
@@ -748,14 +812,14 @@ export const DashboardPage: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-bold text-slate-600">Net Profit</span>
                 <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-100 text-[#0862EC]">
-                  {profitMargin > 0 ? `Margin ${profitMargin}%` : 'Cash Basis'}
+                  {profitMargin !== 0 ? `${profitMargin}% margin` : 'Cash Basis'}
                 </span>
               </div>
-              <div className="text-lg sm:text-xl md:text-2xl font-black text-slate-900 leading-snug">
-                {loading ? <Skeleton className="h-6 w-24" /> : formatINR(data?.this_month?.net_profit || 0)}
+              <div className={`text-lg sm:text-xl md:text-2xl font-black leading-snug ${netProfit < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                {loading ? <Skeleton className="h-6 w-24" /> : formatINR(netProfit)}
               </div>
               <p className="text-[10px] text-slate-400 font-medium truncate">
-                Income minus outgoings (cash basis)
+                Income minus outgoings ({periodLabel})
               </p>
             </div>
           </div>
