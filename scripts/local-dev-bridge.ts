@@ -490,13 +490,21 @@ const server = http.createServer(async (req, res) => {
         });
 
         const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+        const orderParams = reqUrl.searchParams.getAll('order');
         let orderClause = '';
-        if (orderParam) {
-          const parts = orderParam.split(',').map(item => {
-            const [col, dir] = item.split('.');
-            return `"${col}" ${dir?.toLowerCase() === 'desc' ? 'DESC' : 'ASC'}`;
+        if (orderParams.length > 0) {
+          const parts: string[] = [];
+          orderParams.forEach(param => {
+            param.split(',').forEach(item => {
+              const [col, dir] = item.split('.');
+              if (col) {
+                parts.push(`"${col}" ${dir?.toLowerCase() === 'desc' ? 'DESC' : 'ASC'}`);
+              }
+            });
           });
-          orderClause = `ORDER BY ${parts.join(', ')}`;
+          if (parts.length > 0) {
+            orderClause = `ORDER BY ${parts.join(', ')}`;
+          }
         }
 
         let limitClause = '';

@@ -344,7 +344,7 @@ export const NewBillPage: React.FC = () => {
     try {
       // Map items with Particular -> applicant_name & create_job -> is_job
       const mappedItems = validItems.map((it) => ({
-        service_id: it.service_id || null,
+        service_id: it.service_id && it.service_id !== 'null' && it.service_id !== 'undefined' ? it.service_id : null,
         description: it.description.trim(),
         quantity: parseFloat(it.quantity || '1'),
         rate: parseFloat(it.rate || '0'),

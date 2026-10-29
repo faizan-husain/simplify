@@ -36,20 +36,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         .is('deleted_at', null)
         .maybeSingle();
 
-      // If not found by auth_user_id, attempt fallback by mobile number
+      // If not found by auth_user_id, attempt fallback
       if (!memberData && currentUser.email) {
-        const cleanDigits = currentUser.email.replace(/\D/g, '').slice(-10);
-        if (cleanDigits.length === 10) {
-          const { data: memberByMobile } = await supabase
+        if (currentUser.email === 'owner@simplify.com' || currentUser.email.includes('owner')) {
+          const { data: ownerMember } = await supabase
             .from('members')
             .select('*')
-            .eq('mobile', cleanDigits)
+            .eq('role', 'OWNER')
             .eq('active', true)
             .is('deleted_at', null)
+            .order('created_at', { ascending: true })
+            .limit(1)
             .maybeSingle();
+          if (ownerMember) memberData = ownerMember;
+        } else if (currentUser.email === 'staff@simplify.com' || currentUser.email.includes('staff')) {
+          const { data: staffMember } = await supabase
+            .from('members')
+            .select('*')
+            .eq('role', 'STAFF')
+            .eq('active', true)
+            .is('deleted_at', null)
+            .order('created_at', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          if (staffMember) memberData = staffMember;
+        } else {
+          const cleanDigits = currentUser.email.replace(/\D/g, '').slice(-10);
+          if (cleanDigits.length === 10) {
+            const { data: memberByMobile } = await supabase
+              .from('members')
+              .select('*')
+              .eq('mobile', cleanDigits)
+              .eq('active', true)
+              .is('deleted_at', null)
+              .maybeSingle();
 
-          if (memberByMobile) {
-            memberData = memberByMobile;
+            if (memberByMobile) {
+              memberData = memberByMobile;
+            }
           }
         }
       }
