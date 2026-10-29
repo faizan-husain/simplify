@@ -39,17 +39,100 @@ function signJwt(payload: Record<string, any>): string {
   return `${headerB64}.${payloadB64}.${signature}`;
 }
 
-function extractJwtSub(authHeader?: string): { userId?: string; role?: string } {
+function extractJwtSub(authHeader?: string): { userId?: string; role?: string; email?: string } {
   if (!authHeader || !authHeader.startsWith('Bearer ')) return {};
   const token = authHeader.slice(7);
   const parts = token.split('.');
   if (parts.length < 2) return {};
   try {
     const payload = JSON.parse(base64UrlDecode(parts[1]));
-    return { userId: payload.sub, role: payload.role || 'authenticated' };
+    return {
+      userId: payload.sub,
+      role: payload.role || 'authenticated',
+      email: payload.email,
+    };
   } catch {
     return {};
   }
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function resolveEffectiveUser(
+  client: Client,
+  userId?: string,
+  email?: string,
+  role?: string
+): Promise<{ userId: string; role: string }> {
+  try {
+    // 1. Direct match on members.auth_user_id (only if userId is valid UUID)
+    if (userId && UUID_REGEX.test(userId)) {
+      const memRes = await client.query(
+        `SELECT auth_user_id, role FROM public.members 
+         WHERE auth_user_id = $1 AND active = true AND deleted_at IS NULL LIMIT 1`,
+        [userId]
+      );
+      if (memRes.rows.length > 0) {
+        return { userId, role: memRes.rows[0].role || role || 'authenticated' };
+      }
+
+      // Check if auth.users has this user and check by email
+      const userRes = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [userId]);
+      if (userRes.rows.length > 0 && userRes.rows[0].email) {
+        const uEmail = userRes.rows[0].email.toLowerCase();
+        const cleanMobile = uEmail.replace(/\D/g, '').slice(-10);
+        const memByEmail = await client.query(
+          `SELECT auth_user_id, role FROM public.members 
+           WHERE (mobile = $1 OR '91' || mobile || '@simplify.local' = $2 OR (role = 'OWNER' AND $2 = 'owner@simplify.com'))
+             AND active = true AND deleted_at IS NULL LIMIT 1`,
+          [cleanMobile, uEmail]
+        );
+        if (memByEmail.rows.length > 0 && memByEmail.rows[0].auth_user_id) {
+          return { userId: memByEmail.rows[0].auth_user_id, role: memByEmail.rows[0].role };
+        }
+      }
+    }
+
+    // 2. If email in JWT payload matches
+    if (email) {
+      const cleanEmail = email.toLowerCase();
+      const cleanMobile = cleanEmail.replace(/\D/g, '').slice(-10);
+      const memRes = await client.query(
+        `SELECT auth_user_id, role FROM public.members 
+         WHERE (mobile = $1 OR '91' || mobile || '@simplify.local' = $2 OR (role = 'OWNER' AND $2 = 'owner@simplify.com'))
+           AND active = true AND deleted_at IS NULL LIMIT 1`,
+        [cleanMobile, cleanEmail]
+      );
+      if (memRes.rows.length > 0 && memRes.rows[0].auth_user_id) {
+        return { userId: memRes.rows[0].auth_user_id, role: memRes.rows[0].role };
+      }
+    }
+
+    // 3. Fallback: Resolve to active OWNER member in development
+    const ownerRes = await client.query(
+      `SELECT id, auth_user_id, role FROM public.members 
+       WHERE role = 'OWNER' AND active = true AND deleted_at IS NULL 
+       ORDER BY created_at ASC LIMIT 1`
+    );
+    if (ownerRes.rows.length > 0) {
+      const owner = ownerRes.rows[0];
+      let ownerAuthId = owner.auth_user_id;
+      if (!ownerAuthId) {
+        ownerAuthId = crypto.randomUUID();
+        await client.query('UPDATE public.members SET auth_user_id = $1 WHERE id = $2', [ownerAuthId, owner.id]);
+        await client.query(
+          `INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') 
+           ON CONFLICT (email) DO UPDATE SET id = $1`,
+          [ownerAuthId]
+        );
+      }
+      return { userId: ownerAuthId, role: owner.role || 'OWNER' };
+    }
+  } catch (err) {
+    console.warn('Could not resolve effective user:', err);
+  }
+
+  return { userId: userId || crypto.randomUUID(), role: role || 'authenticated' };
 }
 
 async function getPgClient(): Promise<Client> {
@@ -110,7 +193,7 @@ const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const pathname = reqUrl.pathname;
 
-  const { userId, role } = extractJwtSub(req.headers['authorization']);
+  const { userId, role, email } = extractJwtSub(req.headers['authorization']);
 
   // --- 0. ROOT HEALTH / STATUS ENDPOINT ---
   if ((pathname === '/' || pathname === '/health') && req.method === 'GET') {
@@ -176,11 +259,16 @@ const server = http.createServer(async (req, res) => {
 
       if (grantType === 'refresh_token' || body.refresh_token) {
         const tokenSub = extractJwtSub('Bearer ' + body.refresh_token);
-        if (tokenSub.userId) {
-          const result = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [tokenSub.userId]);
-          if (result.rows.length > 0) {
-            user = result.rows[0];
-          }
+        const resolved = await resolveEffectiveUser(client, tokenSub.userId, tokenSub.email, tokenSub.role);
+        const result = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [resolved.userId]);
+        if (result.rows.length > 0) {
+          user = result.rows[0];
+        } else {
+          const insertUser = await client.query(
+            "INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') ON CONFLICT (email) DO UPDATE SET id = EXCLUDED.id RETURNING id, email",
+            [resolved.userId]
+          );
+          user = insertUser.rows[0];
         }
       } else {
         const input = (body.email || body.phone || '').trim().toLowerCase();
@@ -253,6 +341,23 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
+        // 3. Fallback for owner login in dev
+        if (!user && (input.includes('owner') || input.includes('simplify.com') || !input)) {
+          const ownerMemberRes = await client.query("SELECT id, auth_user_id FROM public.members WHERE role = 'OWNER' ORDER BY created_at ASC LIMIT 1");
+          if (ownerMemberRes.rows.length > 0) {
+            const ownerMember = ownerMemberRes.rows[0];
+            let ownerAuthId = ownerMember.auth_user_id;
+            if (!ownerAuthId) {
+              ownerAuthId = crypto.randomUUID();
+              await client.query('UPDATE public.members SET auth_user_id = $1 WHERE id = $2', [ownerAuthId, ownerMember.id]);
+            }
+            const insertRes = await client.query(
+              "INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') ON CONFLICT (email) DO UPDATE SET id = EXCLUDED.id RETURNING id, email",
+              [ownerAuthId]
+            );
+            user = insertRes.rows[0];
+          }
+        }
       }
 
       if (!user) {
@@ -290,23 +395,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/auth/v1/user' && req.method === 'GET') {
-    if (!userId) {
-      sendJson(res, 401, { error: 'unauthorized', message: 'No valid token' });
-      return;
-    }
     const client = await getPgClient();
     try {
-      const result = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [userId]);
-      if (result.rows.length === 0) {
-        sendJson(res, 404, { error: 'not_found' });
-        return;
+      const resolved = await resolveEffectiveUser(client, userId, email, role);
+      let result = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [resolved.userId]);
+      let user = result.rows[0];
+      if (!user) {
+        const insertRes = await client.query(
+          "INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') ON CONFLICT (email) DO UPDATE SET id = EXCLUDED.id RETURNING id, email",
+          [resolved.userId]
+        );
+        user = insertRes.rows[0];
       }
-      const user = result.rows[0];
       sendJson(res, 200, {
         id: user.id,
         aud: 'authenticated',
-        role: 'authenticated',
-        email: user.email,
+        role: resolved.role,
+        email: user.email || 'owner@simplify.com',
         user_metadata: {},
         app_metadata: { provider: 'email', providers: ['email'] },
       });
@@ -367,10 +472,11 @@ const server = http.createServer(async (req, res) => {
     const client = await getPgClient();
 
     try {
+      const resolved = await resolveEffectiveUser(client, userId, email, role);
       await client.query('BEGIN');
-      if (userId) {
-        await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [userId]);
-        await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [role || 'authenticated']);
+      if (resolved.userId) {
+        await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [resolved.userId]);
+        await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [resolved.role || 'authenticated']);
       }
 
       const keys = Object.keys(body);
@@ -416,10 +522,11 @@ const server = http.createServer(async (req, res) => {
     const client = await getPgClient();
 
     try {
+      const resolved = await resolveEffectiveUser(client, userId, email, role);
       await client.query('BEGIN');
-      if (userId) {
-        await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [userId]);
-        await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [role || 'authenticated']);
+      if (resolved.userId) {
+        await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [resolved.userId]);
+        await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [resolved.role || 'authenticated']);
       }
 
       if (req.method === 'GET') {

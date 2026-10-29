@@ -28,14 +28,15 @@ async function runSeed() {
 
     // Clean previous demo business and demo auth users if re-running seed
     await client.query(`
-      DELETE FROM public.businesses WHERE mobile = '9876543210' OR email = 'owner@simplify.com';
-      DELETE FROM auth.users WHERE email IN ('owner@simplify.com', 'staff@simplify.com', '919876543210@simplify.local', '919876543211@simplify.local');
+      DELETE FROM public.members WHERE auth_user_id IN ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
+      DELETE FROM public.businesses WHERE mobile IN ('9876543210', '9876543211') OR email = 'owner@simplify.com';
+      DELETE FROM auth.users WHERE email IN ('owner@simplify.com', 'staff@simplify.com', '919876543210@simplify.local', '919876543211@simplify.local') OR id IN ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222');
     `);
 
     // 1. Create Business
     const bizId = uuid();
-    const ownerAuthId = uuid();
-    const staff1AuthId = uuid();
+    const ownerAuthId = '11111111-1111-1111-1111-111111111111';
+    const staff1AuthId = '22222222-2222-2222-2222-222222222222';
 
     console.log('Seeding Business: Global Xerox & Doc Services...');
     await client.query(`
@@ -80,18 +81,15 @@ async function runSeed() {
 
     // 2. Auth Users & Members
     console.log('Seeding Auth Users & Team Members...');
-    const userRes = await client.query(`
+    await client.query(`
       INSERT INTO auth.users (id, email) VALUES
-        ($1, '919876543210@simplify.local'),
-        ($2, '919876543211@simplify.local'),
-        (gen_random_uuid(), 'owner@simplify.com'),
-        (gen_random_uuid(), 'staff@simplify.com')
-      ON CONFLICT (email) DO UPDATE SET updated_at = now()
-      RETURNING id, email
+        ($1, 'owner@simplify.com'),
+        ($2, 'staff@simplify.com')
+      ON CONFLICT (email) DO UPDATE SET id = EXCLUDED.id, updated_at = now()
     `, [ownerAuthId, staff1AuthId]);
 
-    const actualOwnerAuthId = userRes.rows.find(r => r.email === '919876543210@simplify.local')?.id || ownerAuthId;
-    const actualStaff1AuthId = userRes.rows.find(r => r.email === '919876543211@simplify.local')?.id || staff1AuthId;
+    const actualOwnerAuthId = ownerAuthId;
+    const actualStaff1AuthId = staff1AuthId;
 
     const ownerMemberId = uuid();
     const staff1MemberId = uuid();

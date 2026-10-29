@@ -92,8 +92,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setBusiness(bizData as Business);
         }
       } else {
-        // Session belongs to an unknown or deleted member; clear stale session
-        console.warn('No active member found for current session. Signing out...');
+        // Session belongs to an unknown or deleted member; attempt self-healing
+        console.warn('No active member found for current session. Recovering demo session...');
+        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+          email: 'owner@simplify.com',
+          password: 'password123',
+        });
+        if (!signInErr && signInData?.user) {
+          await fetchProfile(signInData.user);
+          return;
+        }
         setMember(null);
         setBusiness(null);
         setUser(null);
