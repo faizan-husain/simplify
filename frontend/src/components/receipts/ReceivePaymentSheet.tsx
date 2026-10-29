@@ -46,6 +46,8 @@ interface CustomerOption {
   name: string;
   mobile: string | null;
   type: string;
+  total_due?: number;
+  bill_count?: number;
 }
 
 const PAYMENT_MODES = [
@@ -145,26 +147,49 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
     }
   }, [open, prefillCustomer]);
 
-  // Search customers
+  // Search customers: when INVOICE_PAYMENT, ONLY fetch customers who have pending dues!
   useEffect(() => {
     if (!open || selectedCustomer) return;
     const fetchCustomers = async () => {
       setSearchingCustomers(true);
       try {
-        let q = supabase
-          .from('customers')
-          .select('id, name, mobile, type')
-          .is('deleted_at', null)
-          .order('name', { ascending: true })
-          .limit(20);
+        if (receiptKind === 'INVOICE_PAYMENT') {
+          // Fetch from dues_list RPC so ONLY customers with dues > 0 are shown!
+          const { data, error } = await supabase.rpc('dues_list', {
+            p_filter: 'ALL',
+            p_search: customerSearch.trim() || null,
+            p_limit: 50,
+            p_offset: 0,
+          });
+          if (error) throw error;
+          const customersWithDues = ((data as any)?.customers || [])
+            .filter((c: any) => Number(c.total_due) > 0)
+            .map((c: any) => ({
+              id: c.customer_id,
+              name: c.customer_name,
+              mobile: c.customer_mobile,
+              type: c.customer_type,
+              total_due: Number(c.total_due),
+              bill_count: Number(c.bill_count),
+            }));
+          setCustomerOptions(customersWithDues);
+        } else {
+          // OTHER_INCOME: standard customers list
+          let q = supabase
+            .from('customers')
+            .select('id, name, mobile, type')
+            .is('deleted_at', null)
+            .order('name', { ascending: true })
+            .limit(30);
 
-        if (customerSearch.trim()) {
-          q = q.or(`name.ilike.%${customerSearch.trim()}%,mobile.ilike.%${customerSearch.trim()}%`);
+          if (customerSearch.trim()) {
+            q = q.or(`name.ilike.%${customerSearch.trim()}%,mobile.ilike.%${customerSearch.trim()}%`);
+          }
+
+          const { data, error } = await q;
+          if (error) throw error;
+          setCustomerOptions(data || []);
         }
-
-        const { data, error } = await q;
-        if (error) throw error;
-        setCustomerOptions(data || []);
       } catch (err: any) {
         console.error('Error fetching customers:', err);
       } finally {
@@ -172,9 +197,45 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
       }
     };
 
-    const timer = setTimeout(fetchCustomers, 250);
+    const timer = setTimeout(fetchCustomers, 200);
     return () => clearTimeout(timer);
-  }, [customerSearch, open, selectedCustomer]);
+  }, [customerSearch, open, selectedCustomer, receiptKind]);
+
+  // FIFO Auto-allocation (Oldest First)
+  const autoAllocate = (amountStr: string, currentInvoices: OutstandingInvoice[] = invoices) => {
+    const totalToAllocate = parseFloat(amountStr);
+    if (isNaN(totalToAllocate) || totalToAllocate <= 0) {
+      const emptyAllocs: { [id: string]: string } = {};
+      currentInvoices.forEach((inv) => {
+        emptyAllocs[inv.id] = '';
+      });
+      setAllocations(emptyAllocs);
+      return;
+    }
+
+    let remaining = totalToAllocate;
+    const newAllocs: { [id: string]: string } = {};
+
+    // Invoices are already sorted oldest first by the RPC
+    currentInvoices.forEach((inv) => {
+      if (remaining <= 0) {
+        newAllocs[inv.id] = '0';
+      } else {
+        const take = Math.min(inv.balance, remaining);
+        newAllocs[inv.id] = take.toFixed(2).replace(/\.00$/, '');
+        remaining -= take;
+      }
+    });
+
+    setAllocations(newAllocs);
+  };
+
+  const handleReceiptAmountChange = (val: string) => {
+    setReceiptAmount(val);
+    if (receiptKind === 'INVOICE_PAYMENT' && invoices.length > 0) {
+      autoAllocate(val, invoices);
+    }
+  };
 
   // Fetch outstanding invoices when customer changes
   useEffect(() => {
@@ -200,6 +261,8 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
           const bal = inv ? inv.balance : prefillInvoice.balance;
           setAllocations({ [prefillInvoice.id]: bal.toString() });
           setReceiptAmount(bal.toString());
+        } else if (list.length > 0 && receiptAmount) {
+          autoAllocate(receiptAmount, list);
         }
       } catch (err: any) {
         showToast(getErrorMessage(err.message), 'error');
@@ -246,10 +309,21 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
     if (!isNaN(num) && num > maxBalance) {
       value = maxBalance.toString();
     }
-    setAllocations((prev) => ({
-      ...prev,
+    const updated = {
+      ...allocations,
       [invoiceId]: value,
-    }));
+    };
+    setAllocations(updated);
+
+    // Sum updated allocations and update receipt amount
+    let sum = 0;
+    Object.values(updated).forEach((v) => {
+      const n = parseFloat(v);
+      if (!isNaN(n) && n > 0) sum += n;
+    });
+    if (sum > 0) {
+      setReceiptAmount(sum.toFixed(2).replace(/\.00$/, ''));
+    }
   };
 
   // Quick 1-tap: Pay all customer dues
@@ -264,7 +338,7 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
 
   const handleSaveReceipt = async () => {
     if (receiptKind === 'INVOICE_PAYMENT' && !selectedCustomer) {
-      showToast('Please select a customer', 'error');
+      showToast('Please select a customer with dues', 'error');
       return;
     }
 
@@ -273,14 +347,42 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
       return;
     }
 
+    // Auto-allocate if user entered amount but allocations are incomplete
+    let finalAllocations = { ...allocations };
     if (receiptKind === 'INVOICE_PAYMENT') {
-      if (totalAllocated > amountNum) {
+      let currentAllocTotal = Object.values(finalAllocations).reduce(
+        (sum, v) => sum + (parseFloat(v) || 0),
+        0
+      );
+
+      if (currentAllocTotal < amountNum && invoices.length > 0) {
+        let remaining = amountNum;
+        const autoAllocs: { [id: string]: string } = {};
+        invoices.forEach((inv) => {
+          if (remaining <= 0) {
+            autoAllocs[inv.id] = '0';
+          } else {
+            const take = Math.min(inv.balance, remaining);
+            autoAllocs[inv.id] = take.toFixed(2).replace(/\.00$/, '');
+            remaining -= take;
+          }
+        });
+        finalAllocations = autoAllocs;
+        setAllocations(autoAllocs);
+      }
+
+      const verifiedTotal = Object.values(finalAllocations).reduce(
+        (sum, v) => sum + (parseFloat(v) || 0),
+        0
+      );
+      if (verifiedTotal > amountNum) {
         showToast('Allocations cannot exceed the receipt amount', 'error');
         return;
       }
 
-      // Validation per BR-7: unallocated > 0 with remaining dues is prohibited
-      if (unallocated > 0 && remainingDue > 0) {
+      const verUnallocated = Math.max(0, amountNum - verifiedTotal);
+      const verRemainingDue = Math.max(0, totalCustomerDue - verifiedTotal);
+      if (verUnallocated > 0 && verRemainingDue > 0) {
         showToast('All outstanding bills must be allocated before saving excess as advance', 'error');
         return;
       }
@@ -307,7 +409,7 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
       } else {
         payload.kind = 'INVOICE_PAYMENT';
         payload.customer_id = selectedCustomer!.id;
-        payload.allocations = Object.entries(allocations)
+        payload.allocations = Object.entries(finalAllocations)
           .filter(([_, val]) => {
             const num = parseFloat(val);
             return !isNaN(num) && num > 0;
@@ -375,7 +477,32 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
                 <span className="font-bold text-slate-900">{selectedCustomer.name}</span>
               </div>
             )}
-            <div className="flex justify-between">
+            {selectedCustomer && receiptKind === 'INVOICE_PAYMENT' && (
+              <div className="pt-2 border-t border-slate-200 space-y-1">
+                <div className="flex justify-between text-slate-600">
+                  <span>Total Due (Before):</span>
+                  <span className="font-bold text-slate-800">{formatINR(totalCustomerDue)}</span>
+                </div>
+                <div className="flex justify-between text-success">
+                  <span>Amount Paid Now:</span>
+                  <span className="font-black">-{formatINR(savedReceipt.amount)}</span>
+                </div>
+                <div className="flex justify-between font-black pt-1 border-t border-slate-200">
+                  <span className="text-slate-900">Remaining Balance Due:</span>
+                  <span
+                    className={
+                      remainingDue > 0
+                        ? 'text-rose-600 text-sm font-extrabold'
+                        : 'text-emerald-700 text-sm font-extrabold'
+                    }
+                  >
+                    {formatINR(remainingDue)}
+                    {remainingDue === 0 && ' (All Cleared ✓)'}
+                  </span>
+                </div>
+              </div>
+            )}
+            <div className="flex justify-between pt-2 border-t border-slate-200">
               <span className="text-slate-500">Payment Mode</span>
               <span className="font-bold text-slate-900">{savedReceipt.mode}</span>
             </div>
@@ -509,7 +636,7 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
                 )}
 
                 {!searchingCustomers && customerOptions.length > 0 && (
-                  <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 bg-white shadow-sm">
+                  <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 bg-white shadow-sm">
                     {customerOptions.map((c) => (
                       <button
                         key={c.id}
@@ -520,15 +647,31 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
                           setCustomerSearch('');
                         }}
                       >
-                        <div>
-                          <span className="font-bold text-slate-900">{c.name}</span>
-                          <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                            {c.type}
-                          </span>
+                        <div className="min-w-0 pr-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-slate-900">{c.name}</span>
+                            {c.total_due !== undefined && c.total_due > 0 && (
+                              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200">
+                                Due: {formatINR(c.total_due)} ({c.bill_count} {c.bill_count === 1 ? 'bill' : 'bills'})
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            {c.mobile ? `📞 ${c.mobile}` : 'No mobile'}
+                          </div>
                         </div>
-                        <span className="text-slate-500">{c.mobile || ''}</span>
+                        <span className="text-primary text-[11px] font-bold shrink-0">
+                          Select →
+                        </span>
                       </button>
                     ))}
+                  </div>
+                )}
+                {!searchingCustomers && customerOptions.length === 0 && (
+                  <div className="text-xs text-slate-500 p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                    {receiptKind === 'INVOICE_PAYMENT'
+                      ? 'No customers with pending dues found.'
+                      : 'No matching customers found.'}
                   </div>
                 )}
               </div>
@@ -555,10 +698,28 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
             </div>
           )}
 
-          {/* 2. Outstanding Bills & Allocations (if Customer Bill Payment) */}
+          {/* 2. Payment Amount & Date */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <AmountInput
+              label="Total Amount Received (₹)"
+              value={receiptAmount}
+              onChange={handleReceiptAmountChange}
+              required
+            />
+
+            <Input
+              label="Payment Date"
+              type="date"
+              value={receiptDate}
+              onChange={(e) => setReceiptDate(e.target.value)}
+              required
+            />
+          </div>
+
+          {/* 3. Outstanding Bills & Allocations (if Customer Bill Payment) */}
           {receiptKind === 'INVOICE_PAYMENT' && selectedCustomer && (
             <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
                     Pending Invoices (Oldest First)
@@ -568,19 +729,61 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
                   </span>
                 </div>
 
-                {invoices.length > 0 && totalCustomerDue > 0 && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handlePayAllDues}
-                    className="border-primary text-primary hover:bg-primary/5 text-xs font-bold"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 mr-1" />
-                    Pay All Dues ({formatINR(totalCustomerDue)})
-                  </Button>
-                )}
+                <div className="flex items-center gap-1.5 self-end sm:self-auto">
+                  {invoices.length > 0 && receiptAmount && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => autoAllocate(receiptAmount, invoices)}
+                      className="border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-bold"
+                      title="Auto distribute entered amount oldest-first"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 mr-1 text-primary" />
+                      Auto-Allocate
+                    </Button>
+                  )}
+                  {invoices.length > 0 && totalCustomerDue > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handlePayAllDues}
+                      className="border-primary text-primary hover:bg-primary/5 text-xs font-bold"
+                    >
+                      Pay All Dues ({formatINR(totalCustomerDue)})
+                    </Button>
+                  )}
+                </div>
               </div>
+
+              {/* Live 3-Part Dues Ledger Card */}
+              {invoices.length > 0 && (
+                <div className="grid grid-cols-3 gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-center">
+                  <div>
+                    <div className="text-[10px] text-slate-500 font-bold uppercase">Total Due</div>
+                    <div className="text-xs sm:text-sm font-black text-slate-800">
+                      {formatINR(totalCustomerDue)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-slate-500 font-bold uppercase">Paying Now</div>
+                    <div className="text-xs sm:text-sm font-black text-success">
+                      {formatINR(totalAllocated || amountNum || 0)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-slate-500 font-bold uppercase">Remaining Due</div>
+                    <div
+                      className={`text-xs sm:text-sm font-black ${
+                        remainingDue > 0 ? 'text-rose-600' : 'text-emerald-700'
+                      }`}
+                    >
+                      {formatINR(remainingDue)}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {loadingInvoices ? (
                 <div className="p-4 text-center text-xs text-slate-400 border border-slate-200 rounded-xl">
@@ -593,74 +796,79 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
               ) : (
                 <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100 bg-white">
                   <div className="bg-slate-50 grid grid-cols-12 p-2.5 text-[11px] font-bold text-slate-600">
-                    <div className="col-span-4">Bill # / Date</div>
+                    <div className="col-span-5">Bill # / Date</div>
                     <div className="col-span-3 text-right">Balance Due</div>
-                    <div className="col-span-5 text-right font-bold text-slate-900">
+                    <div className="col-span-4 text-right font-bold text-slate-900">
                       Allocate (₹)
                     </div>
                   </div>
 
-                  {invoices.map((inv) => (
-                    <div key={inv.id} className="grid grid-cols-12 p-2.5 items-center text-xs gap-2">
-                      <div className="col-span-4">
-                        <div className="font-bold text-slate-900">#{inv.number}</div>
-                        <div className="text-[11px] text-slate-500">
-                          {formatDate(inv.invoice_date)}
-                          {inv.is_overdue && (
-                            <span className="text-danger font-bold ml-1">
-                              ({inv.days_overdue}d late)
-                            </span>
-                          )}
+                  {invoices.map((inv) => {
+                    const allocVal = parseFloat(allocations[inv.id] || '0') || 0;
+                    const isFullyAllocated = allocVal >= inv.balance;
+                    const isPartiallyAllocated = allocVal > 0 && allocVal < inv.balance;
+
+                    return (
+                      <div
+                        key={inv.id}
+                        className="grid grid-cols-12 p-2.5 items-center text-xs gap-1 sm:gap-2"
+                      >
+                        <div className="col-span-5 min-w-0 pr-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-slate-900">#{inv.number}</span>
+                            {isFullyAllocated && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                Paid ✓
+                              </span>
+                            )}
+                            {isPartiallyAllocated && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded font-extrabold bg-amber-50 text-amber-800 border border-amber-200">
+                                Partial ({formatINR(inv.balance - allocVal)} left)
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            {formatDate(inv.invoice_date)}
+                            {inv.is_overdue && (
+                              <span className="text-danger font-bold ml-1">
+                                ({inv.days_overdue}d late)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="col-span-3 text-right font-black text-danger text-xs">
+                          {formatINR(inv.balance)}
+                        </div>
+
+                        <div className="col-span-4 flex items-center justify-end gap-1">
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="0.00"
+                            value={allocations[inv.id] || ''}
+                            onChange={(e) =>
+                              handleAllocationChange(inv.id, e.target.value, inv.balance)
+                            }
+                            className="w-20 sm:w-24 p-1.5 text-right text-xs font-bold border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleAllocationChange(inv.id, inv.balance.toString(), inv.balance)
+                            }
+                            className="text-[10px] text-primary font-bold hover:underline px-1 py-1 shrink-0"
+                          >
+                            Full
+                          </button>
                         </div>
                       </div>
-
-                      <div className="col-span-3 text-right font-black text-danger text-xs">
-                        {formatINR(inv.balance)}
-                      </div>
-
-                      <div className="col-span-5 flex items-center justify-end gap-1.5">
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={allocations[inv.id] || ''}
-                          onChange={(e) =>
-                            handleAllocationChange(inv.id, e.target.value, inv.balance)
-                          }
-                          className="w-24 p-1.5 text-right text-xs font-bold border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleAllocationChange(inv.id, inv.balance.toString(), inv.balance)}
-                          className="text-[10px] text-primary font-bold hover:underline px-1 py-1"
-                        >
-                          Full
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
           )}
-
-          {/* 3. Payment Amount & Date */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <AmountInput
-              label="Total Amount Received (₹)"
-              value={receiptAmount}
-              onChange={setReceiptAmount}
-              required
-            />
-
-            <Input
-              label="Payment Date"
-              type="date"
-              value={receiptDate}
-              onChange={(e) => setReceiptDate(e.target.value)}
-              required
-            />
-          </div>
 
           {/* 4. Payment Mode Selection */}
           <div className="space-y-1.5">

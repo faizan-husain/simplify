@@ -41,11 +41,18 @@ export interface ReceiptDocumentProps {
     receipt_header?: string | null;
     receipt_footer?: string | null;
   } | null;
+  ledger_summary?: {
+    previous_due: number;
+    amount_paid: number;
+    allocated_to_bills: number;
+    remaining_due: number;
+    customer_advance: number;
+  } | null;
   format?: 'a4' | 'thermal58' | 'thermal80';
 }
 
 export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
-  ({ receipt, customer, allocations = [], business, format = 'a4' }, ref) => {
+  ({ receipt, customer, allocations = [], ledger_summary, business, format = 'a4' }, ref) => {
     const isThermal = format === 'thermal58' || format === 'thermal80';
     const is58 = format === 'thermal58';
 
@@ -111,16 +118,31 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
             </div>
           )}
 
-          {/* Totals */}
-          <div className="py-2 border-b border-black space-y-0.5 text-[10px]">
-            <div className="flex justify-between text-xs font-bold pt-0.5">
-              <span>TOTAL RECEIVED:</span>
+          {/* Totals & Dues Ledger Summary */}
+          <div className="py-2 border-b border-black space-y-1 text-[10px]">
+            {ledger_summary && (
+              <div className="flex justify-between text-[10px] text-gray-700">
+                <span>Total Balance Due:</span>
+                <span className="font-semibold">{formatINR(ledger_summary.previous_due)}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-xs font-bold pt-0.5 border-t border-dashed border-gray-300">
+              <span>AMOUNT PAID:</span>
               <span>{formatINR(receipt.amount)}</span>
             </div>
-            {(receipt.unallocated_amount || 0) > 0 && (
-              <div className="flex justify-between text-[9px] text-gray-700">
+            {ledger_summary && (
+              <div className="flex justify-between text-[11px] font-black pt-0.5 border-t border-black">
+                <span>REMAINING DUE:</span>
+                <span className={ledger_summary.remaining_due > 0 ? 'text-black font-extrabold' : 'font-extrabold'}>
+                  {formatINR(ledger_summary.remaining_due)}
+                  {ledger_summary.remaining_due === 0 && ' (Cleared)'}
+                </span>
+              </div>
+            )}
+            {(receipt.unallocated_amount || ledger_summary?.customer_advance || 0) > 0 && (
+              <div className="flex justify-between text-[9px] text-gray-700 font-bold border-t border-dashed border-gray-300 pt-0.5">
                 <span>Customer Advance:</span>
-                <span>{formatINR(receipt.unallocated_amount || 0)}</span>
+                <span>+{formatINR(receipt.unallocated_amount || ledger_summary?.customer_advance || 0)}</span>
               </div>
             )}
           </div>
@@ -276,27 +298,48 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
           )}
         </div>
 
-        {/* Summary Card */}
+        {/* Summary Card with Ledger Dues Accounting */}
         <div className="flex justify-end mb-8">
-          <div className="w-72 bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2">
-            <div className="flex justify-between text-xs text-slate-600">
-              <span>Total Received:</span>
-              <span className="font-black text-slate-900 text-base">{formatINR(receipt.amount)}</span>
+          <div className="w-80 bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2">
+            {ledger_summary && (
+              <div className="flex justify-between text-xs text-slate-600">
+                <span className="font-medium">Total Balance Due (Before):</span>
+                <span className="font-bold text-slate-800">{formatINR(ledger_summary.previous_due)}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-xs text-slate-700 pt-1 border-t border-slate-200">
+              <span className="font-bold">Amount Paid (Received):</span>
+              <span className="font-black text-success text-base">{formatINR(receipt.amount)}</span>
             </div>
             {receipt.kind === 'INVOICE_PAYMENT' && allocations.length > 0 && (
-              <div className="flex justify-between text-xs text-slate-500 border-t border-slate-200 pt-2">
-                <span>Allocated to Bills:</span>
-                <span className="font-semibold text-slate-800">
+              <div className="flex justify-between text-[11px] text-slate-500">
+                <span>Allocated to Selected Bills:</span>
+                <span className="font-semibold text-slate-700">
                   {formatINR(
                     allocations.reduce((sum, a) => sum + parseFloat(String(a.allocated_amount || 0)), 0)
                   )}
                 </span>
               </div>
             )}
-            {(receipt.unallocated_amount || 0) > 0 && (
-              <div className="flex justify-between text-xs font-semibold text-primary border-t border-primary/20 pt-2">
+            {ledger_summary && (
+              <div className="flex justify-between text-xs font-black pt-2 border-t border-slate-300">
+                <span className="text-slate-900">Remaining Balance Due:</span>
+                <span
+                  className={
+                    ledger_summary.remaining_due > 0
+                      ? 'text-rose-600 font-extrabold text-sm'
+                      : 'text-emerald-700 font-extrabold text-sm'
+                  }
+                >
+                  {formatINR(ledger_summary.remaining_due)}
+                  {ledger_summary.remaining_due === 0 && ' (Cleared ✓)'}
+                </span>
+              </div>
+            )}
+            {(receipt.unallocated_amount || ledger_summary?.customer_advance || 0) > 0 && (
+              <div className="flex justify-between text-xs font-semibold text-primary border-t border-primary/20 pt-1.5">
                 <span>Added to Advance Balance:</span>
-                <span>+{formatINR(receipt.unallocated_amount || 0)}</span>
+                <span>+{formatINR(receipt.unallocated_amount || ledger_summary?.customer_advance || 0)}</span>
               </div>
             )}
           </div>

@@ -28,6 +28,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
     receipt: any;
     customer: any;
     allocations: any[];
+    ledger_summary?: any;
     business: any;
   } | null>(null);
 
@@ -175,6 +176,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                 receipt={data.receipt}
                 customer={data.customer}
                 allocations={data.allocations}
+                ledger_summary={data.ledger_summary}
                 business={data.business}
                 format={format}
               />
