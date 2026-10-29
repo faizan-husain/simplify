@@ -183,26 +183,75 @@ const server = http.createServer(async (req, res) => {
           }
         }
       } else {
-        const input = (body.email || '').trim().toLowerCase();
-        let result = await client.query('SELECT id, email FROM auth.users WHERE LOWER(email) = $1', [input]);
-        if (result.rows.length === 0) {
-          const cleanDigits = input.replace(/\D/g, '');
-          if (cleanDigits.length >= 10) {
-            const memberRes = await client.query(
-              `SELECT m.auth_user_id, u.email 
-               FROM members m 
-               JOIN auth.users u ON u.id = m.auth_user_id 
-               WHERE (m.mobile = $1 OR m.mobile = $2 OR u.email = '91' || $1 || '@simplify.local')
-               LIMIT 1`,
-              [cleanDigits.slice(-10), cleanDigits]
-            );
-            if (memberRes.rows.length > 0) {
-              result = { rows: [{ id: memberRes.rows[0].auth_user_id, email: memberRes.rows[0].email }] } as any;
+        const input = (body.email || body.phone || '').trim().toLowerCase();
+        const cleanDigits = input.replace(/\D/g, '');
+
+        // 1. Try finding member by mobile number first (e.g. 9876543210 or 919876543210@simplify.local)
+        if (cleanDigits.length >= 10) {
+          const mobile10 = cleanDigits.slice(-10);
+          const memberRes = await client.query(
+            `SELECT id, business_id, auth_user_id, name, mobile, role 
+             FROM public.members 
+             WHERE (mobile = $1 OR mobile = $2) AND active = true AND deleted_at IS NULL 
+             ORDER BY created_at ASC 
+             LIMIT 1`,
+            [mobile10, cleanDigits]
+          );
+
+          if (memberRes.rows.length > 0) {
+            const member = memberRes.rows[0];
+            let memberAuthId = member.auth_user_id;
+            const syntheticEmail = `91${member.mobile}@simplify.local`;
+
+            if (!memberAuthId) {
+              memberAuthId = crypto.randomUUID();
+              await client.query('UPDATE public.members SET auth_user_id = $1 WHERE id = $2', [memberAuthId, member.id]);
+            }
+
+            // Ensure auth.users has this exact user ID
+            const userCheck = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [memberAuthId]);
+            if (userCheck.rows.length > 0) {
+              user = userCheck.rows[0];
+            } else {
+              // Delete any conflict on email first if it had another random id
+              await client.query('DELETE FROM auth.users WHERE LOWER(email) = $1', [syntheticEmail.toLowerCase()]);
+              const insertRes = await client.query(
+                'INSERT INTO auth.users (id, email) VALUES ($1, $2) RETURNING id, email',
+                [memberAuthId, syntheticEmail]
+              );
+              user = insertRes.rows[0];
             }
           }
         }
-        if (result.rows.length > 0) {
-          user = result.rows[0];
+
+        // 2. If not found by mobile, search auth.users by email directly
+        if (!user && input) {
+          const result = await client.query('SELECT id, email FROM auth.users WHERE LOWER(email) = $1', [input]);
+          if (result.rows.length > 0) {
+            const foundUser = result.rows[0];
+            // Check if linked to a member
+            const memberRes = await client.query('SELECT id, auth_user_id FROM public.members WHERE auth_user_id = $1', [foundUser.id]);
+            if (memberRes.rows.length > 0) {
+              user = foundUser;
+            } else if (input === 'owner@simplify.com') {
+              // Link owner@simplify.com to primary OWNER member
+              const ownerMemberRes = await client.query("SELECT id, auth_user_id FROM public.members WHERE role = 'OWNER' ORDER BY created_at ASC LIMIT 1");
+              if (ownerMemberRes.rows.length > 0) {
+                const ownerMember = ownerMemberRes.rows[0];
+                if (ownerMember.auth_user_id) {
+                  const linkedAuth = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [ownerMember.auth_user_id]);
+                  user = linkedAuth.rows[0] || { id: ownerMember.auth_user_id, email: input };
+                } else {
+                  await client.query('UPDATE public.members SET auth_user_id = $1 WHERE id = $2', [foundUser.id, ownerMember.id]);
+                  user = foundUser;
+                }
+              } else {
+                user = foundUser;
+              }
+            } else {
+              user = foundUser;
+            }
+          }
         }
       }
 

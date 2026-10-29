@@ -82,16 +82,16 @@ async function runSeed() {
     console.log('Seeding Auth Users & Team Members...');
     const userRes = await client.query(`
       INSERT INTO auth.users (id, email) VALUES
-        ($1, 'owner@simplify.com'),
-        ($2, 'staff@simplify.com'),
-        (gen_random_uuid(), '919876543210@simplify.local'),
-        (gen_random_uuid(), '919876543211@simplify.local')
+        ($1, '919876543210@simplify.local'),
+        ($2, '919876543211@simplify.local'),
+        (gen_random_uuid(), 'owner@simplify.com'),
+        (gen_random_uuid(), 'staff@simplify.com')
       ON CONFLICT (email) DO UPDATE SET updated_at = now()
       RETURNING id, email
     `, [ownerAuthId, staff1AuthId]);
 
-    const actualOwnerAuthId = userRes.rows.find(r => r.email === 'owner@simplify.com')?.id || ownerAuthId;
-    const actualStaff1AuthId = userRes.rows.find(r => r.email === 'staff@simplify.com')?.id || staff1AuthId;
+    const actualOwnerAuthId = userRes.rows.find(r => r.email === '919876543210@simplify.local')?.id || ownerAuthId;
+    const actualStaff1AuthId = userRes.rows.find(r => r.email === '919876543211@simplify.local')?.id || staff1AuthId;
 
     const ownerMemberId = uuid();
     const staff1MemberId = uuid();

@@ -72,7 +72,7 @@ export const Layout: React.FC = () => {
     );
   }
 
-  if (!user) {
+  if (!user || !member) {
     return <Navigate to="/login" replace />;
   }
 

@@ -28,13 +28,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const fetchProfile = async (currentUser: User) => {
     try {
-      const { data: memberData } = await supabase
+      let { data: memberData } = await supabase
         .from('members')
         .select('*')
         .eq('auth_user_id', currentUser.id)
         .eq('active', true)
         .is('deleted_at', null)
         .maybeSingle();
+
+      // If not found by auth_user_id, attempt fallback by mobile number
+      if (!memberData && currentUser.email) {
+        const cleanDigits = currentUser.email.replace(/\D/g, '').slice(-10);
+        if (cleanDigits.length === 10) {
+          const { data: memberByMobile } = await supabase
+            .from('members')
+            .select('*')
+            .eq('mobile', cleanDigits)
+            .eq('active', true)
+            .is('deleted_at', null)
+            .maybeSingle();
+
+          if (memberByMobile) {
+            memberData = memberByMobile;
+          }
+        }
+      }
 
       if (memberData) {
         setMember(memberData as Member);
@@ -50,8 +68,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setBusiness(bizData as Business);
         }
       } else {
+        // Session belongs to an unknown or deleted member; clear stale session
+        console.warn('No active member found for current session. Signing out...');
         setMember(null);
         setBusiness(null);
+        setUser(null);
+        setSession(null);
+        await supabase.auth.signOut().catch(() => {});
       }
     } catch (err) {
       console.error('Error fetching profile:', err);
