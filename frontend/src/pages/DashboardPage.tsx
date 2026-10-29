@@ -117,10 +117,105 @@ export const DashboardPage: React.FC = () => {
   const totalReceived = Number(pm.total || 0);
   const hasPayments = totalReceived > 0;
 
-  const cashPct = hasPayments ? Math.round(((pm.cash || 0) / totalReceived) * 100) : 0;
-  const upiPct = hasPayments ? Math.round(((pm.upi || 0) / totalReceived) * 100) : 0;
-  const bankPct = hasPayments ? Math.round(((pm.bank || 0) / totalReceived) * 100) : 0;
+  const cashAmount = Number(pm.cash || 0);
+  const upiAmount = Number(pm.upi || 0);
+  const bankAmount = Number(pm.bank || 0);
+  const cardAmount = Number(pm.card || 0);
+
+  const cashPct = hasPayments ? Math.round((cashAmount / totalReceived) * 100) : 0;
+  const upiPct = hasPayments ? Math.round((upiAmount / totalReceived) * 100) : 0;
+  const bankPct = hasPayments ? Math.round((bankAmount / totalReceived) * 100) : 0;
   const cardPct = hasPayments ? Math.max(0, 100 - (cashPct + upiPct + bankPct)) : 0;
+
+  // Donut geometry constants (viewBox="0 0 100 100", center=(50, 50), r=40)
+  const DONUT_RADIUS = 40;
+  const DONUT_CIRCUMFERENCE = 2 * Math.PI * DONUT_RADIUS; // 251.3274...
+  const MIN_VISUAL_ARC = DONUT_CIRCUMFERENCE * 0.055; // ~5.5% minimum arc (~14 units, ~20deg) so small cash payments are always clearly visible
+
+  // Mathematically exact, non-overlapping slices in order: Cash (green), UPI (blue), Bank (orange), Card (purple)
+  const paymentSlices = useMemo(() => {
+    if (!hasPayments || totalReceived <= 0) return [];
+
+    const rawMethods = [
+      { key: 'cash', label: 'Cash', amount: cashAmount, color: '#10B981' },
+      { key: 'upi', label: 'UPI', amount: upiAmount, color: '#0862EC' },
+      { key: 'bank', label: 'Bank', amount: bankAmount, color: '#F97316' },
+      { key: 'card', label: 'Card', amount: cardAmount, color: '#8B5CF6' },
+    ].filter((m) => m.amount > 0);
+
+    if (rawMethods.length === 0) return [];
+
+    if (rawMethods.length === 1) {
+      return [
+        {
+          ...rawMethods[0],
+          strokeLength: DONUT_CIRCUMFERENCE,
+          dashOffset: 0,
+        },
+      ];
+    }
+
+    let remainingCircumference = DONUT_CIRCUMFERENCE;
+    let flexibleAmount = 0;
+
+    const initial = rawMethods.map((m) => {
+      const rawArc = (m.amount / totalReceived) * DONUT_CIRCUMFERENCE;
+      if (rawArc < MIN_VISUAL_ARC) {
+        remainingCircumference -= MIN_VISUAL_ARC;
+        return { ...m, arc: MIN_VISUAL_ARC, fixed: true };
+      }
+      flexibleAmount += m.amount;
+      return { ...m, arc: 0, fixed: false };
+    });
+
+    let currentOffset = 0;
+    return initial.map((m) => {
+      const strokeLength = m.fixed
+        ? m.arc
+        : flexibleAmount > 0
+          ? (m.amount / flexibleAmount) * remainingCircumference
+          : 0;
+      const offset = currentOffset;
+      currentOffset += strokeLength;
+      return {
+        ...m,
+        strokeLength,
+        dashOffset: offset,
+      };
+    });
+  }, [hasPayments, totalReceived, cashAmount, upiAmount, bankAmount, cardAmount]);
+
+  // Center Total Typography & Crores/Lakhs Overflow Protection
+  const formattedTotal = useMemo(() => formatINR(totalReceived), [totalReceived]);
+
+  // For numbers 10 Crores and above (>= ₹10,00,00,000), compact representation "₹X.XX Cr" keeps it clean
+  const centerDisplay = useMemo(() => {
+    if (totalReceived >= 100_000_000) {
+      const cr = totalReceived / 10000000;
+      return `₹${cr.toFixed(2).replace(/\.00$/, '')} Cr`;
+    }
+    return formattedTotal;
+  }, [totalReceived, formattedTotal]);
+
+  const centerAmountStyle = useMemo(() => {
+    const len = centerDisplay.length;
+    if (len <= 6) {
+      // e.g. ₹9,999
+      return 'text-sm sm:text-base font-black tracking-normal';
+    } else if (len <= 8) {
+      // e.g. ₹12,616, ₹99,999
+      return 'text-xs sm:text-sm font-black tracking-tight';
+    } else if (len <= 10) {
+      // e.g. ₹1,25,000, ₹12,50,000 (Lakhs)
+      return 'text-[11px] sm:text-xs font-black tracking-tight';
+    } else if (len <= 12) {
+      // e.g. ₹1,25,00,000 (1 to 9 Crores)
+      return 'text-[9.5px] sm:text-[10.5px] font-black tracking-tighter';
+    } else {
+      // 13+ chars
+      return 'text-[9px] sm:text-[9.5px] font-black tracking-tighter';
+    }
+  }, [centerDisplay.length]);
 
   // Top services for active period
   const topServices = activeData?.top_services || data?.top_services || [];
@@ -594,72 +689,40 @@ export const DashboardPage: React.FC = () => {
           <div className="flex items-center justify-between gap-3 sm:gap-4 my-auto py-1">
             {/* Perfectly Sized Big Circle Chart SVG */}
             <div className="relative w-32 h-32 sm:w-36 sm:h-36 shrink-0 flex items-center justify-center">
-              <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+              <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
                 {/* Background Track */}
-                <circle cx="18" cy="18" r="14" fill="transparent" stroke={hasPayments ? "#F1F5F9" : "#E2E8F0"} strokeWidth="3.8" />
-                {hasPayments && (
-                  <>
-                    {/* UPI Segment (Blue) */}
-                    {upiPct > 0 && (
-                      <circle
-                        cx="18"
-                        cy="18"
-                        r="14"
-                        fill="transparent"
-                        stroke="#0862EC"
-                        strokeWidth="3.8"
-                        strokeDasharray={`${upiPct} ${100 - upiPct}`}
-                        strokeDashoffset="0"
-                      />
-                    )}
-                    {/* Cash Segment (Emerald) */}
-                    {cashPct > 0 && (
-                      <circle
-                        cx="18"
-                        cy="18"
-                        r="14"
-                        fill="transparent"
-                        stroke="#10B981"
-                        strokeWidth="3.8"
-                        strokeDasharray={`${cashPct} ${100 - cashPct}`}
-                        strokeDashoffset={`${-upiPct}`}
-                      />
-                    )}
-                    {/* Bank Segment (Orange) */}
-                    {bankPct > 0 && (
-                      <circle
-                        cx="18"
-                        cy="18"
-                        r="14"
-                        fill="transparent"
-                        stroke="#F97316"
-                        strokeWidth="3.8"
-                        strokeDasharray={`${bankPct} ${100 - bankPct}`}
-                        strokeDashoffset={`${-(upiPct + cashPct)}`}
-                      />
-                    )}
-                    {/* Card Segment (Purple) */}
-                    {cardPct > 0 && (
-                      <circle
-                        cx="18"
-                        cy="18"
-                        r="14"
-                        fill="transparent"
-                        stroke="#8B5CF6"
-                        strokeWidth="3.8"
-                        strokeDasharray={`${cardPct} ${100 - cardPct}`}
-                        strokeDashoffset={`${-(upiPct + cashPct + bankPct)}`}
-                      />
-                    )}
-                  </>
-                )}
+                <circle
+                  cx="50"
+                  cy="50"
+                  r={DONUT_RADIUS}
+                  fill="transparent"
+                  stroke={hasPayments ? "#F1F5F9" : "#E2E8F0"}
+                  strokeWidth="9.5"
+                />
+                {hasPayments &&
+                  paymentSlices.map((slice) => (
+                    <circle
+                      key={slice.key}
+                      cx="50"
+                      cy="50"
+                      r={DONUT_RADIUS}
+                      fill="transparent"
+                      stroke={slice.color}
+                      strokeWidth="9.5"
+                      strokeDasharray={`${slice.strokeLength} ${DONUT_CIRCUMFERENCE - slice.strokeLength}`}
+                      strokeDashoffset={-slice.dashOffset}
+                    />
+                  ))}
               </svg>
-              {/* Center Total Text with Perfect Typography */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-2 pointer-events-none">
-                <span className="text-sm sm:text-base md:text-lg font-black text-slate-900 leading-tight">
-                  {formatINR(totalReceived)}
+              {/* Center Total Text with Dynamic Typography & Overflow Protection */}
+              <div
+                className="absolute inset-0 flex flex-col items-center justify-center text-center p-1.5 pointer-events-none max-w-[76%] max-h-[76%] m-auto rounded-full overflow-hidden select-none"
+                title={formattedTotal}
+              >
+                <span className={`${centerAmountStyle} text-slate-900 leading-tight block truncate max-w-full`}>
+                  {centerDisplay}
                 </span>
-                <span className="text-[8px] sm:text-[9px] text-slate-400 font-extrabold uppercase tracking-wider mt-0.5">
+                <span className="text-[7.5px] sm:text-[8px] text-slate-400 font-extrabold uppercase tracking-wider mt-0.5 leading-none whitespace-nowrap">
                   {hasPayments ? 'Total Received' : 'No Receipts'}
                 </span>
               </div>
