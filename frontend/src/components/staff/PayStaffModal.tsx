@@ -30,6 +30,8 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
   const [amount, setAmount] = useState('');
   const [payoutDate, setPayoutDate] = useState(formatInputDate());
   const [mode, setMode] = useState('CASH');
+  const [bankAccounts, setBankAccounts] = useState<any[]>([]);
+  const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -60,6 +62,20 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
             setStaffList(data || []);
           });
       }
+
+      // Load bank accounts
+      supabase
+        .from('bank_accounts')
+        .select('id, bank_name, account_name, account_number')
+        .is('deleted_at', null)
+        .order('bank_name')
+        .then(({ data }) => {
+          const list = data || [];
+          setBankAccounts(list);
+          if (list.length > 0 && !selectedBankId) {
+            setSelectedBankId(list[0].id);
+          }
+        });
     }
   }, [open, staffMember]);
 
@@ -76,14 +92,22 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
       return;
     }
 
+    if (['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && !selectedBankId) {
+      showToast(`Please select a Bank Account for ${mode} payout`, 'error');
+      return;
+    }
+
     setSubmitting(true);
     try {
+      const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
       const { error } = await supabase.rpc('pay_staff', {
         payload: {
           staff_id: selectedStaffId,
           amount: numAmount,
           payout_date: payoutDate,
           mode,
+          bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
+          bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
           notes: notes.trim() || null,
         },
       });
@@ -184,6 +208,32 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
             ]}
           />
         </div>
+
+        {/* Bank Account Selection for Online / Bank Modes */}
+        {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
+          <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-2">
+            <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between">
+              <span>
+                Paid from Bank Account <span className="text-danger">*</span>
+              </span>
+              <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                Compulsory
+              </span>
+            </label>
+            <select
+              value={selectedBankId}
+              onChange={(e) => setSelectedBankId(e.target.value)}
+              className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
+            >
+              <option value="">-- Select Bank Account * --</option>
+              {bankAccounts.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <Input
           label="Notes (Optional)"

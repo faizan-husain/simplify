@@ -29,6 +29,8 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [amount, setAmount] = useState('');
   const [mode, setMode] = useState<typeof PAYMENT_MODES[number]>('CASH');
+  const [bankAccounts, setBankAccounts] = useState<any[]>([]);
+  const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [description, setDescription] = useState('');
   const [payee, setPayee] = useState('');
   const [expenseDate, setExpenseDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -57,6 +59,19 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       }
     };
     fetchCategories();
+
+    supabase
+      .from('bank_accounts')
+      .select('id, bank_name, account_name, account_number')
+      .is('deleted_at', null)
+      .order('bank_name')
+      .then(({ data }) => {
+        const bList = data || [];
+        setBankAccounts(bList);
+        if (bList.length > 0 && !selectedBankId) {
+          setSelectedBankId(bList[0].id);
+        }
+      });
   }, [open]);
 
   const handleCreateCategory = async () => {
@@ -123,12 +138,21 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       return;
     }
 
+    if (['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && !selectedBankId) {
+      showToast(`Please select a Bank Account for ${mode} expense`, 'error');
+      return;
+    }
+
     setSaving(true);
     try {
+      const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
+
       const { error } = await supabase.from('expenses').insert({
         category_id: catId,
         amount: amtNum,
         mode,
+        bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
+        bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
         expense_date: expenseDate,
         description: description.trim(),
         payee: payee.trim() || null,
@@ -243,6 +267,32 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
             ))}
           </div>
         </div>
+
+        {/* Bank Account Selection for Online / Bank Modes */}
+        {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
+          <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-2">
+            <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between">
+              <span>
+                Paid from Bank Account <span className="text-danger">*</span>
+              </span>
+              <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                Compulsory
+              </span>
+            </label>
+            <select
+              value={selectedBankId}
+              onChange={(e) => setSelectedBankId(e.target.value)}
+              className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
+            >
+              <option value="">-- Select Bank Account * --</option>
+              {bankAccounts.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <Input
           label="Description / Purpose"

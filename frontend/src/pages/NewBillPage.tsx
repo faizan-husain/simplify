@@ -145,6 +145,8 @@ export const NewBillPage: React.FC = () => {
   // Payment state
   const [paidNow, setPaidNow] = useState('');
   const [paymentMode, setPaymentMode] = useState<string>('CASH');
+  const [bankAccounts, setBankAccounts] = useState<Array<{ id: string; bank_name: string; account_name: string; account_number?: string | null }>>([]);
+  const [selectedBankId, setSelectedBankId] = useState<string>('');
 
   // Dates and Notes
   const [invoiceDate, setInvoiceDate] = useState(formatInputDate());
@@ -207,6 +209,19 @@ export const NewBillPage: React.FC = () => {
       .order('name')
       .then(({ data }) => {
         if (data) setCustomers(data as Customer[]);
+      });
+
+    supabase
+      .from('bank_accounts')
+      .select('id, bank_name, account_name, account_number')
+      .is('deleted_at', null)
+      .order('bank_name')
+      .then(({ data }) => {
+        const list = (data as any) || [];
+        setBankAccounts(list);
+        if (list.length > 0) {
+          setSelectedBankId(list[0].id);
+        }
       });
 
     // Check saved draft
@@ -373,9 +388,18 @@ export const NewBillPage: React.FC = () => {
       }
 
       if (paidNow && parseFloat(paidNow) > 0) {
+        if (paymentMode !== 'CASH' && !selectedBankId) {
+          showToast(`Please select a Bank Account for ${paymentMode} payment`, 'error');
+          setSaving(false);
+          return;
+        }
+
+        const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
         payload.paid = {
           amount: parseFloat(paidNow),
           mode: paymentMode,
+          bank_account_id: paymentMode !== 'CASH' ? selectedBankId || null : null,
+          bank_name: paymentMode !== 'CASH' ? selectedBank?.bank_name || null : null,
         };
         localStorage.setItem(LAST_PAYMENT_MODE_KEY, paymentMode);
       }
@@ -985,6 +1009,42 @@ export const NewBillPage: React.FC = () => {
                   );
                 })}
               </div>
+
+              {/* Bank Account Selection (Compulsory for Online Modes) */}
+              {paymentMode !== 'CASH' && (
+                <div className="mt-3 pt-3 border-t border-slate-100">
+                  <label className="text-[11px] font-bold text-slate-700 flex items-center justify-between mb-1.5">
+                    <span className="flex items-center gap-1">
+                      <Building className="w-3.5 h-3.5 text-[#0862EC]" />
+                      <span>Deposit to Bank Account</span>
+                      <span className="text-danger font-bold">*</span>
+                    </span>
+                    <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-semibold border border-amber-200">
+                      Compulsory for {paymentMode}
+                    </span>
+                  </label>
+
+                  {bankAccounts.length > 0 ? (
+                    <select
+                      value={selectedBankId}
+                      onChange={(e) => setSelectedBankId(e.target.value)}
+                      className="w-full h-9 px-3 rounded-xl border border-slate-200 text-xs font-bold bg-white text-slate-800 focus:outline-none focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC]/20 cursor-pointer"
+                    >
+                      <option value="">-- Select Bank Account * --</option>
+                      {bankAccounts.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between">
+                      <span>No bank account configured yet.</span>
+                      <a href="/money" className="text-primary font-bold hover:underline">Add in Money &rarr;</a>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Card 5: Additional Details (Optional Accordion) */}

@@ -145,6 +145,12 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
         }
       }
 
+      if (['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && !selectedBankId) {
+        showToast(`Please select a Bank Account for ${mode} payment`, 'error');
+        setSaving(false);
+        return;
+      }
+
       const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
 
       const { error } = await supabase.from('payments').insert({
@@ -153,8 +159,8 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
         mode,
         payment_date: paymentDate,
         description: description.trim(),
-        bank_account_id: ['BANK', 'UPI', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
-        bank_name: ['BANK', 'UPI', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
+        bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
+        bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
         notes: notes.trim() ? (reference ? `${notes.trim()} (Ref: ${reference.trim()})` : notes.trim()) : (reference ? `Ref: ${reference.trim()}` : null),
         fy_label: '', // will be set by DB trigger
       });
@@ -315,18 +321,24 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
           </div>
         </div>
 
-        {/* Bank Account Selection (when Bank, UPI, or Cheque) */}
-        {['BANK', 'UPI', 'CHEQUE'].includes(mode) && (
+        {/* Bank Account Selection (when Bank, UPI, Card, or Cheque) */}
+        {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
           <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-3">
             <div>
-              <label className="text-xs font-bold text-primary uppercase tracking-wider block mb-1">
-                Paid from Bank Account
+              <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between mb-1">
+                <span>
+                  Paid from Bank Account <span className="text-danger">*</span>
+                </span>
+                <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                  Compulsory
+                </span>
               </label>
               <select
                 value={selectedBankId}
                 onChange={(e) => setSelectedBankId(e.target.value)}
-                className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-medium focus:ring-2 focus:ring-primary/20 focus:outline-none"
+                className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
               >
+                <option value="">-- Select Bank Account * --</option>
                 {bankAccounts.map((b) => (
                   <option key={b.id} value={b.id}>
                     {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
