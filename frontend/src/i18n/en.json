@@ -4,7 +4,8 @@
     "tagline": "Fast, simple billing & tracking"
   },
   "nav": {
-    "home": "Home",
+    "home": "Dashboard",
+    "dashboard": "Dashboard",
     "bills": "Bills",
     "jobs": "Jobs",
     "money": "Money",

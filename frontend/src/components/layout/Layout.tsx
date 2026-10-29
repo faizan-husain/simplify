@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import {
-  Home,
+  LayoutDashboard,
   FileText,
   Briefcase,
   IndianRupee,
@@ -88,9 +88,9 @@ export const Layout: React.FC = () => {
     return location.pathname.startsWith(to);
   };
 
-  // Simple, clean navigation items per §10: Home, Bills, [Jobs], Money, More
+  // Simple, clean navigation items per §10: Dashboard, Bills, [Jobs], Money, More
   const navItems = [
-    { to: '/', label: t('nav.home'), icon: Home, exact: true },
+    { to: '/', label: t('nav.home'), icon: LayoutDashboard, exact: true },
     { to: '/bills', label: t('nav.bills'), icon: FileText },
     ...(business?.job_management_enabled
       ? [{ to: '/jobs', label: t('nav.jobs'), icon: Briefcase }]
