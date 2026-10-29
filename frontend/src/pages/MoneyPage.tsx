@@ -14,6 +14,7 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { useAuth } from '../context/AuthContext';
 import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet';
+import { ReceiptDetailModal } from '../components/receipts/ReceiptDetailModal';
 import { OtherIncomeModal } from '../components/receipts/OtherIncomeModal';
 import { CustomerLedgerModal } from '../components/customers/CustomerLedgerModal';
 import { RemindAllDrawer } from '../components/dues/RemindAllDrawer';
@@ -22,6 +23,7 @@ import { VendorDetailModal } from '../components/payments/VendorDetailModal';
 import { NewExpenseModal } from '../components/expenses/NewExpenseModal';
 import { NewLoanModal } from '../components/loans/NewLoanModal';
 import { RecordRepaymentModal } from '../components/loans/RecordRepaymentModal';
+import { BankLedgerTab } from '../components/banks/BankLedgerTab';
 import {
   Plus,
   Search,
@@ -32,10 +34,15 @@ import {
   ArrowUpRight,
   Building,
   Banknote,
+  Printer,
+  FileText,
 } from 'lucide-react';
 import { Database } from '../types/supabase';
 
-type Receipt = Database['public']['Tables']['receipts']['Row'];
+type Receipt = Database['public']['Tables']['receipts']['Row'] & {
+  customer?: { name: string; mobile: string | null } | null;
+  bank_name?: string | null;
+};
 type Payment = Database['public']['Tables']['payments']['Row'] & {
   vendors?: { id: string; name: string; mobile: string | null };
 };
@@ -43,7 +50,7 @@ type Expense = Database['public']['Tables']['expenses']['Row'] & {
   expense_categories?: { id: string; name: string };
 };
 
-type MoneyTab = 'dues' | 'receipts' | 'payments' | 'expenses' | 'loans';
+type MoneyTab = 'dues' | 'receipts' | 'payments' | 'expenses' | 'loans' | 'bank';
 
 interface DuesSummary {
   total_outstanding: number;
@@ -112,6 +119,7 @@ export const MoneyPage: React.FC = () => {
 
   // Modals & Sheets
   const [isReceivePaymentOpen, setIsReceivePaymentOpen] = useState(false);
+  const [selectedReceiptDetailId, setSelectedReceiptDetailId] = useState<string | null>(null);
   const [isOtherIncomeOpen, setIsOtherIncomeOpen] = useState(false);
   const [isRemindAllOpen, setIsRemindAllOpen] = useState(false);
   const [ledgerCustomerId, setLedgerCustomerId] = useState<string | null>(null);
@@ -259,11 +267,11 @@ export const MoneyPage: React.FC = () => {
     try {
       let query = supabase
         .from('receipts')
-        .select('*')
+        .select('*, customer:customers(name, mobile)')
         .is('deleted_at', null)
         .order('receipt_date', { ascending: false })
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(100);
 
       if (receiptsSearch.trim()) {
         query = query.or(
@@ -500,6 +508,26 @@ export const MoneyPage: React.FC = () => {
               <Plus className="w-4 h-4 mr-1.5" />
               Record Loan Received
             </Button>
+          ) : activeTab === 'bank' ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsNewPaymentOpen(true)}
+                className="border-rose-300 text-rose-800 hover:bg-rose-50 font-bold"
+              >
+                - Bank Payout
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => handleOpenReceive()}
+                className="font-bold"
+              >
+                <Plus className="w-4 h-4 mr-1.5" />
+                + Bank Deposit
+              </Button>
+            </div>
           ) : null}
         </div>
       </div>
@@ -515,6 +543,9 @@ export const MoneyPage: React.FC = () => {
           </TabsTrigger>
           <TabsTrigger value="payments" className="flex-1">
             Payments (OUT)
+          </TabsTrigger>
+          <TabsTrigger value="bank" className="flex-1 font-bold">
+            Bank IN/OUT
           </TabsTrigger>
           <TabsTrigger value="expenses" className="flex-1">
             Expenses
@@ -881,13 +912,18 @@ export const MoneyPage: React.FC = () => {
                 .map((r) => (
                   <div
                     key={r.id}
-                    className="bg-white border border-border rounded-xl p-3.5 flex items-center justify-between hover:bg-surface/30 transition-colors shadow-2xs"
+                    className="bg-white border border-border rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-surface/30 transition-colors shadow-2xs"
                   >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-text text-sm">#{r.number}</span>
+                    <div className="space-y-1.5 flex-1 pr-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-extrabold text-slate-900 text-sm">#{r.number}</span>
+                        {r.customer?.name && (
+                          <span className="font-bold text-primary text-xs bg-primary/5 px-2 py-0.5 rounded-md border border-primary/10">
+                            👤 {r.customer.name}
+                          </span>
+                        )}
                         <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
                             ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode)
                               ? 'bg-blue-50 text-primary border-blue-200'
                               : 'bg-emerald-50 text-emerald-800 border-emerald-200'
@@ -895,37 +931,74 @@ export const MoneyPage: React.FC = () => {
                         >
                           {r.mode === 'BANK' ? '🏦 Bank' : r.mode === 'UPI' ? '📱 UPI' : r.mode}
                         </span>
+                        {r.bank_name && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700">
+                            {r.bank_name}
+                          </span>
+                        )}
                         {r.kind === 'OTHER_INCOME' && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-50 text-amber-800 border border-amber-200">
                             {r.income_category || 'Other Income'}
                           </span>
                         )}
                         {r.unallocated_amount > 0 && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-primary/10 text-primary border border-primary/20">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-primary/10 text-primary border border-primary/20">
                             Advance: {formatINR(r.unallocated_amount)}
                           </span>
                         )}
                       </div>
 
-                      <div className="text-xs text-text-muted">
-                        {formatDate(r.receipt_date)} {r.reference && `· Ref: ${r.reference}`}{' '}
-                        {r.notes && `· ${r.notes}`}
+                      <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-2">
+                        <span>{formatDate(r.receipt_date)}</span>
+                        {r.customer?.mobile && <span>· 📞 {r.customer.mobile}</span>}
+                        {r.reference && <span className="font-mono text-slate-700 font-semibold">· Ref: {r.reference}</span>}
+                        {r.notes && <span className="italic">· {r.notes}</span>}
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="text-right font-bold text-success text-base">
+                    <div className="flex items-center justify-between sm:justify-end gap-2.5 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                      <div className="text-right font-black text-success text-base sm:text-lg pr-1">
                         +{formatINR(r.amount)}
                       </div>
 
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDeleteReceiptClick(r.id)}
-                        title="Delete Receipt (Reverses Allocations)"
-                      >
-                        <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedReceiptDetailId(r.id)}
+                          title="View & Print Receipt PDF"
+                          className="h-8 text-xs font-bold"
+                        >
+                          <Printer className="w-3.5 h-3.5 mr-1" />
+                          Receipt
+                        </Button>
+
+                        {r.customer?.mobile && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              const message = `Hello ${r.customer?.name || 'Customer'}, payment receipt #${r.number} of ${formatINR(r.amount)} received on ${formatDate(r.receipt_date)} via ${r.mode}. Thank you! - ${business?.name || 'SIMPLIFY'}`;
+                              const url = getWhatsAppUrl(r.customer!.mobile!, message);
+                              window.open(url, '_blank');
+                            }}
+                            title="WhatsApp Receipt to Customer"
+                            className="h-8 w-8 p-0"
+                          >
+                            <Share2 className="w-3.5 h-3.5 text-emerald-600" />
+                          </Button>
+                        )}
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteReceiptClick(r.id)}
+                          title="Delete Receipt (Reverses Allocations)"
+                          className="h-8 w-8 p-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-slate-400 hover:text-danger" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -1073,18 +1146,30 @@ export const MoneyPage: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="text-right font-bold text-danger text-base">
+                    <div className="flex items-center gap-2">
+                      <div className="text-right font-black text-danger text-base pr-1">
                         -{formatINR(p.amount)}
                       </div>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedVendorDetailId(p.vendor_id)}
+                        className="h-8 text-xs font-bold"
+                        title="View Vendor Statement & History"
+                      >
+                        <FileText className="w-3.5 h-3.5 mr-1" />
+                        Statement
+                      </Button>
 
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => handleDeletePayment(p.id)}
                         title="Delete payment"
+                        className="h-8 w-8 p-0"
                       >
-                        <Trash2 className="w-4 h-4 text-text-muted hover:text-danger" />
+                        <Trash2 className="w-3.5 h-3.5 text-slate-400 hover:text-danger" />
                       </Button>
                     </div>
                   </div>
@@ -1092,6 +1177,17 @@ export const MoneyPage: React.FC = () => {
             </div>
           )}
         </div>
+      )}
+
+      {/* TAB: BANK IN/OUT LEDGER */}
+      {activeTab === 'bank' && (
+        <BankLedgerTab
+          onRecordIncome={() => {
+            setReceivePrefillCustomer(undefined);
+            setIsReceivePaymentOpen(true);
+          }}
+          onRecordPayment={() => setIsNewPaymentOpen(true)}
+        />
       )}
 
       {/* TAB 4: EXPENSES */}
@@ -1433,6 +1529,14 @@ export const MoneyPage: React.FC = () => {
           fetchDues();
           fetchReceipts();
         }}
+        onViewReceipt={(receiptId) => setSelectedReceiptDetailId(receiptId)}
+      />
+
+      {/* Receipt Detail & PDF Modal */}
+      <ReceiptDetailModal
+        open={Boolean(selectedReceiptDetailId)}
+        onOpenChange={(v) => !v && setSelectedReceiptDetailId(null)}
+        receiptId={selectedReceiptDetailId}
       />
 
       {/* Other Income Modal */}

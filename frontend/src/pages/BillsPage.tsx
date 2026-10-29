@@ -13,6 +13,7 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { BillDetailModal } from '../components/bills/BillDetailModal';
 import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet';
+import { ReceiptDetailModal } from '../components/receipts/ReceiptDetailModal';
 import { Plus, Search } from 'lucide-react';
 import { Database } from '../types/supabase';
 
@@ -37,6 +38,7 @@ export const BillsPage: React.FC = () => {
   // Receive payment sheet state
   const [isReceivePaymentOpen, setIsReceivePaymentOpen] = useState(false);
   const [receivePaymentInvoice, setReceivePaymentInvoice] = useState<Invoice | null>(null);
+  const [selectedReceiptDetailId, setSelectedReceiptDetailId] = useState<string | null>(null);
 
   const fetchInvoices = async () => {
     setLoading(true);
@@ -239,8 +241,16 @@ export const BillsPage: React.FC = () => {
           onSuccess={() => {
             fetchInvoices();
           }}
+          onViewReceipt={(receiptId) => setSelectedReceiptDetailId(receiptId)}
         />
       )}
+
+      {/* Receipt Detail & PDF Modal */}
+      <ReceiptDetailModal
+        open={Boolean(selectedReceiptDetailId)}
+        onOpenChange={(v) => !v && setSelectedReceiptDetailId(null)}
+        receiptId={selectedReceiptDetailId}
+      />
     </div>
   );
 };

@@ -79,6 +79,16 @@ async function runSeed() {
         ($1, 'REMINDER', 'Hello {customer_name}, friendly reminder for bill #{invoice_no} of {amount}. Balance {balance} is due on {due_date}. - {business_name}')
     `, [bizId]);
 
+    // Seed Demo Bank Accounts
+    console.log('Seeding Demo Bank Accounts (SBI & HDFC)...');
+    const sbiAccountId = uuid();
+    const hdfcAccountId = uuid();
+    await client.query(`
+      INSERT INTO public.bank_accounts (id, business_id, bank_name, account_name, account_number, ifsc, upi_id, opening_balance, active) VALUES
+        ($1, $3, 'State Bank of India', 'SBI Main Current A/c', 'XXXX9821', 'SBIN0001234', 'globalx@sbi', 25000.00, true),
+        ($2, $3, 'HDFC Bank', 'HDFC Business A/c', 'XXXX4402', 'HDFC0000567', 'globalx@hdfcbank', 15000.00, true)
+    `, [sbiAccountId, hdfcAccountId, bizId]);
+
     // 2. Auth Users & Members
     console.log('Seeding Auth Users & Team Members...');
     await client.query(`

@@ -8,6 +8,7 @@ import { getErrorMessage } from '../i18n';
 import { useToast } from '../components/ui/Toast';
 import { BillDetailModal } from '../components/bills/BillDetailModal';
 import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet';
+import { ReceiptDetailModal } from '../components/receipts/ReceiptDetailModal';
 import {
   FileText,
   CreditCard,
@@ -159,6 +160,7 @@ export const NewBillPage: React.FC = () => {
   // Receive payment sheet state from modal shortcut
   const [isReceivePaymentOpen, setIsReceivePaymentOpen] = useState(false);
   const [receivePaymentInvoice, setReceivePaymentInvoice] = useState<Invoice | null>(null);
+  const [selectedReceiptDetailId, setSelectedReceiptDetailId] = useState<string | null>(null);
 
   const resetForm = () => {
     localStorage.removeItem(DRAFT_STORAGE_KEY);
@@ -1138,8 +1140,16 @@ export const NewBillPage: React.FC = () => {
               }
             }
           }}
+          onViewReceipt={(receiptId) => setSelectedReceiptDetailId(receiptId)}
         />
       )}
+
+      {/* Receipt Detail & PDF Modal */}
+      <ReceiptDetailModal
+        open={Boolean(selectedReceiptDetailId)}
+        onOpenChange={(v) => !v && setSelectedReceiptDetailId(null)}
+        receiptId={selectedReceiptDetailId}
+      />
     </div>
   );
 };
