@@ -36,7 +36,6 @@ import {
   Banknote,
   Printer,
   FileText,
-  Users,
 } from 'lucide-react';
 import { Database } from '../types/supabase';
 
@@ -62,31 +61,8 @@ type MoneyTab = 'dues' | 'receipts' | 'payments' | 'expenses' | 'loans' | 'bank'
 interface DuesSummary {
   total_outstanding: number;
   total_overdue: number;
-  total_current?: number;
   total_bills_due: number;
-  partial_bills_count?: number;
-  unpaid_bills_count?: number;
-  overdue_bills_count?: number;
-  current_bills_count?: number;
   customer_count: number;
-}
-
-export interface BillDueItem {
-  id: string;
-  number: string;
-  invoice_date: string;
-  due_date: string;
-  customer_id: string | null;
-  party_name: string;
-  party_mobile: string | null;
-  customer_type: string;
-  total: number;
-  paid_amount: number;
-  balance: number;
-  status: 'PARTIAL' | 'UNPAID';
-  is_overdue: boolean;
-  days_overdue: number;
-  days_left: number;
 }
 
 interface CustomerDueItem {
@@ -97,8 +73,6 @@ interface CustomerDueItem {
   total_due: number;
   overdue_balance: number;
   bill_count: number;
-  partial_bill_count?: number;
-  unpaid_bill_count?: number;
   oldest_bill_date: string;
   oldest_due_date: string;
   max_days_overdue: number;
@@ -110,10 +84,8 @@ interface CustomerDueItem {
     total: number;
     paid_amount: number;
     balance: number;
-    status?: 'PARTIAL' | 'UNPAID';
     is_overdue: boolean;
     days_overdue: number;
-    days_left?: number;
   }>;
 }
 
@@ -171,35 +143,22 @@ export const MoneyPage: React.FC = () => {
     outstanding: number;
   } | null>(null);
 
-  // Selected customer & invoice for pre-filling receive payment
+  // Selected customer for pre-filling receive payment
   const [receivePrefillCustomer, setReceivePrefillCustomer] = useState<{
     id: string;
     name: string;
     mobile?: string | null;
-  } | undefined>(undefined);
-  const [receivePrefillInvoice, setReceivePrefillInvoice] = useState<{
-    id: string;
-    number: string;
-    balance: number;
   } | undefined>(undefined);
 
   // Dues state
   const [duesSummary, setDuesSummary] = useState<DuesSummary>({
     total_outstanding: 0,
     total_overdue: 0,
-    total_current: 0,
     total_bills_due: 0,
-    partial_bills_count: 0,
-    unpaid_bills_count: 0,
-    overdue_bills_count: 0,
-    current_bills_count: 0,
     customer_count: 0,
   });
   const [customerDues, setCustomerDues] = useState<CustomerDueItem[]>([]);
-  const [billDues, setBillDues] = useState<BillDueItem[]>([]);
-  const [duesViewMode, setDuesViewMode] = useState<'bills' | 'customers'>('bills');
-  type DuesFilterType = 'ALL' | 'PARTIAL' | 'UNPAID' | 'OVERDUE' | 'CURRENT' | 'REGULAR' | 'WALK_IN';
-  const [duesFilter, setDuesFilter] = useState<DuesFilterType>('ALL');
+  const [duesFilter, setDuesFilter] = useState<'ALL' | 'OVERDUE' | 'REGULAR' | 'WALK_IN'>('ALL');
   const [duesSearch, setDuesSearch] = useState('');
   const [loadingDues, setLoadingDues] = useState(true);
   const [expandedCustomers, setExpandedCustomers] = useState<{ [id: string]: boolean }>({});
@@ -286,7 +245,7 @@ export const MoneyPage: React.FC = () => {
       const { data, error } = await supabase.rpc('dues_list', {
         p_filter: duesFilter,
         p_search: duesSearch.trim() || null,
-        p_limit: 150,
+        p_limit: 100,
         p_offset: 0,
       });
 
@@ -296,17 +255,11 @@ export const MoneyPage: React.FC = () => {
         res.summary || {
           total_outstanding: 0,
           total_overdue: 0,
-          total_current: 0,
           total_bills_due: 0,
-          partial_bills_count: 0,
-          unpaid_bills_count: 0,
-          overdue_bills_count: 0,
-          current_bills_count: 0,
           customer_count: 0,
         }
       );
       setCustomerDues(res.customers || []);
-      setBillDues(res.bills || []);
     } catch (err: any) {
       showToast(getErrorMessage(err.message), 'error');
     } finally {
@@ -520,23 +473,8 @@ export const MoneyPage: React.FC = () => {
     window.open(url, '_blank');
   };
 
-  const handleRemindBill = (b: BillDueItem) => {
-    if (!b.party_mobile) {
-      showToast('No mobile number available for this bill', 'error');
-      return;
-    }
-    const upiNote = business?.upi_id ? ` Payment UPI: ${business.upi_id}.` : '';
-    const message = `Namaste ${b.party_name}, this is a reminder from ${business?.name || 'SIMPLIFY'} regarding Bill #${b.number} dated ${formatDate(b.invoice_date)}. Total: ${formatINR(b.total)}, Paid: ${formatINR(b.paid_amount)}, Balance Due: ${formatINR(b.balance)} (Due: ${formatDate(b.due_date)}). Please clear at your earliest convenience.${upiNote} Thank you!`;
-    const url = getWhatsAppUrl(b.party_mobile, message);
-    window.open(url, '_blank');
-  };
-
-  const handleOpenReceive = (
-    customer?: { id: string; name: string; mobile?: string | null },
-    invoice?: { id: string; number: string; balance: number }
-  ) => {
+  const handleOpenReceive = (customer?: { id: string; name: string; mobile?: string | null }) => {
     setReceivePrefillCustomer(customer);
-    setReceivePrefillInvoice(invoice);
     setIsReceivePaymentOpen(true);
   };
 
@@ -707,7 +645,7 @@ export const MoneyPage: React.FC = () => {
       {activeTab === 'dues' && (
         <div className="space-y-4">
           {/* Prominent Totals Summary Banner */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-border shadow-2xs">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-border">
             <div>
               <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
                 Total Outstanding
@@ -715,87 +653,67 @@ export const MoneyPage: React.FC = () => {
               <div className="text-2xl font-bold text-danger mt-1">
                 {formatINR(duesSummary.total_outstanding)}
               </div>
-              <div className="text-xs text-text-muted mt-0.5">
-                {duesSummary.total_bills_due} Pending Bill{duesSummary.total_bills_due !== 1 ? 's' : ''}
-              </div>
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-rose-600 uppercase tracking-wider">
+              <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
                 Overdue Amount
               </div>
-              <div className="text-2xl font-bold text-rose-600 mt-1">
+              <div className="text-2xl font-bold text-danger mt-1">
                 {formatINR(duesSummary.total_overdue)}
-              </div>
-              <div className="text-xs text-rose-500 font-medium mt-0.5">
-                {duesSummary.overdue_bills_count ?? 0} Bill{(duesSummary.overdue_bills_count ?? 0) !== 1 ? 's' : ''} Past Due
-              </div>
-            </div>
-
-            <div>
-              <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">
-                Current / Upcoming
-              </div>
-              <div className="text-2xl font-bold text-emerald-600 mt-1">
-                {formatINR(duesSummary.total_current ?? 0)}
-              </div>
-              <div className="text-xs text-emerald-600 font-medium mt-0.5">
-                {duesSummary.current_bills_count ?? 0} Bill{(duesSummary.current_bills_count ?? 0) !== 1 ? 's' : ''} Not Due Yet
               </div>
             </div>
 
             <div>
               <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                Status Breakdown
+                Unpaid Bills
               </div>
-              <div className="text-xl font-bold text-text mt-1">
-                <span className="text-amber-600">{duesSummary.partial_bills_count ?? 0} Partial</span>
-                <span className="text-text-muted font-normal mx-1.5">·</span>
-                <span className="text-zinc-700">{duesSummary.unpaid_bills_count ?? 0} Unpaid</span>
+              <div className="text-2xl font-bold text-text mt-1">
+                {duesSummary.total_bills_due}
               </div>
-              <div className="text-xs text-text-muted mt-0.5">
-                Across {duesSummary.customer_count} Customer{duesSummary.customer_count !== 1 ? 's' : ''}
+            </div>
+
+            <div>
+              <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                Customers with Dues
+              </div>
+              <div className="text-2xl font-bold text-text mt-1">
+                {duesSummary.customer_count}
               </div>
             </div>
           </div>
 
-          {/* Dues View Switcher & Search Bar */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-xl border border-border">
-            {/* View Switcher: All Pending Bills vs By Customer */}
-            <div className="flex items-center gap-1 bg-surface p-1 rounded-lg border border-border shrink-0 self-start sm:self-auto">
-              <button
-                type="button"
-                onClick={() => setDuesViewMode('bills')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
-                  duesViewMode === 'bills'
-                    ? 'bg-white text-primary shadow-xs border border-border'
-                    : 'text-text-muted hover:text-text'
-                }`}
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>All Pending Bills ({duesSummary.total_bills_due})</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setDuesViewMode('customers')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
-                  duesViewMode === 'customers'
-                    ? 'bg-white text-primary shadow-xs border border-border'
-                    : 'text-text-muted hover:text-text'
-                }`}
-              >
-                <Users className="w-3.5 h-3.5" />
-                <span>By Customer ({duesSummary.customer_count})</span>
-              </button>
+          {/* Dues Filter Chips & Search & Remind All */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {(['ALL', 'OVERDUE', 'REGULAR', 'WALK_IN'] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setDuesFilter(f)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
+                    duesFilter === f
+                      ? 'bg-primary text-white border-primary'
+                      : 'bg-white text-text border-border hover:bg-surface'
+                  }`}
+                >
+                  {f === 'ALL'
+                    ? 'All Dues'
+                    : f === 'OVERDUE'
+                    ? 'Overdue Only'
+                    : f === 'REGULAR'
+                    ? 'Regular'
+                    : 'Walk-in'}
+                </button>
+              ))}
             </div>
 
-            {/* Search Input & Remind All */}
-            <div className="flex items-center gap-2 flex-1 sm:justify-end">
-              <div className="relative flex-1 sm:max-w-xs">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1 sm:w-64">
                 <Search className="w-4 h-4 text-text-muted absolute left-3 top-2.5" />
                 <Input
                   type="text"
-                  placeholder="Search bill #, customer name, mobile..."
+                  placeholder="Search customer / bill #..."
                   value={duesSearch}
                   onChange={(e) => setDuesSearch(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && fetchDues()}
@@ -817,134 +735,89 @@ export const MoneyPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Filter Chips: All, Partial, Unpaid, Overdue, Current/Upcoming, Regular, Walk-in */}
-          <div className="flex flex-wrap items-center gap-2">
-            {[
-              { id: 'ALL', label: `All Bills (${duesSummary.total_bills_due})` },
-              { id: 'PARTIAL', label: `Partial Paid (${duesSummary.partial_bills_count ?? 0})` },
-              { id: 'UNPAID', label: `Unpaid - 0 Paid (${duesSummary.unpaid_bills_count ?? 0})` },
-              { id: 'OVERDUE', label: `Overdue (${duesSummary.overdue_bills_count ?? 0})` },
-              { id: 'CURRENT', label: `Current / Upcoming (${duesSummary.current_bills_count ?? 0})` },
-              { id: 'REGULAR', label: 'Regular Customers' },
-              { id: 'WALK_IN', label: 'Walk-in' },
-            ].map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setDuesFilter(f.id as any)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
-                  duesFilter === f.id
-                    ? 'bg-primary text-white border-primary shadow-2xs'
-                    : 'bg-white text-text border-border hover:bg-surface'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-
-          {/* VIEW MODE 1: ALL PENDING BILLS LIST (PARTIAL & UNPAID) */}
-          {duesViewMode === 'bills' && (
-            <div>
-              {loadingDues ? (
-                <div className="space-y-3">
-                  {[1, 2, 3, 4].map((i) => (
-                    <Skeleton key={i} className="h-20 w-full rounded-xl" />
-                  ))}
-                </div>
-              ) : billDues.length === 0 ? (
-                <Card className="p-8 text-center">
-                  <EmptyState message="No pending bills found. All bills have been cleared, or no bills match the current filter." />
-                </Card>
-              ) : (
-                <div className="space-y-2.5">
-                  {billDues.map((b) => (
-                    <div
-                      key={b.id}
-                      className="bg-white border border-border rounded-xl p-3.5 hover:border-text-muted/40 transition-shadow shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                    >
-                      {/* Left: Bill #, Status badges, Customer name & dates */}
-                      <div className="space-y-1.5 flex-1 min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold text-sm text-text font-mono">#{b.number}</span>
-
-                          {/* Partial vs Unpaid Badge */}
-                          {b.status === 'PARTIAL' ? (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                              Partial (Paid {formatINR(b.paid_amount)})
-                            </span>
+          {/* Customer Dues List */}
+          {loadingDues ? (
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-20 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : customerDues.length === 0 ? (
+            <Card className="p-8 text-center">
+              <EmptyState message="No outstanding dues. All bills have been collected, or no customers match the current filter." />
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {customerDues.map((c) => {
+                const isExpanded = Boolean(expandedCustomers[c.customer_id]);
+                return (
+                  <div
+                    key={c.customer_id}
+                    className="bg-white border border-border rounded-xl overflow-hidden transition-shadow shadow-xs"
+                  >
+                    {/* Customer Row Header */}
+                    <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => toggleCustomerExpand(c.customer_id)}
+                          className="p-1 hover:bg-surface rounded text-text-muted"
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="w-4 h-4" />
                           ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-zinc-100 text-zinc-700 border border-zinc-200">
-                              Unpaid (₹0 Paid)
-                            </span>
+                            <ChevronRight className="w-4 h-4" />
                           )}
+                        </button>
 
-                          {/* Overdue / Due Today / Upcoming Badge */}
-                          {b.is_overdue ? (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                              ⚠️ {b.days_overdue}d Overdue
-                            </span>
-                          ) : b.days_left === 0 ? (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                              ⏰ Due Today
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              📅 Due in {b.days_left}d
-                            </span>
-                          )}
-
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface border border-border text-text-muted font-medium">
-                            {b.customer_type}
-                          </span>
-                        </div>
-
-                        {/* Customer & Date Details */}
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
-                          {b.customer_id ? (
+                        <div>
+                          <div className="flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => setLedgerCustomerId(b.customer_id)}
-                              className="font-semibold text-text hover:text-primary flex items-center gap-1 group text-left"
+                              onClick={() => setLedgerCustomerId(c.customer_id)}
+                              className="font-bold text-text hover:text-primary text-sm text-left flex items-center gap-1 group"
                             >
-                              <span className="underline decoration-dotted">{b.party_name}</span>
-                              <ArrowUpRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
+                              <span>{c.customer_name}</span>
+                              <ArrowUpRight className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
                             </button>
-                          ) : (
-                            <span className="font-semibold text-text">{b.party_name}</span>
-                          )}
-
-                          {b.party_mobile && (
-                            <span className="font-mono text-text">📞 {b.party_mobile}</span>
-                          )}
-
-                          <span>· Bill Date: {formatDate(b.invoice_date)}</span>
-                          <span>· Due Date: {formatDate(b.due_date)}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface border border-border text-text-muted font-medium">
+                              {c.customer_type}
+                            </span>
+                          </div>
+                          <div className="text-xs text-text-muted mt-0.5">
+                            {c.customer_mobile || 'No mobile'} · {c.bill_count} unpaid bill
+                            {c.bill_count > 1 ? 's' : ''} · Oldest: {formatDate(c.oldest_bill_date)}
+                            {c.max_days_overdue > 0 && (
+                              <span className="text-danger font-bold ml-1.5">
+                                ({c.max_days_overdue}d overdue)
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
 
-                      {/* Right: Amounts & Quick Actions */}
-                      <div className="flex items-center justify-between sm:justify-end gap-3.5 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-border/60">
+                      {/* Right: Balance & Actions */}
+                      <div className="flex items-center justify-between sm:justify-end gap-3 pl-8 sm:pl-0">
                         <div className="text-right">
                           <div className="text-base font-bold text-danger">
-                            Due: {formatINR(b.balance)}
+                            {formatINR(c.total_due)}
                           </div>
-                          <div className="text-[11px] text-text-muted">
-                            Total {formatINR(b.total)}
-                            {b.paid_amount > 0 && ` · Paid ${formatINR(b.paid_amount)}`}
-                          </div>
+                          {c.overdue_balance > 0 && (
+                            <div className="text-[10px] text-danger font-medium">
+                              Overdue: {formatINR(c.overdue_balance)}
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-1.5">
-                          {b.party_mobile && (
+                          {c.customer_mobile && (
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => handleRemindBill(b)}
+                              onClick={() => handleRemindCustomer(c)}
                               title="Send WhatsApp Reminder"
-                              className="text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50"
                             >
-                              <Share2 className="w-4 h-4 text-emerald-600" />
+                              <Share2 className="w-4 h-4 text-primary" />
                             </Button>
                           )}
 
@@ -952,221 +825,63 @@ export const MoneyPage: React.FC = () => {
                             variant="primary"
                             size="sm"
                             onClick={() =>
-                              handleOpenReceive(
-                                b.customer_id
-                                  ? { id: b.customer_id, name: b.party_name, mobile: b.party_mobile }
-                                  : undefined,
-                                { id: b.id, number: b.number, balance: b.balance }
-                              )
+                              handleOpenReceive({
+                                id: c.customer_id,
+                                name: c.customer_name,
+                                mobile: c.customer_mobile,
+                              })
                             }
-                            className="font-bold"
                           >
                             Receive
                           </Button>
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
-          {/* VIEW MODE 2: GROUP BY CUSTOMER */}
-          {duesViewMode === 'customers' && (
-            <div>
-              {loadingDues ? (
-                <div className="space-y-3">
-                  {[1, 2, 3].map((i) => (
-                    <Skeleton key={i} className="h-20 w-full rounded-xl" />
-                  ))}
-                </div>
-              ) : customerDues.length === 0 ? (
-                <Card className="p-8 text-center">
-                  <EmptyState message="No outstanding dues. All bills have been collected, or no customers match the current filter." />
-                </Card>
-              ) : (
-                <div className="space-y-3">
-                  {customerDues.map((c) => {
-                    const isExpanded = Boolean(expandedCustomers[c.customer_id]);
-                    return (
-                      <div
-                        key={c.customer_id}
-                        className="bg-white border border-border rounded-xl overflow-hidden transition-shadow shadow-xs"
-                      >
-                        {/* Customer Row Header */}
-                        <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <div className="flex items-center gap-2.5">
-                            <button
-                              type="button"
-                              onClick={() => toggleCustomerExpand(c.customer_id)}
-                              className="p-1 hover:bg-surface rounded text-text-muted"
-                            >
-                              {isExpanded ? (
-                                <ChevronDown className="w-4 h-4" />
-                              ) : (
-                                <ChevronRight className="w-4 h-4" />
-                              )}
-                            </button>
-
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setLedgerCustomerId(c.customer_id)}
-                                  className="font-bold text-text hover:text-primary text-sm text-left flex items-center gap-1 group"
-                                >
-                                  <span>{c.customer_name}</span>
-                                  <ArrowUpRight className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
-                                </button>
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface border border-border text-text-muted font-medium">
-                                  {c.customer_type}
-                                </span>
-                              </div>
-                              <div className="text-xs text-text-muted mt-0.5">
-                                {c.customer_mobile || 'No mobile'} · {c.bill_count} pending bill
-                                {c.bill_count > 1 ? 's' : ''}
-                                {c.partial_bill_count !== undefined && c.unpaid_bill_count !== undefined && (
-                                  <span> ({c.partial_bill_count} Partial · {c.unpaid_bill_count} Unpaid)</span>
-                                )}
-                                {' '}· Oldest: {formatDate(c.oldest_bill_date)}
-                                {c.max_days_overdue > 0 && (
-                                  <span className="text-danger font-bold ml-1.5">
-                                    ({c.max_days_overdue}d overdue)
-                                  </span>
-                                )}
-                              </div>
-                            </div>
+                    {/* Expandable Unpaid Bills Table */}
+                    {isExpanded && (
+                      <div className="border-t border-border bg-surface/50 p-3">
+                        <div className="border border-border rounded-lg overflow-hidden bg-white text-xs">
+                          <div className="bg-surface grid grid-cols-12 p-2 font-semibold text-text-muted border-b border-border">
+                            <div className="col-span-3">Bill #</div>
+                            <div className="col-span-3">Date / Due</div>
+                            <div className="col-span-2 text-right">Total</div>
+                            <div className="col-span-2 text-right">Paid</div>
+                            <div className="col-span-2 text-right">Balance</div>
                           </div>
 
-                          {/* Right: Balance & Actions */}
-                          <div className="flex items-center justify-between sm:justify-end gap-3 pl-8 sm:pl-0">
-                            <div className="text-right">
-                              <div className="text-base font-bold text-danger">
-                                {formatINR(c.total_due)}
-                              </div>
-                              {c.overdue_balance > 0 && (
-                                <div className="text-[10px] text-danger font-medium">
-                                  Overdue: {formatINR(c.overdue_balance)}
+                          <div className="divide-y divide-border/60">
+                            {c.invoices.map((inv) => (
+                              <div key={inv.id} className="grid grid-cols-12 p-2 items-center">
+                                <div className="col-span-3 font-semibold text-text">
+                                  #{inv.number}
                                 </div>
-                              )}
-                            </div>
-
-                            <div className="flex items-center gap-1.5">
-                              {c.customer_mobile && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => handleRemindCustomer(c)}
-                                  title="Send WhatsApp Reminder"
-                                >
-                                  <Share2 className="w-4 h-4 text-primary" />
-                                </Button>
-                              )}
-
-                              <Button
-                                variant="primary"
-                                size="sm"
-                                onClick={() =>
-                                  handleOpenReceive({
-                                    id: c.customer_id,
-                                    name: c.customer_name,
-                                    mobile: c.customer_mobile,
-                                  })
-                                }
-                              >
-                                Receive
-                              </Button>
-                            </div>
+                                <div className="col-span-3 text-text-muted text-[11px]">
+                                  {formatDate(inv.invoice_date)}
+                                  {inv.is_overdue && (
+                                    <span className="text-danger font-bold ml-1">
+                                      ({inv.days_overdue}d late)
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="col-span-2 text-right text-text-muted">
+                                  {formatINR(inv.total)}
+                                </div>
+                                <div className="col-span-2 text-right text-success font-medium">
+                                  {formatINR(inv.paid_amount)}
+                                </div>
+                                <div className="col-span-2 text-right font-bold text-danger">
+                                  {formatINR(inv.balance)}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
-
-                        {/* Expandable Unpaid/Partial Bills Table */}
-                        {isExpanded && (
-                          <div className="border-t border-border bg-surface/50 p-3">
-                            <div className="border border-border rounded-lg overflow-hidden bg-white text-xs">
-                              <div className="bg-surface grid grid-cols-12 p-2.5 font-semibold text-text-muted border-b border-border">
-                                <div className="col-span-3">Bill # & Status</div>
-                                <div className="col-span-3">Date / Due</div>
-                                <div className="col-span-2 text-right">Total</div>
-                                <div className="col-span-2 text-right">Paid</div>
-                                <div className="col-span-2 text-right">Action / Due</div>
-                              </div>
-
-                              <div className="divide-y divide-border/60">
-                                {c.invoices.map((inv) => (
-                                  <div key={inv.id} className="grid grid-cols-12 p-2.5 items-center">
-                                    <div className="col-span-3 flex items-center gap-1.5 font-semibold text-text">
-                                      <span>#{inv.number}</span>
-                                      {inv.paid_amount > 0 ? (
-                                        <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                                          Partial
-                                        </span>
-                                      ) : (
-                                        <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-zinc-100 text-zinc-600 border border-zinc-200">
-                                          Unpaid
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="col-span-3 text-text-muted text-[11px]">
-                                      {formatDate(inv.invoice_date)}
-                                      {inv.is_overdue ? (
-                                        <span className="text-danger font-bold ml-1">
-                                          ({inv.days_overdue}d late)
-                                        </span>
-                                      ) : inv.days_left === 0 ? (
-                                        <span className="text-amber-700 font-medium ml-1">
-                                          (Today)
-                                        </span>
-                                      ) : inv.days_left ? (
-                                        <span className="text-emerald-700 font-medium ml-1">
-                                          (in {inv.days_left}d)
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                    <div className="col-span-2 text-right text-text-muted">
-                                      {formatINR(inv.total)}
-                                    </div>
-                                    <div className="col-span-2 text-right text-success font-medium">
-                                      {formatINR(inv.paid_amount)}
-                                    </div>
-                                    <div className="col-span-2 flex items-center justify-end gap-2 text-right">
-                                      <span className="font-bold text-danger">
-                                        {formatINR(inv.balance)}
-                                      </span>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() =>
-                                          handleOpenReceive(
-                                            {
-                                              id: c.customer_id,
-                                              name: c.customer_name,
-                                              mobile: c.customer_mobile,
-                                            },
-                                            {
-                                              id: inv.id,
-                                              number: inv.number,
-                                              balance: inv.balance,
-                                            }
-                                          )
-                                        }
-                                        className="h-6 px-1.5 text-[11px] font-semibold text-primary border-primary/30 hover:bg-primary/5"
-                                      >
-                                        Pay
-                                      </Button>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        )}
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1959,15 +1674,8 @@ export const MoneyPage: React.FC = () => {
       {/* Receive Payment Sheet */}
       <ReceivePaymentSheet
         open={isReceivePaymentOpen}
-        onOpenChange={(open) => {
-          setIsReceivePaymentOpen(open);
-          if (!open) {
-            setReceivePrefillCustomer(undefined);
-            setReceivePrefillInvoice(undefined);
-          }
-        }}
+        onOpenChange={setIsReceivePaymentOpen}
         prefillCustomer={receivePrefillCustomer}
-        prefillInvoice={receivePrefillInvoice}
         onSuccess={() => {
           fetchDues();
           fetchReceipts();
