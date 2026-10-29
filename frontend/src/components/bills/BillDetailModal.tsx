@@ -10,7 +10,7 @@ import { Button } from '../ui/Button';
 import { StatusDot } from '../ui/StatusDot';
 import { useToast } from '../ui/Toast';
 import { useAuth } from '../../context/AuthContext';
-import { Printer, Share2, Download } from 'lucide-react';
+import { Printer, Share2, Download, CheckCircle2 } from 'lucide-react';
 import { Database } from '../../types/supabase';
 import { ApplyAdvanceModal } from './ApplyAdvanceModal';
 import { InvoiceDocument } from '../documents/InvoiceDocument';
@@ -25,6 +25,8 @@ export interface BillDetailModalProps {
   invoice: (Invoice & { invoice_items?: InvoiceItem[] }) | null;
   onInvoiceUpdated?: () => void;
   onReceivePayment?: (invoice: Invoice) => void;
+  onNewBill?: () => void;
+  onGoToBills?: () => void;
 }
 
 export const BillDetailModal: React.FC<BillDetailModalProps> = ({
@@ -33,6 +35,8 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   invoice,
   onInvoiceUpdated,
   onReceivePayment,
+  onNewBill,
+  onGoToBills,
 }) => {
   const { business } = useAuth();
   const { showToast } = useToast();
@@ -182,6 +186,40 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
         title={`Bill #${invoice.number}`}
       >
         <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+          {/* New Bill Created Success Banner */}
+          {onNewBill && (
+            <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-3.5 py-2.5 rounded-xl flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 font-bold">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Bill Created Successfully!</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpenChange(false);
+                    onNewBill();
+                  }}
+                  className="px-3 py-1 bg-[#0862EC] hover:bg-blue-700 text-white rounded-lg font-bold text-xs transition-colors shadow-2xs cursor-pointer"
+                >
+                  + New Bill
+                </button>
+                {onGoToBills && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpenChange(false);
+                      onGoToBills();
+                    }}
+                    className="px-3 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg font-bold text-xs transition-colors cursor-pointer"
+                  >
+                    Bills List
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* View Mode & Format Controls */}
           <div className="flex items-center justify-between pb-2 border-b border-border">
             <div className="flex gap-1 bg-surface p-0.5 rounded-lg border border-border text-xs">
@@ -426,6 +464,37 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
               >
                 Cancel Bill
               </Button>
+            )}
+
+            {/* Bottom New Bill / Go to Bills Navigation when opened after bill creation */}
+            {onNewBill && (
+              <div className="col-span-2 grid grid-cols-2 gap-2 pt-2 border-t border-border">
+                {onGoToBills && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="md"
+                    onClick={() => {
+                      onOpenChange(false);
+                      onGoToBills();
+                    }}
+                  >
+                    Go to Bills List
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="md"
+                  className={!onGoToBills ? 'col-span-2' : ''}
+                  onClick={() => {
+                    onOpenChange(false);
+                    onNewBill();
+                  }}
+                >
+                  + Create Another Bill
+                </Button>
+              </div>
             )}
           </div>
         </div>

@@ -5,8 +5,9 @@ import { computeBillTotals, computeLineAmount, formatINR } from '../lib/money';
 import { formatInputDate, getFYLabel } from '../lib/dates';
 import { normaliseMobile } from '../lib/auth';
 import { getErrorMessage } from '../i18n';
-import { Sheet } from '../components/ui/Sheet';
 import { useToast } from '../components/ui/Toast';
+import { BillDetailModal } from '../components/bills/BillDetailModal';
+import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet';
 import {
   FileText,
   CreditCard,
@@ -38,6 +39,8 @@ import { Database } from '../types/supabase';
 
 type Service = Database['public']['Tables']['services']['Row'];
 type Customer = Database['public']['Tables']['customers']['Row'];
+type Invoice = Database['public']['Tables']['invoices']['Row'];
+type InvoiceItem = Database['public']['Tables']['invoice_items']['Row'];
 
 // Single unified item state for all items & jobs
 interface BillItemState {
@@ -148,10 +151,36 @@ export const NewBillPage: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [showNotes, setShowNotes] = useState(false);
 
-  // Status & Success Sheet
+  // Status & Bill Detail Modal
   const [saving, setSaving] = useState(false);
-  const [savedInvoice, setSavedInvoice] = useState<any | null>(null);
-  const [isSuccessSheetOpen, setIsSuccessSheetOpen] = useState(false);
+  const [savedInvoice, setSavedInvoice] = useState<(Invoice & { invoice_items?: InvoiceItem[] }) | null>(null);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+
+  // Receive payment sheet state from modal shortcut
+  const [isReceivePaymentOpen, setIsReceivePaymentOpen] = useState(false);
+  const [receivePaymentInvoice, setReceivePaymentInvoice] = useState<Invoice | null>(null);
+
+  const resetForm = () => {
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+    setItems([
+      {
+        id: '1',
+        description: '',
+        particular: '',
+        create_job: true,
+        quantity: '1',
+        rate: '',
+      },
+    ]);
+    setWalkInName('');
+    setWalkInMobile('');
+    setDiscountType('NONE');
+    setDiscountValue('');
+    setPaidNow('');
+    setNotes('');
+    setSelectedCustomerId(null);
+    setIsWalkIn(true);
+  };
 
   // Load services & customers
   useEffect(() => {
@@ -355,29 +384,32 @@ export const NewBillPage: React.FC = () => {
       // Clear local draft
       localStorage.removeItem(DRAFT_STORAGE_KEY);
 
-      if (saveAndNew) {
-        showToast(`Bill #${data.number} created successfully!`, 'success');
-        // Reset form
-        setItems([
-          {
-            id: '1',
-            description: '',
-            particular: '',
-            create_job: true,
-            quantity: '1',
-            rate: '',
-          },
-        ]);
-        setWalkInName('');
-        setWalkInMobile('');
-        setDiscountType('NONE');
-        setDiscountValue('');
-        setPaidNow('');
-        setNotes('');
-      } else {
-        setSavedInvoice(data);
-        setIsSuccessSheetOpen(true);
-      }
+      // Fetch complete invoice data and items so BillDetailModal displays full document
+      const { data: invData } = await supabase
+        .from('invoices')
+        .select('*')
+        .eq('id', data.id)
+        .single();
+
+      const { data: itemsData } = await supabase
+        .from('invoice_items')
+        .select('*')
+        .eq('invoice_id', data.id);
+
+      const fullInvoice: Invoice & { invoice_items?: InvoiceItem[] } = {
+        ...(invData || data),
+        invoice_items: (itemsData as InvoiceItem[]) || [],
+      };
+
+      setSavedInvoice(fullInvoice);
+      setIsDetailModalOpen(true);
+      resetForm();
+      showToast(
+        saveAndNew
+          ? `Bill #${data.number} saved! Form ready for next bill.`
+          : `Bill #${data.number} created successfully!`,
+        'success'
+      );
     } catch (err: any) {
       showToast(getErrorMessage(err.message), 'error');
     } finally {
@@ -1034,66 +1066,80 @@ export const NewBillPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Bill Success / Share Sheet */}
-      <Sheet
-        open={isSuccessSheetOpen}
+      {/* Generated Bill Invoice Modal (identical to Bill List view) */}
+      <BillDetailModal
+        open={isDetailModalOpen}
         onOpenChange={(open) => {
-          setIsSuccessSheetOpen(open);
-          if (!open) navigate('/bills');
+          setIsDetailModalOpen(open);
         }}
-        title={`Bill #${savedInvoice?.number || ''} Saved!`}
-      >
-        <div className="p-4 space-y-4">
-          <div className="text-center py-4 bg-blue-50/60 rounded-2xl border border-blue-100">
-            <div className="w-12 h-12 bg-[#0862EC] text-white rounded-2xl flex items-center justify-center mx-auto mb-2 shadow-md shadow-blue-500/20">
-              <Check className="w-6 h-6 stroke-[3]" />
-            </div>
-            <h3 className="font-bold text-slate-900 text-base">Bill Created Successfully</h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Invoice #{savedInvoice?.number} · {savedInvoice ? formatINR(savedInvoice.total) : ''}
-            </p>
-          </div>
+        invoice={savedInvoice}
+        onInvoiceUpdated={async () => {
+          if (savedInvoice?.id) {
+            const { data: invData } = await supabase
+              .from('invoices')
+              .select('*')
+              .eq('id', savedInvoice.id)
+              .single();
+            const { data: itemsData } = await supabase
+              .from('invoice_items')
+              .select('*')
+              .eq('invoice_id', savedInvoice.id);
+            if (invData) {
+              setSavedInvoice({
+                ...(invData as Invoice),
+                invoice_items: (itemsData as InvoiceItem[]) || [],
+              });
+            }
+          }
+        }}
+        onReceivePayment={(inv) => {
+          setReceivePaymentInvoice(inv);
+          setIsReceivePaymentOpen(true);
+        }}
+        onNewBill={() => {
+          resetForm();
+        }}
+        onGoToBills={() => {
+          navigate('/bills');
+        }}
+      />
 
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setIsSuccessSheetOpen(false);
-                navigate('/bills');
-              }}
-              className="py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
-            >
-              Go to Bills List
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setIsSuccessSheetOpen(false);
-                setItems([
-                  {
-                    id: '1',
-                    description: '',
-                    particular: '',
-                    create_job: true,
-                    quantity: '1',
-                    rate: '',
-                  },
-                ]);
-                setWalkInName('');
-                setWalkInMobile('');
-                setDiscountType('NONE');
-                setDiscountValue('');
-                setPaidNow('');
-                setNotes('');
-              }}
-              className="py-2.5 px-3 rounded-xl bg-[#0862EC] hover:bg-blue-700 text-white text-xs font-bold"
-            >
-              + Create Another Bill
-            </button>
-          </div>
-        </div>
-      </Sheet>
+      {/* Receive Payment Sheet shortcut from Bill Modal */}
+      {receivePaymentInvoice && (
+        <ReceivePaymentSheet
+          open={isReceivePaymentOpen}
+          onOpenChange={(v) => {
+            setIsReceivePaymentOpen(v);
+            if (!v) setReceivePaymentInvoice(null);
+          }}
+          prefillCustomer={
+            receivePaymentInvoice.customer_id
+              ? {
+                  id: receivePaymentInvoice.customer_id,
+                  name: receivePaymentInvoice.party_name,
+                  mobile: receivePaymentInvoice.party_mobile,
+                }
+              : undefined
+          }
+          prefillInvoice={{
+            id: receivePaymentInvoice.id,
+            number: receivePaymentInvoice.number,
+            balance: Math.max(0, receivePaymentInvoice.total - receivePaymentInvoice.paid_amount),
+          }}
+          onSuccess={async () => {
+            if (savedInvoice?.id) {
+              const { data: invData } = await supabase
+                .from('invoices')
+                .select('*')
+                .eq('id', savedInvoice.id)
+                .single();
+              if (invData) {
+                setSavedInvoice((prev) => (prev ? { ...prev, ...(invData as Invoice) } : null));
+              }
+            }
+          }}
+        />
+      )}
     </div>
   );
 };
