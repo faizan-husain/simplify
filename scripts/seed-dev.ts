@@ -207,7 +207,28 @@ async function runSeed() {
       const dateStr = invDate.toISOString().split('T')[0];
 
       const dueDate = new Date(invDate);
-      dueDate.setDate(dueDate.getDate() + 7);
+      if (i % 10 > 6) {
+        // Realistic distribution for pending dues (partial or unpaid)
+        const dueScenario = i % 3;
+        if (dueScenario === 0) {
+          // Overdue: due date in the past (3 to 15 days ago)
+          const odDaysAgo = (i % 12) + 3;
+          const odDate = new Date();
+          odDate.setDate(odDate.getDate() - odDaysAgo);
+          dueDate.setTime(odDate.getTime());
+        } else if (dueScenario === 1) {
+          // Due Today: due date is today
+          dueDate.setTime(new Date().getTime());
+        } else {
+          // Current / Upcoming: due date in the future (3 to 14 days ahead)
+          const upDays = (i % 12) + 3;
+          const upDate = new Date();
+          upDate.setDate(upDate.getDate() + upDays);
+          dueDate.setTime(upDate.getTime());
+        }
+      } else {
+        dueDate.setDate(dueDate.getDate() + 7);
+      }
       const dueDateStr = dueDate.toISOString().split('T')[0];
 
       const custIndex = i % customerNames.length;
