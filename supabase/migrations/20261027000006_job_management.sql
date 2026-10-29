@@ -178,7 +178,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
 
-REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int) FROM anon, public;
 REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) FROM anon, public;
 GRANT EXECUTE ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) TO authenticated;
 

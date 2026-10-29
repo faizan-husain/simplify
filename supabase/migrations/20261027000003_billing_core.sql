@@ -442,6 +442,8 @@ DECLARE
   v_receipt_id uuid;
 
   v_service_row public.services%ROWTYPE;
+  v_service_id uuid;
+  v_job_type_name text;
   v_step_row record;
   v_step_count int := 0;
   v_job_id uuid;
@@ -833,7 +835,6 @@ BEGIN
           );
         END IF;
       END IF;
-    END IF;
   END LOOP;
 
   -- 9. Receipt and Allocation in same transaction if paid now > 0 (BR-7)

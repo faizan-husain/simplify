@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { formatINR } from '../lib/money';
 import { t, getErrorMessage } from '../i18n';
@@ -27,7 +28,24 @@ export const JobsPage: React.FC = () => {
   const { business, role, refreshProfile } = useAuth();
   const { showToast } = useToast();
 
-  const [activeTab, setActiveTab] = useState<'CURRENT' | 'COMPLETED' | 'DUE' | 'YELLOW' | 'RED'>('CURRENT');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab')?.toUpperCase();
+  const validTabs = ['CURRENT', 'COMPLETED', 'DUE', 'YELLOW', 'RED'];
+  const [activeTab, setActiveTab] = useState<'CURRENT' | 'COMPLETED' | 'DUE' | 'YELLOW' | 'RED'>(
+    validTabs.includes(urlTab || '') ? (urlTab as any) : 'CURRENT'
+  );
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab')?.toUpperCase();
+    if (tabParam && validTabs.includes(tabParam) && tabParam !== activeTab) {
+      setActiveTab(tabParam as any);
+    }
+  }, [searchParams]);
+
+  const handleTabChange = (val: string) => {
+    setActiveTab(val as any);
+    setSearchParams({ tab: val });
+  };
   const [search, setSearch] = useState('');
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const [sortOrder, setSortOrder] = useState<'QUEUE' | 'PROGRESS'>('QUEUE');
@@ -368,7 +386,7 @@ export const JobsPage: React.FC = () => {
       </div>
 
       {/* Tab Navigation */}
-      <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as any)}>
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList className="w-full h-11 p-1 bg-slate-100 rounded-xl">
           <TabsTrigger value="CURRENT" className="flex-1 font-semibold text-xs sm:text-sm">
             Current Queue ({tabCounts.current})
