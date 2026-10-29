@@ -42,6 +42,12 @@ import { Database } from '../types/supabase';
 type Receipt = Database['public']['Tables']['receipts']['Row'] & {
   customer?: { name: string; mobile: string | null } | null;
   bank_name?: string | null;
+  allocations?: Array<{
+    amount: number;
+    invoice_number?: string;
+    bill_no?: string;
+    invoice?: { number: string; party_name: string; party_mobile: string | null };
+  }>;
 };
 type Payment = Database['public']['Tables']['payments']['Row'] & {
   vendors?: { id: string; name: string; mobile: string | null };
@@ -261,33 +267,112 @@ export const MoneyPage: React.FC = () => {
     }
   };
 
-  // Fetch receipts
+  // Fetch receipts with customer resolution & allocations
   const fetchReceipts = async () => {
     setLoadingReceipts(true);
     try {
-      let query = supabase
-        .from('receipts')
-        .select('*, customer:customers(name, mobile)')
-        .is('deleted_at', null)
-        .order('receipt_date', { ascending: false })
-        .order('created_at', { ascending: false })
-        .limit(100);
+      // 1. Try receipts_list RPC with full customer resolution & allocations
+      const { data, error } = await supabase.rpc('receipts_list', {
+        p_search: receiptsSearch.trim() || null,
+        p_mode: modeFilter,
+        p_limit: 100,
+        p_offset: 0,
+      });
 
-      if (receiptsSearch.trim()) {
-        query = query.or(
-          `number.ilike.%${receiptsSearch.trim()}%,reference.ilike.%${receiptsSearch.trim()}%`
-        );
+      if (!error && Array.isArray(data)) {
+        setReceipts(data as Receipt[]);
+      } else {
+        // Fallback to table query
+        let query = supabase
+          .from('receipts')
+          .select('*, customer:customers(name, mobile)')
+          .is('deleted_at', null)
+          .order('receipt_date', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(100);
+
+        if (receiptsSearch.trim()) {
+          query = query.or(
+            `number.ilike.%${receiptsSearch.trim()}%,reference.ilike.%${receiptsSearch.trim()}%`
+          );
+        }
+
+        const { data: fbData, error: fbErr } = await query;
+        if (fbErr) throw fbErr;
+        setReceipts((fbData as Receipt[]) || []);
       }
-
-      const { data, error } = await query;
-      if (error) throw error;
-      setReceipts((data as Receipt[]) || []);
     } catch (err: any) {
       showToast(getErrorMessage(err.message), 'error');
     } finally {
       setLoadingReceipts(false);
     }
   };
+
+  const getReceiptDisplayInfo = (r: Receipt) => {
+    let name = 'Walk-in Customer';
+    let mobile: string | null = null;
+    const isOther = r.kind === 'OTHER_INCOME';
+
+    if (isOther) {
+      name = r.income_category || 'Other Income';
+    } else if (r.customer?.name) {
+      name = r.customer.name;
+      mobile = r.customer.mobile || null;
+    } else if (r.allocations && r.allocations.length > 0) {
+      const firstAlloc = r.allocations[0];
+      const invPartyName = firstAlloc.invoice?.party_name || (firstAlloc as any).party_name;
+      const invPartyMobile = firstAlloc.invoice?.party_mobile || (firstAlloc as any).party_mobile;
+      if (invPartyName) {
+        name = invPartyName;
+        mobile = invPartyMobile || null;
+      }
+    }
+
+    const billNumbers: string[] = [];
+    if (r.allocations && r.allocations.length > 0) {
+      for (const a of r.allocations) {
+        const invNum = a.invoice?.number || a.invoice_number || a.bill_no;
+        if (invNum) {
+          billNumbers.push(invNum);
+        }
+      }
+    }
+
+    let billsText: string | null = null;
+    if (billNumbers.length === 1) {
+      billsText = `Bill #${billNumbers[0]}`;
+    } else if (billNumbers.length > 1) {
+      billsText = `${billNumbers.length} Bills (#${billNumbers.join(', #')})`;
+    }
+
+    return { name, mobile, isOther, billsText, billNumbers };
+  };
+
+  const filteredReceipts = React.useMemo(() => {
+    return receipts.filter((r) => {
+      // Mode filter
+      if (modeFilter === 'CASH' && r.mode !== 'CASH') return false;
+      if (modeFilter === 'BANK_UPI' && !['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode)) return false;
+
+      // Real-time search filter across Customer Name, Phone, Receipt #, Reference, Bills, Category, Notes
+      if (receiptsSearch.trim()) {
+        const term = receiptsSearch.toLowerCase().trim();
+        const info = getReceiptDisplayInfo(r);
+        const nameMatch = info.name.toLowerCase().includes(term);
+        const mobileMatch = (info.mobile || '').toLowerCase().includes(term);
+        const numMatch = (r.number || '').toLowerCase().includes(term);
+        const refMatch = (r.reference || '').toLowerCase().includes(term);
+        const notesMatch = (r.notes || '').toLowerCase().includes(term);
+        const billsMatch = (info.billsText || '').toLowerCase().includes(term);
+        const bankMatch = (r.bank_name || '').toLowerCase().includes(term);
+
+        if (!nameMatch && !mobileMatch && !numMatch && !refMatch && !notesMatch && !billsMatch && !bankMatch) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [receipts, modeFilter, receiptsSearch]);
 
   // Fetch payments
   const fetchPayments = async () => {
@@ -877,11 +962,11 @@ export const MoneyPage: React.FC = () => {
               </button>
             </div>
 
-            <div className="relative flex-1 sm:w-72">
+            <div className="relative flex-1 sm:w-80">
               <Search className="w-4 h-4 text-text-muted absolute left-3 top-2.5" />
               <Input
                 type="text"
-                placeholder="Search receipt # / reference..."
+                placeholder="Search customer, mobile, receipt #, bill #..."
                 value={receiptsSearch}
                 onChange={(e) => setReceiptsSearch(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && fetchReceipts()}
@@ -893,99 +978,164 @@ export const MoneyPage: React.FC = () => {
           {loadingReceipts ? (
             <div className="space-y-3">
               {[1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-16 w-full rounded-xl" />
+                <Skeleton key={i} className="h-20 w-full rounded-xl" />
               ))}
             </div>
-          ) : receipts.length === 0 ? (
+          ) : filteredReceipts.length === 0 ? (
             <Card className="p-8 text-center">
-              <EmptyState message="No receipts recorded. Customer payments and other income receipts will appear here." />
+              <EmptyState
+                message={
+                  receiptsSearch.trim()
+                    ? `No receipts matching "${receiptsSearch}".`
+                    : 'No receipts recorded. Customer payments and other income receipts will appear here.'
+                }
+              />
             </Card>
           ) : (
-            <div className="space-y-2">
-              {receipts
-                .filter((r) => {
-                  if (modeFilter === 'ALL') return true;
-                  if (modeFilter === 'CASH') return r.mode === 'CASH';
-                  if (modeFilter === 'BANK_UPI') return ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode);
-                  return true;
-                })
-                .map((r) => (
+            <div className="space-y-2.5">
+              {filteredReceipts.map((r) => {
+                const info = getReceiptDisplayInfo(r);
+                return (
                   <div
                     key={r.id}
-                    className="bg-white border border-border rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-surface/30 transition-colors shadow-2xs"
+                    className="bg-white border border-border rounded-xl p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-primary/40 hover:shadow-xs transition-all"
                   >
-                    <div className="space-y-1.5 flex-1 pr-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-extrabold text-slate-900 text-sm">#{r.number}</span>
-                        {r.customer?.name && (
-                          <span className="font-bold text-primary text-xs bg-primary/5 px-2 py-0.5 rounded-md border border-primary/10">
-                            👤 {r.customer.name}
-                          </span>
-                        )}
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-                            ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode)
-                              ? 'bg-blue-50 text-primary border-blue-200'
-                              : 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                          }`}
-                        >
-                          {r.mode === 'BANK' ? '🏦 Bank' : r.mode === 'UPI' ? '📱 UPI' : r.mode}
-                        </span>
-                        {r.bank_name && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700">
-                            {r.bank_name}
-                          </span>
-                        )}
-                        {r.kind === 'OTHER_INCOME' && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-50 text-amber-800 border border-amber-200">
-                            {r.income_category || 'Other Income'}
-                          </span>
-                        )}
-                        {r.unallocated_amount > 0 && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-primary/10 text-primary border border-primary/20">
-                            Advance: {formatINR(r.unallocated_amount)}
-                          </span>
-                        )}
+                    {/* Left: Customer Avatar + Details */}
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      {/* Avatar */}
+                      <div
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm shrink-0 select-none ${
+                          info.isOther
+                            ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                            : ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode)
+                            ? 'bg-blue-100 text-primary border border-blue-200'
+                            : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                        }`}
+                      >
+                        {info.isOther ? '₹' : (info.name.charAt(0).toUpperCase() || '👤')}
                       </div>
 
-                      <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-2">
-                        <span>{formatDate(r.receipt_date)}</span>
-                        {r.customer?.mobile && <span>· 📞 {r.customer.mobile}</span>}
-                        {r.reference && <span className="font-mono text-slate-700 font-semibold">· Ref: {r.reference}</span>}
-                        {r.notes && <span className="italic">· {r.notes}</span>}
+                      <div className="space-y-1 min-w-0 flex-1">
+                        {/* Primary: Customer Name & Key Badges */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-extrabold text-slate-900 text-sm sm:text-base tracking-tight truncate">
+                            {info.name}
+                          </span>
+
+                          {info.mobile && (
+                            <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md flex items-center gap-1">
+                              <span>📞</span> {info.mobile}
+                            </span>
+                          )}
+
+                          {/* Mode Badge */}
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-md font-bold border inline-flex items-center gap-1 ${
+                              ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(r.mode)
+                                ? 'bg-blue-50 text-primary border-blue-200'
+                                : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            }`}
+                          >
+                            {r.mode === 'BANK'
+                              ? '🏦 Bank'
+                              : r.mode === 'UPI'
+                              ? '📱 UPI'
+                              : r.mode === 'CASH'
+                              ? '💵 Cash'
+                              : r.mode}
+                          </span>
+
+                          {/* Bank Name */}
+                          {r.bank_name && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-md font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                              {r.bank_name}
+                            </span>
+                          )}
+
+                          {/* Other Income Category */}
+                          {r.kind === 'OTHER_INCOME' && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                              {r.income_category || 'Other Income'}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Secondary: Receipt Number, Date, Linked Bills, Advance, Ref, Notes */}
+                        <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                          <span className="font-mono font-bold text-slate-700 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 text-[11px]">
+                            #{r.number}
+                          </span>
+
+                          <span>📅 {formatDate(r.receipt_date)}</span>
+
+                          {/* Linked Bills */}
+                          {info.billsText && (
+                            <span className="text-primary font-bold bg-primary/5 px-2 py-0.5 rounded border border-primary/15 text-[11px] inline-flex items-center gap-1">
+                              <FileText className="w-3 h-3" />
+                              <span>{info.billsText}</span>
+                            </span>
+                          )}
+
+                          {/* Advance Balance */}
+                          {parseFloat(String(r.unallocated_amount || '0')) > 0 && (
+                            <span className="text-amber-800 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-200 text-[11px]">
+                              ⚡ Advance: {formatINR(r.unallocated_amount)}
+                            </span>
+                          )}
+
+                          {/* Reference */}
+                          {r.reference && (
+                            <span className="font-mono text-slate-600 font-semibold">
+                              Ref: {r.reference}
+                            </span>
+                          )}
+
+                          {/* Notes */}
+                          {r.notes && (
+                            <span className="italic text-slate-500">
+                              · "{r.notes}"
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between sm:justify-end gap-2.5 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
-                      <div className="text-right font-black text-success text-base sm:text-lg pr-1">
-                        +{formatINR(r.amount)}
+                    {/* Right: Amount & Actions */}
+                    <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 shrink-0">
+                      <div className="text-right">
+                        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                          Received
+                        </div>
+                        <div className="font-black text-emerald-600 text-lg sm:text-xl leading-none">
+                          +{formatINR(r.amount)}
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1.5">
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => setSelectedReceiptDetailId(r.id)}
                           title="View & Print Receipt PDF"
-                          className="h-8 text-xs font-bold"
+                          className="h-8 text-xs font-bold px-2.5 flex items-center gap-1 border-slate-200 hover:border-primary hover:text-primary"
                         >
-                          <Printer className="w-3.5 h-3.5 mr-1" />
-                          Receipt
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>PDF</span>
                         </Button>
 
-                        {r.customer?.mobile && (
+                        {info.mobile && (
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => {
-                              const message = `Hello ${r.customer?.name || 'Customer'}, payment receipt #${r.number} of ${formatINR(r.amount)} received on ${formatDate(r.receipt_date)} via ${r.mode}. Thank you! - ${business?.name || 'SIMPLIFY'}`;
-                              const url = getWhatsAppUrl(r.customer!.mobile!, message);
+                              const message = `Hello ${info.name}, payment receipt #${r.number} of ${formatINR(r.amount)} received on ${formatDate(r.receipt_date)} via ${r.mode}. Thank you! - ${business?.name || 'SIMPLIFY'}`;
+                              const url = getWhatsAppUrl(info.mobile!, message);
                               window.open(url, '_blank');
                             }}
                             title="WhatsApp Receipt to Customer"
-                            className="h-8 w-8 p-0"
+                            className="h-8 w-8 p-0 text-emerald-600 hover:bg-emerald-50"
                           >
-                            <Share2 className="w-3.5 h-3.5 text-emerald-600" />
+                            <Share2 className="w-3.5 h-3.5" />
                           </Button>
                         )}
 
@@ -994,14 +1144,15 @@ export const MoneyPage: React.FC = () => {
                           size="sm"
                           onClick={() => handleDeleteReceiptClick(r.id)}
                           title="Delete Receipt (Reverses Allocations)"
-                          className="h-8 w-8 p-0"
+                          className="h-8 w-8 p-0 text-slate-400 hover:text-danger hover:bg-danger/10"
                         >
-                          <Trash2 className="w-3.5 h-3.5 text-slate-400 hover:text-danger" />
+                          <Trash2 className="w-3.5 h-3.5" />
                         </Button>
                       </div>
                     </div>
                   </div>
-                ))}
+                );
+              })}
             </div>
           )}
         </div>

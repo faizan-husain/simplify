@@ -640,6 +640,32 @@ const server = http.createServer(async (req, res) => {
             FROM public.${table} e
             ${whereClause} ${orderClause} ${limitClause}
           `;
+        } else if (table === 'receipts') {
+          querySql = `
+            SELECT r.*,
+              COALESCE(
+                (SELECT json_build_object('name', c.name, 'mobile', c.mobile) FROM public.customers c WHERE c.id = r.customer_id),
+                (SELECT json_build_object('name', i.party_name, 'mobile', i.party_mobile)
+                 FROM public.receipt_allocations ra
+                 JOIN public.invoices i ON i.id = ra.invoice_id
+                 WHERE ra.receipt_id = r.id
+                 ORDER BY ra.created_at ASC
+                 LIMIT 1),
+                json_build_object('name', CASE WHEN r.kind = 'OTHER_INCOME' THEN COALESCE(r.income_category, 'Other Income') ELSE 'Walk-in Customer' END, 'mobile', null)
+              ) as customer,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'amount', ra.amount,
+                  'invoice_number', i.number,
+                  'invoice', json_build_object('number', i.number, 'party_name', i.party_name, 'party_mobile', i.party_mobile)
+                ))
+                FROM public.receipt_allocations ra
+                JOIN public.invoices i ON i.id = ra.invoice_id
+                WHERE ra.receipt_id = r.id
+              ), '[]'::json) as allocations
+            FROM public.receipts r
+            ${whereClause} ${orderClause} ${limitClause}
+          `;
         } else {
           querySql = `SELECT * FROM public.${table} ${whereClause} ${orderClause} ${limitClause}`;
         }
