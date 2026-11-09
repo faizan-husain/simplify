@@ -152,8 +152,8 @@ export const Layout: React.FC = () => {
         ...(business?.job_management_enabled
           ? [{ to: '/jobs', label: t('nav.jobs'), icon: Briefcase }]
           : []),
-        { to: '/customers', label: t('nav.customers'), icon: Users },
-        { to: '/services', label: t('nav.services'), icon: Sparkles },
+        { to: '/customers', label: 'Customers', icon: Users },
+        { to: '/services', label: 'Services', icon: Sparkles },
         { to: '/earnings', label: 'Earnings', icon: Coins },
       ]
     : [
