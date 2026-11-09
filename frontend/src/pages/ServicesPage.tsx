@@ -23,6 +23,8 @@ import {
   Percent,
 } from 'lucide-react';
 import { Database } from '../types/supabase';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { useAuth } from '../context/AuthContext';
 
 type Service = Database['public']['Tables']['services']['Row'];
 
@@ -105,8 +107,13 @@ const WA_VARIABLES = [
   '{business_name}',
 ];
 
+import { Badge } from '../components/ui/Badge';
+import { IconButton } from '../components/ui/IconButton';
+
 export const ServicesPage: React.FC = () => {
   const { showToast } = useToast();
+  const { role } = useAuth();
+  const isStaff = role === 'STAFF';
 
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
@@ -115,6 +122,8 @@ export const ServicesPage: React.FC = () => {
   // Sheet state
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
+  const [serviceToDelete, setServiceToDelete] = useState<Service | null>(null);
+  const [deletingService, setDeletingService] = useState(false);
 
   // Form state
   const [name, setName] = useState('');
@@ -321,24 +330,55 @@ export const ServicesPage: React.FC = () => {
         serviceId = data.id;
       }
 
-      // If this is a job type, sync job_type_steps
-      if (isJobType && serviceId) {
-        // 1. Delete existing steps
-        await supabase.from('job_type_steps').delete().eq('service_id', serviceId);
+      // Synchronize job_type_steps and active jobs
+      if (serviceId) {
+        if (isJobType) {
+          // 1. Delete existing steps in job_type_steps
+          await supabase.from('job_type_steps').delete().eq('service_id', serviceId);
 
-        // 2. Insert new steps
-        const validSteps = steps.filter((st) => st.name.trim() !== '');
-        if (validSteps.length > 0) {
-          const rowsToInsert = validSteps.map((st, idx) => ({
-            service_id: serviceId,
-            position: idx + 1,
-            name: st.name.trim(),
-            whatsapp_message: st.whatsapp_message?.trim() || null,
-          }));
+          // 2. Insert new steps
+          const validSteps = steps.filter((st) => st.name.trim() !== '');
+          if (validSteps.length > 0) {
+            const rowsToInsert = validSteps.map((st, idx) => ({
+              service_id: serviceId,
+              position: idx + 1,
+              name: st.name.trim(),
+              whatsapp_message: st.whatsapp_message?.trim() || null,
+            }));
 
-          const { error: stepsError } = await supabase.from('job_type_steps').insert(rowsToInsert);
-          if (stepsError) throw stepsError;
+            const { error: stepsError } = await supabase.from('job_type_steps').insert(rowsToInsert);
+            if (stepsError) throw stepsError;
+          }
+
+          // 3. Automatically sync newly created steps to any active in-progress jobs for this service
+          try {
+            await supabase.rpc('sync_service_steps_to_jobs', { p_service_id: serviceId });
+          } catch (syncErr) {
+            console.warn('Failed to sync steps to existing jobs:', syncErr);
+          }
+        } else {
+          // Admin switched service from multi-step to NORMAL service:
+          // 1. Delete all steps from job_type_steps
+          await supabase.from('job_type_steps').delete().eq('service_id', serviceId);
+
+          // 2. Sync to active open jobs so their steps are removed and card displays "---- NO STEPS ----"
+          try {
+            await supabase.rpc('sync_service_steps_to_jobs', { p_service_id: serviceId });
+          } catch (syncErr) {
+            console.warn('Failed to sync normal service to existing jobs:', syncErr);
+          }
         }
+      }
+
+      // Notify other views (like JobsPage) that service steps or definitions have updated (same tab + cross tab)
+      window.dispatchEvent(new CustomEvent('simplify:jobs_updated'));
+      try {
+        localStorage.setItem('simplify:jobs_updated', Date.now().toString());
+        const bc = new BroadcastChannel('simplify_events');
+        bc.postMessage({ type: 'jobs_updated' });
+        bc.close();
+      } catch {
+        // Fallback handled by localStorage
       }
 
       showToast(t('common.success'), 'success');
@@ -351,21 +391,28 @@ export const ServicesPage: React.FC = () => {
     }
   };
 
-  const handleDelete = async (service: Service, e: React.MouseEvent) => {
+  const handleDelete = (service: Service, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm(`Delete service "${service.name}"?`)) return;
+    setServiceToDelete(service);
+  };
 
+  const handleConfirmDelete = async () => {
+    if (!serviceToDelete) return;
+    setDeletingService(true);
     try {
       const { error } = await supabase.rpc('soft_delete', {
         p_table: 'services',
-        p_id: service.id,
+        p_id: serviceToDelete.id,
       });
 
       if (error) throw error;
       showToast(t('common.success'), 'success');
+      setServiceToDelete(null);
       fetchServices();
     } catch (err: any) {
       showToast(getErrorMessage(err.message), 'error');
+    } finally {
+      setDeletingService(false);
     }
   };
 
@@ -376,17 +423,19 @@ export const ServicesPage: React.FC = () => {
   });
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-4">
+    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-text">Services & Job Types</h1>
-          <p className="text-xs text-text-muted">{services.length} registered items</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-text">Services & Job Types</h1>
+          <p className="text-xs text-text-muted mt-0.5">{services.length} registered items</p>
         </div>
-        <Button variant="primary" size="md" onClick={handleOpenCreate}>
-          <Plus className="w-4 h-4 mr-1.5" />
-          <span>Add Service / Job</span>
-        </Button>
+        {!isStaff && (
+          <Button variant="primary" size="md" onClick={handleOpenCreate}>
+            <Plus className="w-4 h-4 mr-1.5" />
+            <span>Add Service / Job</span>
+          </Button>
+        )}
       </div>
 
       {/* Search Bar */}
@@ -395,62 +444,65 @@ export const ServicesPage: React.FC = () => {
           placeholder={t('common.search')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          leftIcon={<Search className="w-4 h-4" />}
+          leftIcon={<Search className="w-4 h-4 text-text-muted" />}
         />
       </div>
 
       {/* Services Grid */}
       {loading ? (
-        <div className="space-y-2">
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <Skeleton className="h-28 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-2xl" />
         </div>
       ) : filteredServices.length === 0 ? (
         <EmptyState
           message={t('common.empty')}
-          actionLabel="Add Service / Job"
-          onAction={handleOpenCreate}
+          actionLabel={isStaff ? undefined : "Add Service / Job"}
+          onAction={isStaff ? undefined : handleOpenCreate}
         />
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
           {filteredServices.map((service) => (
             <Card
               key={service.id}
-              className="cursor-pointer hover:border-primary/50 hover:shadow-subtle transition-all p-3.5 flex flex-col justify-between"
+              className="p-4 flex flex-col justify-between cursor-pointer hover:shadow-card-hover transition-all"
               onClick={() => handleOpenEdit(service)}
             >
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-semibold text-text truncate">{service.name}</span>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[15px] font-semibold text-text truncate">{service.name}</span>
                     {service.is_job_type && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-primary/10 text-primary border border-primary/20">
-                        <Briefcase className="w-3 h-3 mr-0.5" /> Job
-                      </span>
+                      <Badge variant="neutral">
+                        <Briefcase className="w-3 h-3 mr-1 text-accent" /> Job
+                      </Badge>
                     )}
                   </div>
-                  <div className="text-xs text-text-muted mt-1">
+                  <div className="text-xs text-text-muted mt-1 tabular-nums">
                     {service.category ? `${service.category} · ` : ''}
                     {service.default_rate ? formatINR(service.default_rate) : 'Variable Rate'}
                   </div>
                 </div>
-                <button
-                  onClick={(e) => handleDelete(service, e)}
-                  className="p-1.5 text-text-muted hover:text-danger rounded hover:bg-danger/10 transition-colors"
-                  title={t('common.delete')}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {!isStaff && (
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    aria-label={t('common.delete')}
+                    onClick={(e) => handleDelete(service, e)}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-danger-text hover:text-danger" />
+                  </IconButton>
+                )}
               </div>
 
               {service.is_job_type && (
-                <div className="mt-3 pt-2 border-t border-border/60 text-[11px] text-text-muted flex justify-between">
-                  <span className="inline-flex items-center gap-1">
-                    <Clock className="w-3 h-3 text-text-muted" /> {service.deadline_days || 0} days
+                <div className="mt-3.5 pt-2.5 border-t border-hair text-xs text-text-muted flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1.5 tabular-nums">
+                    <Clock className="w-3.5 h-3.5 text-text-muted" /> {service.deadline_days || 0} days
                   </span>
-                  <span className="inline-flex items-center gap-1 font-medium text-text">
-                    <Percent className="w-3 h-3 text-primary" /> {service.commission_percent || 0}% Comm.
+                  <span className="inline-flex items-center gap-1 font-medium text-text tabular-nums">
+                    <Percent className="w-3.5 h-3.5 text-accent" /> {service.commission_percent || 0}% Comm.
                   </span>
                 </div>
               )}
@@ -463,7 +515,7 @@ export const ServicesPage: React.FC = () => {
       <Sheet
         open={isSheetOpen}
         onOpenChange={setIsSheetOpen}
-        title={editingService ? 'Edit Service / Job Type' : 'Add Service / Job Type'}
+        title={editingService ? (isStaff ? 'Service Details' : 'Edit Service / Job Type') : 'Add Service / Job Type'}
       >
         <form onSubmit={handleSave} className="space-y-4 pb-8">
           <Input
@@ -493,49 +545,49 @@ export const ServicesPage: React.FC = () => {
           </div>
 
           {/* Job Type Toggle */}
-          <div className="p-3 rounded-lg border border-border bg-surface/40 space-y-2">
+          <div className="p-3.5 rounded-xl border border-border bg-surface-2 space-y-2">
             <div className="flex items-center gap-2.5">
               <input
                 type="checkbox"
                 id="is_job_type"
                 checked={isJobType}
                 onChange={(e) => setIsJobType(e.target.checked)}
-                className="w-4 h-4 text-primary rounded border-border focus:ring-primary cursor-pointer"
+                className="w-4 h-4 text-accent rounded border-border focus:ring-accent cursor-pointer"
               />
               <label htmlFor="is_job_type" className="text-sm font-semibold text-text select-none cursor-pointer flex items-center gap-1.5">
-                <Briefcase className="w-4 h-4 text-primary" />
+                <Briefcase className="w-4 h-4 text-accent" />
                 <span>Multi-step Job Type (e.g. Passport, PAN, License)</span>
               </label>
             </div>
-            <p className="text-[11px] text-text-muted pl-6">
+            <p className="text-xs text-text-muted pl-6">
               When billed, SIMPLIFY automatically creates a trackable job with steps, deadlines, and staff commission.
             </p>
           </div>
 
           {/* Job Configuration & Steps Builder */}
           {isJobType && (
-            <div className="space-y-4 bg-surface/70 p-3.5 rounded-lg border border-border/80">
-              <div className="flex items-center justify-between pb-2 border-b border-border/60">
-                <span className="text-xs font-bold text-text uppercase tracking-wider">
+            <div className="space-y-4 bg-surface-2 p-4 rounded-xl border border-border">
+              <div className="flex items-center justify-between pb-2 border-b border-border">
+                <span className="text-xs font-semibold text-text uppercase tracking-wider">
                   Job Settings
                 </span>
-                <span className="text-[11px] text-primary font-medium">Auto-tracks per bill</span>
+                <span className="text-xs text-accent font-medium">Auto-tracks per bill</span>
               </div>
 
               {/* Deadline & Commission */}
               <div className="space-y-3">
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-semibold text-text">Default Deadline (Days)</label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-text">Default Deadline (Days)</label>
                     <div className="flex gap-1">
                       {['8', '10', '15', '20', '30'].map((d) => (
                         <button
                           key={d}
                           type="button"
                           onClick={() => setDeadlineDays(d)}
-                          className={`px-1.5 py-0.5 text-[10px] rounded font-medium transition-colors ${
+                          className={`px-2 py-0.5 text-[11px] rounded-lg font-medium transition-colors ${
                             deadlineDays === d
-                              ? 'bg-primary text-white font-bold'
+                              ? 'bg-ink text-white font-semibold shadow-btn'
                               : 'bg-white text-text-muted hover:text-text border border-border'
                           }`}
                         >
@@ -554,17 +606,17 @@ export const ServicesPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-semibold text-text">Staff Commission (%)</label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-medium text-text">Staff Commission (%)</label>
                     <div className="flex gap-1">
                       {['0', '5', '10', '15', '20'].map((c) => (
                         <button
                           key={c}
                           type="button"
                           onClick={() => setCommissionPercent(c)}
-                          className={`px-1.5 py-0.5 text-[10px] rounded font-medium transition-colors ${
+                          className={`px-2 py-0.5 text-[11px] rounded-lg font-medium transition-colors ${
                             commissionPercent === c
-                              ? 'bg-primary text-white font-bold'
+                              ? 'bg-ink text-white font-semibold shadow-btn'
                               : 'bg-white text-text-muted hover:text-text border border-border'
                           }`}
                         >
@@ -584,30 +636,30 @@ export const ServicesPage: React.FC = () => {
               </div>
 
               {/* Presets Bar */}
-              <div className="pt-2 border-t border-border/60 space-y-1.5">
-                <div className="flex items-center gap-1 text-[11px] font-semibold text-text-muted">
-                  <Sparkles className="w-3.5 h-3.5 text-primary" />
+              <div className="pt-2.5 border-t border-border space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-text-muted">
+                  <Sparkles className="w-3.5 h-3.5 text-accent" />
                   <span>Quick Templates (Autofill Steps):</span>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
                     onClick={() => handleApplyPreset(PASSPORT_PRESET)}
-                    className="px-2.5 py-1 rounded bg-white hover:bg-primary-light hover:text-primary border border-border text-[11px] font-medium transition-colors"
+                    className="px-2.5 py-1 rounded-lg bg-white hover:bg-surface-3 text-text border border-border text-xs font-medium transition-colors cursor-pointer"
                   >
                     Passport (4 steps)
                   </button>
                   <button
                     type="button"
                     onClick={() => handleApplyPreset(PAN_PRESET)}
-                    className="px-2.5 py-1 rounded bg-white hover:bg-primary-light hover:text-primary border border-border text-[11px] font-medium transition-colors"
+                    className="px-2.5 py-1 rounded-lg bg-white hover:bg-surface-3 text-text border border-border text-xs font-medium transition-colors cursor-pointer"
                   >
                     PAN Card (3 steps)
                   </button>
                   <button
                     type="button"
                     onClick={() => handleApplyPreset(GOVT_CERT_PRESET)}
-                    className="px-2.5 py-1 rounded bg-white hover:bg-primary-light hover:text-primary border border-border text-[11px] font-medium transition-colors"
+                    className="px-2.5 py-1 rounded-lg bg-white hover:bg-surface-3 text-text border border-border text-xs font-medium transition-colors cursor-pointer"
                   >
                     Govt Certificate (3 steps)
                   </button>
@@ -615,15 +667,15 @@ export const ServicesPage: React.FC = () => {
               </div>
 
               {/* Steps List */}
-              <div className="space-y-3 pt-2 border-t border-border/60">
+              <div className="space-y-3 pt-2.5 border-t border-border">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-text">
+                  <span className="text-xs font-semibold text-text">
                     Workflow Steps ({steps.length})
                   </span>
                   <button
                     type="button"
                     onClick={handleAddStep}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Add Step</span>
@@ -637,11 +689,11 @@ export const ServicesPage: React.FC = () => {
                     {steps.map((step, idx) => (
                       <div
                         key={idx}
-                        className="p-2.5 rounded-lg border border-border/70 bg-white space-y-2 shadow-sm"
+                        className="p-3 rounded-xl border border-border bg-white space-y-2 shadow-card"
                       >
                         {/* Step Title & Actions */}
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-5 h-5 rounded-full bg-primary/10 text-primary font-bold text-[11px] flex items-center justify-center shrink-0">
+                        <div className="flex items-center gap-2">
+                          <span className="w-5 h-5 rounded-full bg-accent-soft text-accent font-semibold text-[11px] flex items-center justify-center shrink-0 tabular-nums">
                             {idx + 1}
                           </span>
                           <input
@@ -649,7 +701,7 @@ export const ServicesPage: React.FC = () => {
                             value={step.name}
                             onChange={(e) => handleUpdateStep(idx, 'name', e.target.value)}
                             placeholder={`Step ${idx + 1} name`}
-                            className="flex-1 h-8 px-2.5 rounded border border-border text-xs font-medium focus:border-primary focus:outline-none"
+                            className="flex-1 h-9 px-2.5 rounded-lg border border-border text-xs font-medium text-text focus:border-accent focus:outline-none"
                             required
                           />
                           <div className="flex items-center gap-0.5">
@@ -657,7 +709,7 @@ export const ServicesPage: React.FC = () => {
                               type="button"
                               onClick={() => handleMoveStep(idx, 'UP')}
                               disabled={idx === 0}
-                              className="p-1 text-text-muted hover:text-text disabled:opacity-30 rounded"
+                              className="p-1 text-text-muted hover:text-text disabled:opacity-30 rounded-lg cursor-pointer"
                               title="Move step up"
                             >
                               <ChevronUp className="w-3.5 h-3.5" />
@@ -666,7 +718,7 @@ export const ServicesPage: React.FC = () => {
                               type="button"
                               onClick={() => handleMoveStep(idx, 'DOWN')}
                               disabled={idx === steps.length - 1}
-                              className="p-1 text-text-muted hover:text-text disabled:opacity-30 rounded"
+                              className="p-1 text-text-muted hover:text-text disabled:opacity-30 rounded-lg cursor-pointer"
                               title="Move step down"
                             >
                               <ChevronDown className="w-3.5 h-3.5" />
@@ -674,7 +726,7 @@ export const ServicesPage: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => handleRemoveStep(idx)}
-                              className="p-1 text-text-muted hover:text-danger rounded ml-1"
+                              className="p-1 text-text-muted hover:text-danger rounded-lg ml-0.5 cursor-pointer"
                               title="Delete step"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -683,10 +735,10 @@ export const ServicesPage: React.FC = () => {
                         </div>
 
                         {/* WhatsApp Message Template */}
-                        <div className="pl-6 space-y-1">
-                          <div className="flex items-center justify-between text-[10px] text-text-muted">
-                            <span className="flex items-center gap-1 font-semibold text-text">
-                              <MessageSquare className="w-3 h-3 text-success" />
+                        <div className="pl-7 space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px] text-text-muted">
+                            <span className="flex items-center gap-1.5 font-medium text-text">
+                              <MessageSquare className="w-3 h-3 text-accent" />
                               WhatsApp Message Template (Optional):
                             </span>
                           </div>
@@ -695,18 +747,18 @@ export const ServicesPage: React.FC = () => {
                             onChange={(e) => handleUpdateStep(idx, 'whatsapp_message', e.target.value)}
                             rows={2}
                             placeholder="Message sent to customer when this step is completed..."
-                            className="w-full p-2 rounded border border-border text-xs focus:border-primary focus:outline-none font-mono"
+                            className="w-full p-2.5 rounded-lg border border-border text-xs text-text focus:border-accent focus:outline-none font-mono"
                           />
 
                           {/* Variable Chips */}
-                          <div className="flex flex-wrap gap-1 items-center pt-0.5">
+                          <div className="flex flex-wrap gap-1.5 items-center pt-0.5">
                             <span className="text-[10px] text-text-muted">Insert tag:</span>
                             {WA_VARIABLES.map((v) => (
                               <button
                                 key={v}
                                 type="button"
                                 onClick={() => handleInsertVariable(idx, v)}
-                                className="px-1.5 py-0.5 rounded bg-surface hover:bg-primary-light hover:text-primary text-[10px] font-mono text-text-muted border border-border/60 transition-colors"
+                                className="px-2 py-0.5 rounded-md bg-surface-2 hover:bg-surface-3 text-[10px] font-mono text-text border border-border transition-colors cursor-pointer"
                               >
                                 {v}
                               </button>
@@ -728,7 +780,7 @@ export const ServicesPage: React.FC = () => {
               id="active_toggle"
               checked={active}
               onChange={(e) => setActive(e.target.checked)}
-              className="w-4 h-4 text-primary rounded border-border focus:ring-primary cursor-pointer"
+              className="w-4 h-4 text-accent rounded border-border focus:ring-accent cursor-pointer"
             />
             <label htmlFor="active_toggle" className="text-sm font-medium text-text select-none cursor-pointer">
               Active (available for quick selection in bills)
@@ -737,13 +789,31 @@ export const ServicesPage: React.FC = () => {
 
           {formError && <div className="text-xs text-danger font-medium">{formError}</div>}
 
-          <div className="pt-2">
-            <Button type="submit" variant="primary" size="md" className="w-full" loading={saving}>
-              {t('common.save')}
-            </Button>
-          </div>
+          {isStaff ? (
+            <div className="pt-2 text-center text-xs text-text-muted bg-surface-2 p-2.5 rounded-xl border border-border">
+              View-only mode. Rates and job workflow settings are managed by the business owner.
+            </div>
+          ) : (
+            <div className="pt-2">
+              <Button type="submit" variant="primary" size="md" className="w-full" loading={saving}>
+                {t('common.save')}
+              </Button>
+            </div>
+          )}
         </form>
       </Sheet>
+
+      {/* Delete Service Confirmation */}
+      <ConfirmDialog
+        open={Boolean(serviceToDelete)}
+        onOpenChange={(open) => !open && setServiceToDelete(null)}
+        title="Delete Service / Job Type"
+        description={`Are you sure you want to delete "${serviceToDelete?.name}"? It will no longer appear when creating new bills.`}
+        confirmLabel="Delete Service"
+        variant="danger"
+        loading={deletingService}
+        onConfirm={handleConfirmDelete}
+      />
     </div>
   );
 };
