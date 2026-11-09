@@ -16,6 +16,8 @@ import {
   Settings,
   X,
   ChevronDown,
+  Users,
+  Sparkles,
   Coins,
 } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -150,8 +152,9 @@ export const Layout: React.FC = () => {
         ...(business?.job_management_enabled
           ? [{ to: '/jobs', label: t('nav.jobs'), icon: Briefcase }]
           : []),
+        { to: '/customers', label: t('nav.customers'), icon: Users },
+        { to: '/services', label: t('nav.services'), icon: Sparkles },
         { to: '/earnings', label: 'Earnings', icon: Coins },
-        { to: '/more', label: t('nav.more'), icon: Menu },
       ]
     : [
         { to: '/', label: t('nav.home'), icon: LayoutDashboard, exact: true },
