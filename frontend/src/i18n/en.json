@@ -6,9 +6,11 @@
   "nav": {
     "home": "Dashboard",
     "dashboard": "Dashboard",
+    "my_dashboard": "My Dashboard",
     "bills": "Bills",
     "jobs": "Jobs",
     "money": "Money",
+    "reports": "Reports",
     "more": "More",
     "new_bill": "New Bill"
   },
