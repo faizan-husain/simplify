@@ -379,7 +379,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
           {/* Centered Document Preview Container - matches ReceiptDetailModal layout */}
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto bg-[#F6F7F9] p-3 sm:p-4 rounded-xl border-0 shadow-[0_2px_8px_rgba(0,0,0,0.03),inset_0_1px_3px_rgba(0,0,0,0.02)] space-y-3">
             {invoice.status === 'CANCELLED' && (
-              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200/80 text-rose-800 text-xs flex items-start gap-2.5 shadow-2xs">
+              <div className="p-3.5 rounded-2xl bg-rose-100/70 text-rose-800 text-xs flex items-start gap-3 shadow-xs border-0">
                 <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                 <div className="space-y-0.5">
                   <div className="font-bold text-[13px]">This Bill is Cancelled</div>

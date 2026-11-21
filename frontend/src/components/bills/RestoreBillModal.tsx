@@ -55,16 +55,34 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
 
     setLoading(true);
     try {
-      const { data, error } = await supabase.rpc('restore_invoice', {
+      let rpcRes = await supabase.rpc('restore_invoice', {
         id: invoice.id,
         reason: finalReason,
       });
 
-      if (error) {
-        console.error('restore_invoice error:', error);
-        throw error;
+      // If schema cache says argument mismatch or parameter named p_invoice_id
+      if (
+        rpcRes.error &&
+        (rpcRes.error.message.includes('named arguments') ||
+          rpcRes.error.message.includes('p_invoice_id') ||
+          rpcRes.error.message.includes('parameter') ||
+          rpcRes.error.message.includes('schema cache'))
+      ) {
+        const retryRes = await supabase.rpc('restore_invoice', {
+          p_invoice_id: invoice.id,
+          p_reason: finalReason,
+        } as any);
+        if (!retryRes.error) {
+          rpcRes = retryRes;
+        }
       }
 
+      if (rpcRes.error) {
+        console.error('restore_invoice error:', rpcRes.error);
+        throw rpcRes.error;
+      }
+
+      const data = rpcRes.data;
       if (data?.conflict_info) {
         showToast(`Bill #${invoice.number} restored with note: ${data.conflict_info}`, 'info');
       } else {
@@ -77,9 +95,10 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
       console.error('Failed to restore bill:', err);
       const rawMsg = err.message || err.error_description || String(err);
       if (rawMsg.includes('Could not find the function') || rawMsg.includes('schema cache')) {
-        showToast('Database function not updated. Please run Migration 56 in Supabase SQL editor.', 'error');
+        showToast('Database function not updated in Supabase. Please run the SQL migration in Supabase SQL Editor.', 'error');
       } else {
-        showToast(getErrorMessage(rawMsg), 'error');
+        const friendly = getErrorMessage(rawMsg);
+        showToast(friendly !== 'An error occurred. Please try again.' ? friendly : (err.message || 'Failed to restore bill'), 'error');
       }
     } finally {
       setLoading(false);
@@ -118,10 +137,10 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
               return (
                 <label
                   key={reason}
-                  className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs cursor-pointer transition-all ${
+                  className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs cursor-pointer transition-all border-0 ${
                     isSelected
-                      ? 'bg-[#EAF2F1] text-[#0F766E] font-semibold ring-1 ring-[#0F766E]/30 shadow-sm'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700'
+                      ? 'bg-[#EAF2F1] text-[#0F766E] font-semibold shadow-xs'
+                      : 'bg-slate-100/60 hover:bg-slate-100 text-slate-700'
                   }`}
                 >
                   <input
@@ -146,7 +165,7 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
                 placeholder="Write specific reason for restoration (mandatory)..."
                 value={otherExplanation}
                 onChange={(e) => setOtherExplanation(e.target.value)}
-                className="w-full text-xs p-3 rounded-xl bg-slate-50 hover:bg-slate-100/70 focus:bg-white border-0 ring-1 ring-slate-200 focus:ring-2 focus:ring-[#0F766E]/40 focus:outline-none transition-all resize-none"
+                className="w-full text-xs p-3 rounded-xl bg-slate-100/70 hover:bg-slate-100 focus:bg-white border-0 ring-0 focus:ring-2 focus:ring-[#0F766E]/30 focus:outline-none transition-all resize-none shadow-xs"
               />
             </div>
           )}

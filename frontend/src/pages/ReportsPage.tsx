@@ -1302,7 +1302,7 @@ export const ReportsPage: React.FC = () => {
                   let badgeCls = 'bg-rose-50 text-rose-700';
                   let label = 'Unpaid';
                   if (isCancelled) {
-                    badgeCls = 'bg-slate-100 text-slate-500 line-through';
+                    badgeCls = 'bg-rose-100/70 text-rose-700 border-0 line-through';
                     label = 'Cancelled';
                   } else if (isOverdue) {
                     badgeCls = 'bg-rose-100 text-rose-800 font-bold';
@@ -1375,7 +1375,7 @@ export const ReportsPage: React.FC = () => {
                             let label = 'Unpaid';
 
                             if (isCancelled) {
-                              badgeCls = 'bg-slate-100 text-slate-500 line-through';
+                              badgeCls = 'bg-rose-100/70 text-rose-700 border-0 line-through';
                               label = 'Cancelled';
                             } else if (isOverdue) {
                               badgeCls = 'bg-rose-100 text-rose-800 font-bold';

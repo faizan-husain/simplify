@@ -10,6 +10,12 @@
 -- 6. Update create_invoice to log initial 'CREATED' activity.
 -- ==============================================================================
 
+-- 0. Defensive schema sync for receipts (prevents column "bank_id" does not exist error)
+ALTER TABLE public.receipts
+  ADD COLUMN IF NOT EXISTS bank_account_id uuid REFERENCES public.bank_accounts(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS bank_name text,
+  ADD COLUMN IF NOT EXISTS bank_id uuid REFERENCES public.bank_accounts(id) ON DELETE SET NULL;
+
 -- 1. Add audit columns to invoices if not already present
 ALTER TABLE public.invoices
   ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,

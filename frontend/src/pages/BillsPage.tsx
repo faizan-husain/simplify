@@ -111,7 +111,7 @@ export const BillsPage: React.FC = () => {
       return (
         <span
           title={inv.cancel_reason ? `Reason: ${inv.cancel_reason}` : 'Cancelled bill'}
-          className="w-[74px] py-0.5 text-xs font-semibold rounded-md bg-rose-50 text-rose-700 border border-rose-200/60 inline-flex items-center justify-center text-center shrink-0"
+          className="w-[74px] py-0.5 text-xs font-semibold rounded-md bg-rose-100/70 text-rose-700 border-0 inline-flex items-center justify-center text-center shrink-0"
         >
           Cancelled
         </span>
