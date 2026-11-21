@@ -25059,7 +25059,6 @@ BEGIN
       kind,
       unallocated_amount,
       notes,
-      bank_id,
       bank_account_id,
       bank_name,
       created_by,
@@ -25076,7 +25075,6 @@ BEGIN
       'INVOICE_PAYMENT',
       0,
       'Payment for bill #' || v_invoice_number,
-      v_bank_account_id,
       v_bank_account_id,
       v_bank_name,
       v_member_id,
@@ -25751,7 +25749,6 @@ BEGIN
         UPDATE public.receipts
         SET amount = v_new_paid,
             mode = v_new_mode,
-            bank_id = v_new_bank_id,
             bank_account_id = v_new_bank_id,
             bank_name = v_new_bank_name,
             customer_id = v_customer_id,
@@ -25790,7 +25787,6 @@ BEGIN
           kind,
           unallocated_amount,
           notes,
-          bank_id,
           bank_account_id,
           bank_name,
           created_by,
@@ -25807,7 +25803,6 @@ BEGIN
           'INVOICE_PAYMENT',
           0,
           'Payment for bill #' || v_inv.number,
-          v_new_bank_id,
           v_new_bank_id,
           v_new_bank_name,
           v_member_id,
@@ -26061,8 +26056,7 @@ WHERE r.deleted_at IS NULL
 -- B. Populate bank_account_id and bank_name on receipts where mode was online but bank was null
 UPDATE public.receipts r
 SET bank_account_id = (SELECT id FROM public.bank_accounts WHERE business_id = r.business_id AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1),
-    bank_name = (SELECT bank_name FROM public.bank_accounts WHERE business_id = r.business_id AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1),
-    bank_id = (SELECT id FROM public.bank_accounts WHERE business_id = r.business_id AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1)
+    bank_name = (SELECT bank_name FROM public.bank_accounts WHERE business_id = r.business_id AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1)
 WHERE r.bank_account_id IS NULL
   AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')
   AND EXISTS (SELECT 1 FROM public.bank_accounts WHERE business_id = r.business_id AND deleted_at IS NULL);
