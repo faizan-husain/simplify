@@ -301,6 +301,11 @@
     "JOB_HAS_PROGRESS": "Cannot remove or change this job line because steps have already been ticked.",
     "UNAUTHORIZED": "You do not have permission to perform this action.",
     "DUPLICATE_MOBILE": "A customer with this mobile number already exists.",
-    "INVALID_PIN": "Incorrect Privacy PIN."
+    "INVALID_PIN": "Incorrect Privacy PIN.",
+    "CANCEL_REASON_REQUIRED": "A cancellation reason is required.",
+    "RESTORE_REASON_REQUIRED": "A restoration reason is required.",
+    "INVOICE_NOT_CANCELLED": "This bill is not cancelled and cannot be restored.",
+    "INVOICE_ALREADY_CANCELLED": "This bill is already cancelled.",
+    "INVOICE_NOT_FOUND": "Bill was not found."
   }
 }

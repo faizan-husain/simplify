@@ -65,13 +65,22 @@ export const CancelBillModal: React.FC<CancelBillModalProps> = ({
         void_receipts: voidReceipts,
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error('cancel_invoice error:', error);
+        throw error;
+      }
 
       showToast(`Bill #${invoice.number} cancelled successfully`, 'success');
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
+      console.error('Failed to cancel bill:', err);
+      const rawMsg = err.message || err.error_description || String(err);
+      if (rawMsg.includes('Could not find the function') || rawMsg.includes('schema cache')) {
+        showToast('Database function not updated. Please run Migration 56 in Supabase SQL editor.', 'error');
+      } else {
+        showToast(getErrorMessage(rawMsg), 'error');
+      }
     } finally {
       setLoading(false);
     }
@@ -85,45 +94,48 @@ export const CancelBillModal: React.FC<CancelBillModalProps> = ({
       description="Cancelling will remove this bill from active revenue and customer dues."
     >
       <form onSubmit={handleCancel} className="space-y-4 pt-1">
-        {/* Invoice Summary Badge */}
-        <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex items-center justify-between text-xs">
+        {/* Invoice Summary Badge - Borderless */}
+        <div className="bg-slate-100/70 rounded-2xl p-4 flex items-center justify-between text-xs">
           <div>
-            <div className="text-slate-500 font-medium">Customer / Party</div>
-            <div className="text-slate-900 font-bold text-[13px] mt-0.5">{invoice.party_name || 'Walk-in'}</div>
+            <div className="text-slate-400 font-medium text-[11px] uppercase tracking-wider">Customer / Party</div>
+            <div className="text-slate-900 font-bold text-sm mt-0.5">{invoice.party_name || 'Walk-in'}</div>
           </div>
           <div className="text-right">
-            <div className="text-slate-500 font-medium">Bill Amount</div>
-            <div className="text-slate-900 font-bold text-[13px] mt-0.5">{formatINR(invoice.total)}</div>
+            <div className="text-slate-400 font-medium text-[11px] uppercase tracking-wider">Bill Amount</div>
+            <div className="text-slate-900 font-bold text-sm mt-0.5">{formatINR(invoice.total)}</div>
           </div>
         </div>
 
-        {/* Reason Selection */}
-        <div className="space-y-1.5">
+        {/* Reason Selection - Borderless Pills */}
+        <div className="space-y-2">
           <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
             <span>Cancellation Reason</span>
             <span className="text-rose-500">*</span>
           </label>
           <div className="grid grid-cols-1 gap-1.5">
-            {CANCELLATION_REASONS.map((reason) => (
-              <label
-                key={reason}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border text-xs cursor-pointer transition-all ${
-                  selectedReason === reason
-                    ? 'border-[#0F766E] bg-[#EAF2F1] text-[#0F766E] font-semibold'
-                    : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="cancel_reason"
-                  value={reason}
-                  checked={selectedReason === reason}
-                  onChange={() => setSelectedReason(reason)}
-                  className="accent-[#0F766E] w-3.5 h-3.5"
-                />
-                <span>{reason}</span>
-              </label>
-            ))}
+            {CANCELLATION_REASONS.map((reason) => {
+              const isSelected = selectedReason === reason;
+              return (
+                <label
+                  key={reason}
+                  className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs cursor-pointer transition-all ${
+                    isSelected
+                      ? 'bg-rose-50 text-rose-700 font-semibold ring-1 ring-rose-400/30 shadow-sm'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="cancel_reason"
+                    value={reason}
+                    checked={isSelected}
+                    onChange={() => setSelectedReason(reason)}
+                    className="accent-rose-600 w-3.5 h-3.5"
+                  />
+                  <span>{reason}</span>
+                </label>
+              );
+            })}
           </div>
 
           {selectedReason === 'Other' && (
@@ -134,67 +146,55 @@ export const CancelBillModal: React.FC<CancelBillModalProps> = ({
                 placeholder="Write specific reason for cancellation (mandatory)..."
                 value={otherExplanation}
                 onChange={(e) => setOtherExplanation(e.target.value)}
-                className="w-full text-xs p-2.5 rounded-xl border border-slate-300 focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none"
+                className="w-full text-xs p-3 rounded-xl bg-slate-50 hover:bg-slate-100/70 focus:bg-white border-0 ring-1 ring-slate-200 focus:ring-2 focus:ring-rose-500/40 focus:outline-none transition-all resize-none"
               />
             </div>
           )}
         </div>
 
-        {/* Payment Handling if Bill had Payments */}
+        {/* Payment Handling Notice */}
         {paidAmount > 0 && (
-          <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 space-y-2 text-xs">
-            <div className="flex items-center gap-1.5 font-bold text-amber-900">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-              <span>Paid Amount: {formatINR(paidAmount)}</span>
+          <div className="bg-amber-50/70 rounded-2xl p-3.5 space-y-2 text-xs">
+            <div className="flex items-start gap-2.5 text-amber-900">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+              <div>
+                <span className="font-semibold">Recorded Payment of {formatINR(paidAmount)}</span>
+                <p className="text-amber-700 text-[11.5px] mt-0.5 leading-relaxed">
+                  By default, this payment moves to customer advance balance for future bills.
+                </p>
+              </div>
             </div>
-            <div className="text-[11.5px] text-amber-800 leading-relaxed">
-              How should the collected payment be recorded?
-            </div>
-            <div className="space-y-1 pt-1">
-              <label className="flex items-start gap-2 cursor-pointer text-[12px] text-slate-700">
-                <input
-                  type="radio"
-                  name="payment_action"
-                  checked={!voidReceipts}
-                  onChange={() => setVoidReceipts(false)}
-                  className="accent-[#0F766E] w-3.5 h-3.5 mt-0.5"
-                />
-                <span>
-                  <strong>Keep as Customer Advance (Credit):</strong> Money stays in Cash/Bank, customer gets {formatINR(paidAmount)} credit for future bills.
-                </span>
-              </label>
-              <label className="flex items-start gap-2 cursor-pointer text-[12px] text-slate-700">
-                <input
-                  type="radio"
-                  name="payment_action"
-                  checked={voidReceipts}
-                  onChange={() => setVoidReceipts(true)}
-                  className="accent-[#0F766E] w-3.5 h-3.5 mt-0.5"
-                />
-                <span>
-                  <strong>Void / Return Money:</strong> Bill was a mistake or money was refunded. Decreases Cash/Bank balance immediately.
-                </span>
-              </label>
-            </div>
+
+            <label className="flex items-center gap-2 pt-1 text-[11.5px] text-slate-700 cursor-pointer pl-6">
+              <input
+                type="checkbox"
+                checked={voidReceipts}
+                onChange={(e) => setVoidReceipts(e.target.checked)}
+                className="accent-rose-600 rounded"
+              />
+              <span>Void upfront receipt and decrease Cash/Bank balance immediately</span>
+            </label>
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        {/* Action Buttons */}
+        <div className="flex items-center justify-end gap-2.5 pt-2">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={() => onOpenChange(false)}
             disabled={loading}
+            className="rounded-xl border-0 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium"
           >
-            Cancel
+            Keep Bill
           </Button>
           <Button
             type="submit"
             variant="danger"
             size="sm"
             loading={loading}
-            className="bg-rose-600 hover:bg-rose-700 text-white font-semibold"
+            className="rounded-xl border-0 shadow-sm font-semibold px-4"
           >
             Confirm Cancellation
           </Button>

@@ -60,7 +60,10 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
         reason: finalReason,
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error('restore_invoice error:', error);
+        throw error;
+      }
 
       if (data?.conflict_info) {
         showToast(`Bill #${invoice.number} restored with note: ${data.conflict_info}`, 'info');
@@ -71,7 +74,13 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
+      console.error('Failed to restore bill:', err);
+      const rawMsg = err.message || err.error_description || String(err);
+      if (rawMsg.includes('Could not find the function') || rawMsg.includes('schema cache')) {
+        showToast('Database function not updated. Please run Migration 56 in Supabase SQL editor.', 'error');
+      } else {
+        showToast(getErrorMessage(rawMsg), 'error');
+      }
     } finally {
       setLoading(false);
     }
@@ -82,48 +91,51 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
       open={open}
       onOpenChange={onOpenChange}
       title={`Restore Bill #${invoice.number}`}
-      description="Restoring will reactivate this bill with its original bill number, ledger dues, and tracked jobs."
+      description="Reactivate this bill with its original bill number, ledger dues, and tracked jobs."
     >
       <form onSubmit={handleRestore} className="space-y-4 pt-1">
-        {/* Bill Info */}
-        <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex items-center justify-between text-xs">
+        {/* Bill Summary - Clean Borderless Surface */}
+        <div className="bg-slate-100/70 rounded-2xl p-4 flex items-center justify-between text-xs">
           <div>
-            <div className="text-slate-500 font-medium">Customer / Party</div>
-            <div className="text-slate-900 font-bold text-[13px] mt-0.5">{invoice.party_name || 'Walk-in'}</div>
+            <div className="text-slate-400 font-medium text-[11px] uppercase tracking-wider">Party / Customer</div>
+            <div className="text-slate-900 font-bold text-sm mt-0.5">{invoice.party_name || 'Walk-in'}</div>
           </div>
           <div className="text-right">
-            <div className="text-slate-500 font-medium">Original Bill Amount</div>
-            <div className="text-slate-900 font-bold text-[13px] mt-0.5">{formatINR(invoice.total)}</div>
+            <div className="text-slate-400 font-medium text-[11px] uppercase tracking-wider">Original Amount</div>
+            <div className="text-slate-900 font-bold text-sm mt-0.5">{formatINR(invoice.total)}</div>
           </div>
         </div>
 
-        {/* Reason Selection */}
-        <div className="space-y-1.5">
+        {/* Reason Selection - Clean Borderless Pills */}
+        <div className="space-y-2">
           <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
             <span>Restoration Reason</span>
             <span className="text-rose-500">*</span>
           </label>
           <div className="grid grid-cols-1 gap-1.5">
-            {RESTORATION_REASONS.map((reason) => (
-              <label
-                key={reason}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border text-xs cursor-pointer transition-all ${
-                  selectedReason === reason
-                    ? 'border-[#0F766E] bg-[#EAF2F1] text-[#0F766E] font-semibold'
-                    : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="restore_reason"
-                  value={reason}
-                  checked={selectedReason === reason}
-                  onChange={() => setSelectedReason(reason)}
-                  className="accent-[#0F766E] w-3.5 h-3.5"
-                />
-                <span>{reason}</span>
-              </label>
-            ))}
+            {RESTORATION_REASONS.map((reason) => {
+              const isSelected = selectedReason === reason;
+              return (
+                <label
+                  key={reason}
+                  className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs cursor-pointer transition-all ${
+                    isSelected
+                      ? 'bg-[#EAF2F1] text-[#0F766E] font-semibold ring-1 ring-[#0F766E]/30 shadow-sm'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="restore_reason"
+                    value={reason}
+                    checked={isSelected}
+                    onChange={() => setSelectedReason(reason)}
+                    className="accent-[#0F766E] w-3.5 h-3.5"
+                  />
+                  <span>{reason}</span>
+                </label>
+              );
+            })}
           </div>
 
           {selectedReason === 'Other' && (
@@ -134,28 +146,32 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
                 placeholder="Write specific reason for restoration (mandatory)..."
                 value={otherExplanation}
                 onChange={(e) => setOtherExplanation(e.target.value)}
-                className="w-full text-xs p-2.5 rounded-xl border border-slate-300 focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none"
+                className="w-full text-xs p-3 rounded-xl bg-slate-50 hover:bg-slate-100/70 focus:bg-white border-0 ring-1 ring-slate-200 focus:ring-2 focus:ring-[#0F766E]/40 focus:outline-none transition-all resize-none"
               />
             </div>
           )}
         </div>
 
-        {/* Accounting Guarantee Note */}
-        <div className="bg-[#EAF2F1]/80 border border-[#0F766E]/20 rounded-xl p-3 flex items-start gap-2.5 text-xs text-[#0F766E]">
+        {/* Accounting Guarantee Box - Soft Borderless Tint */}
+        <div className="bg-[#EAF2F1]/70 rounded-2xl p-3.5 flex items-start gap-3 text-xs text-[#0F766E]">
           <Info className="w-4 h-4 shrink-0 mt-0.5" />
-          <div className="space-y-1 leading-relaxed text-[11.5px]">
-            <div><strong>Accounting Guarantee:</strong> Original bill number is preserved.</div>
-            <div>Any available customer advances from this bill are automatically re-allocated. If the advance was already used elsewhere, remaining balance will show as customer due.</div>
+          <div className="space-y-0.5 leading-relaxed text-[11.5px]">
+            <div className="font-semibold text-slate-900">Accounting Guarantee</div>
+            <div className="text-slate-600">
+              The original bill number is preserved. Any available customer advance will be automatically re-allocated back to this bill.
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        {/* Action Buttons - Clean Spacing without Border Line */}
+        <div className="flex items-center justify-end gap-2.5 pt-2">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={() => onOpenChange(false)}
             disabled={loading}
+            className="rounded-xl border-0 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium"
           >
             Cancel
           </Button>
@@ -164,7 +180,7 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
             variant="primary"
             size="sm"
             loading={loading}
-            className="bg-[#0F766E] hover:bg-[#0D655E] text-white font-semibold flex items-center gap-1.5"
+            className="bg-[#0F766E] hover:bg-[#0D655E] text-white font-semibold rounded-xl border-0 shadow-sm flex items-center gap-1.5 px-4"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             <span>Restore Bill</span>
