@@ -20,7 +20,6 @@ import {
   buildInvoiceWhatsAppMessage,
   sharePdfViaNativeShare,
 } from '../documents/documentSharing';
-import { uploadAndSignDocumentPDF } from '../../lib/storage';
 import { UpdateMobileModal } from '../documents/UpdateMobileModal';
 
 type Invoice = Database['public']['Tables']['invoices']['Row'];
@@ -153,20 +152,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
       return;
     }
 
-    setSharingState('generating');
     try {
-      const pdfBlob = await getOrGeneratePdfBlob();
-      setSharingState('uploading');
-
-      const businessId = invoice.business_id || business?.id || '';
-      const { signedUrl } = await uploadAndSignDocumentPDF({
-        businessId,
-        docType: 'invoices',
-        docId: invoice.id,
-        pdfBlob,
-        filename: `bill-${invoice.number}.pdf`,
-      });
-
       const message = buildInvoiceWhatsAppMessage({
         customerName: invoice.party_name,
         invoiceNumber: invoice.number,
@@ -175,16 +161,13 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
         hasBalance: balance > 0,
         dueDateFormatted: formatDate(invoice.due_date),
         businessName: business?.name || 'SIMPLIFY',
-        signedUrl,
       });
 
       const waUrl = `https://wa.me/${mob.whatsappNumber}?text=${encodeURIComponent(message)}`;
       window.open(waUrl, '_blank');
-      showToast('WhatsApp opened with secure invoice link', 'success');
+      showToast('WhatsApp opened with invoice message', 'success');
     } catch (err: any) {
       showToast('Failed to share to WhatsApp: ' + err.message, 'error');
-    } finally {
-      setSharingState('idle');
     }
   };
 
@@ -467,7 +450,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 </Button>
               )}
 
-              {!isStaff && invoice.status === 'ACTIVE' && Number(invoice.paid_amount || 0) === 0 && (
+              {!isStaff && invoice.status === 'ACTIVE' && (
                 <Button
                   type="button"
                   variant="outline"

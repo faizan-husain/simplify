@@ -13,7 +13,6 @@ import {
   buildReceiptWhatsAppMessage,
   sharePdfViaNativeShare,
 } from '../documents/documentSharing';
-import { uploadAndSignDocumentPDF } from '../../lib/storage';
 import { UpdateMobileModal } from '../documents/UpdateMobileModal';
 import { Printer, Download, Share2 } from 'lucide-react';
 
@@ -135,20 +134,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
       return;
     }
 
-    setSharingState('generating');
     try {
-      const pdfBlob = await getOrGenerateReceiptPdfBlob();
-      setSharingState('uploading');
-
-      const businessId = data.receipt.business_id || data.business?.id || '';
-      const { signedUrl } = await uploadAndSignDocumentPDF({
-        businessId,
-        docType: 'receipts',
-        docId: data.receipt.id,
-        pdfBlob,
-        filename: `Receipt-${data.receipt.number}.pdf`,
-      });
-
       const message = buildReceiptWhatsAppMessage({
         customerName: data.customer?.name || 'Customer',
         receiptNumber: data.receipt.number,
@@ -156,16 +142,13 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
         paymentMode: data.receipt.mode || 'CASH',
         receiptDateFormatted: formatDate(data.receipt.receipt_date),
         businessName: data.business?.name || 'SIMPLIFY',
-        signedUrl,
       });
 
       const waUrl = `https://wa.me/${mob.whatsappNumber}?text=${encodeURIComponent(message)}`;
       window.open(waUrl, '_blank');
-      showToast('WhatsApp opened with secure receipt link', 'success');
+      showToast('WhatsApp opened with receipt details', 'success');
     } catch (err: any) {
       showToast('Failed to share to WhatsApp: ' + err.message, 'error');
-    } finally {
-      setSharingState('idle');
     }
   };
 

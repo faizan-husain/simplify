@@ -39,12 +39,12 @@ export interface InvoiceWhatsAppMessageParams {
   hasBalance?: boolean;
   dueDateFormatted?: string;
   businessName: string;
-  signedUrl: string;
+  signedUrl?: string;
 }
 
 /**
- * Builds professional WhatsApp message for Invoices with secure PDF download link.
- * Never pretends a file is attached when sending a link.
+ * Builds professional WhatsApp message for Invoices.
+ * Produces clean text message without download links as requested.
  */
 export function buildInvoiceWhatsAppMessage(params: InvoiceWhatsAppMessageParams): string {
   const {
@@ -63,10 +63,11 @@ export function buildInvoiceWhatsAppMessage(params: InvoiceWhatsAppMessageParams
       ? `\nPending Balance: ${balanceFormatted}${dueDateFormatted ? ` (Due: ${dueDateFormatted})` : ''}`
       : '\nPayment Status: Fully Paid';
 
+  const linkSection = signedUrl ? `\n\n📄 View / Download PDF:\n${signedUrl}` : '';
+
   return (
     `Hello ${customerName || 'Customer'},\n\n` +
-    `Please find your invoice #${invoiceNumber} for ${totalFormatted}.${dueDetails}\n\n` +
-    `📄 View / Download PDF:\n${signedUrl}\n\n` +
+    `Here is your invoice #${invoiceNumber} for ${totalFormatted}.${dueDetails}${linkSection}\n\n` +
     `Thank you for your business!\n— ${businessName}`
   );
 }
@@ -78,11 +79,11 @@ export interface ReceiptWhatsAppMessageParams {
   paymentMode: string;
   receiptDateFormatted: string;
   businessName: string;
-  signedUrl: string;
+  signedUrl?: string;
 }
 
 /**
- * Builds professional WhatsApp message for Receipts with secure PDF download link.
+ * Builds professional WhatsApp message for Receipts.
  */
 export function buildReceiptWhatsAppMessage(params: ReceiptWhatsAppMessageParams): string {
   const {
@@ -95,10 +96,11 @@ export function buildReceiptWhatsAppMessage(params: ReceiptWhatsAppMessageParams
     signedUrl,
   } = params;
 
+  const linkSection = signedUrl ? `\n\n📄 View / Download Receipt PDF:\n${signedUrl}` : '';
+
   return (
     `Hello ${customerName || 'Customer'},\n\n` +
-    `Payment receipt #${receiptNumber} for ${amountFormatted} received on ${receiptDateFormatted} via ${paymentMode}.\n\n` +
-    `📄 View / Download Receipt PDF:\n${signedUrl}\n\n` +
+    `Payment receipt #${receiptNumber} for ${amountFormatted} received on ${receiptDateFormatted} via ${paymentMode}.${linkSection}\n\n` +
     `Thank you!\n— ${businessName}`
   );
 }

@@ -365,12 +365,6 @@ export const NewBillPage: React.FC = () => {
           return;
         }
 
-        if (Number(inv.paid_amount || 0) > 0) {
-          showToast('Bills with payments are locked and cannot be edited. You can cancel instead.', 'error');
-          navigate('/bills');
-          return;
-        }
-
         // Check if any job steps are already ticked
         const { data: jobs } = await supabase
           .from('jobs')
@@ -393,6 +387,17 @@ export const NewBillPage: React.FC = () => {
           .select('*')
           .eq('invoice_id', editInvoiceId);
 
+        // Fetch existing upfront receipt details if any
+        let existingReceipt: any = null;
+        const { data: allocations } = await supabase
+          .from('receipt_allocations')
+          .select('amount, receipt_id, receipts(id, mode, bank_account_id, amount)')
+          .eq('invoice_id', editInvoiceId);
+
+        if (allocations && allocations.length > 0) {
+          existingReceipt = (allocations[0] as any).receipts;
+        }
+
         if (!isMounted) return;
 
         setEditingInvoiceNumber(inv.number);
@@ -402,7 +407,18 @@ export const NewBillPage: React.FC = () => {
         if (inv.notes) setShowNotes(true);
         setDiscountType((inv.discount_type as any) || 'NONE');
         setDiscountValue(inv.discount_value ? String(inv.discount_value) : '');
-        setPaidNow('');
+
+        if (existingReceipt) {
+          setPaidNow(String(existingReceipt.amount || inv.paid_amount || ''));
+          setPaymentMode((existingReceipt.mode as any) || 'CASH');
+          if (existingReceipt.bank_account_id) {
+            setSelectedBankId(existingReceipt.bank_account_id);
+          }
+        } else if (Number(inv.paid_amount || 0) > 0) {
+          setPaidNow(String(inv.paid_amount));
+        } else {
+          setPaidNow('');
+        }
 
         if (inv.customer_id) {
           setIsWalkIn(false);
@@ -776,6 +792,13 @@ export const NewBillPage: React.FC = () => {
             bank_name: paymentMode !== 'CASH' ? selectedBank?.bank_name || null : null,
           };
           localStorage.setItem(LAST_PAYMENT_MODE_KEY, paymentMode);
+        } else if (editInvoiceId) {
+          payload.paid = {
+            amount: 0,
+            mode: 'CASH',
+            bank_account_id: null,
+            bank_name: null,
+          };
         }
 
         if (editInvoiceId) {

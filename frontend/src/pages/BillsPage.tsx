@@ -719,7 +719,7 @@ export const BillsPage: React.FC = () => {
                     className="w-[88px] shrink-0 flex items-center justify-end gap-1.5"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {!isStaff && inv.status === 'ACTIVE' && Number(inv.paid_amount || 0) === 0 && (
+                    {!isStaff && inv.status === 'ACTIVE' && (
                       <button
                         type="button"
                         title="Edit Bill"
