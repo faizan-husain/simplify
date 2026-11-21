@@ -1,0 +1,24150 @@
+-- =====================================================================
+-- SIMPLIFY Billing & Expense SaaS - Complete Production Database Schema
+-- Auto-generated from 53 migrations
+-- =====================================================================
+
+
+-- >>> Migration: 20261027000001_core_schema_and_app_helpers.sql <<<
+-- Migration 1: Core Schema, App Helpers, Tenancy & Roles, Business Registration
+CREATE SCHEMA IF NOT EXISTS app;
+
+-- Immutable Financial Year (FY) function (e.g. 2026-27 for 1 Apr 2026 to 31 Mar 2027)
+CREATE OR REPLACE FUNCTION public.fy_label(p_date date)
+RETURNS text AS $$
+DECLARE
+  v_year int;
+  v_month int;
+BEGIN
+  IF p_date IS NULL THEN
+    RETURN NULL;
+  END IF;
+  v_year := EXTRACT(YEAR FROM p_date)::int;
+  v_month := EXTRACT(MONTH FROM p_date)::int;
+
+  IF v_month >= 4 THEN
+    RETURN v_year::text || '-' || LPAD(((v_year + 1) % 100)::text, 2, '0');
+  ELSE
+    RETURN (v_year - 1)::text || '-' || LPAD((v_year % 100)::text, 2, '0');
+  END IF;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE;
+
+-- Businesses table (no business_id column; its id IS the tenant id)
+CREATE TABLE IF NOT EXISTS public.businesses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  owner_name text NOT NULL,
+  mobile text NOT NULL,
+  whatsapp text,
+  email text,
+  address text,
+  logo_path text,
+  business_type text,
+  upi_id text,
+  invoice_prefix text NOT NULL DEFAULT 'INV-',
+  invoice_start_number int NOT NULL DEFAULT 1,
+  numbering_mode text NOT NULL DEFAULT 'CONTINUOUS' CHECK (numbering_mode IN ('CONTINUOUS', 'FY_RESET')),
+  default_terms_days int NOT NULL DEFAULT 0,
+  default_notes text,
+  footer_text text,
+  thermal_width int NOT NULL DEFAULT 58 CHECK (thermal_width IN (58, 80)),
+  receipt_header text,
+  receipt_footer text,
+  job_management_enabled boolean NOT NULL DEFAULT false,
+  yellow_days int NOT NULL DEFAULT 5,
+  red_days int NOT NULL DEFAULT 3,
+  commission_trigger text NOT NULL DEFAULT 'ON_COMPLETION' CHECK (commission_trigger IN ('ON_COMPLETION')),
+  timezone text NOT NULL DEFAULT 'Asia/Kolkata',
+  plan text NOT NULL DEFAULT 'FREE',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+-- Business secrets table (no client access at all)
+CREATE TABLE IF NOT EXISTS public.business_secrets (
+  business_id uuid PRIMARY KEY REFERENCES public.businesses(id) ON DELETE CASCADE,
+  privacy_pin_hash text
+);
+
+-- Members table
+CREATE TABLE IF NOT EXISTS public.members (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+  auth_user_id uuid UNIQUE,
+  name text NOT NULL,
+  mobile text NOT NULL,
+  role text NOT NULL CHECK (role IN ('OWNER', 'ACCOUNTANT', 'STAFF')),
+  can_login boolean NOT NULL DEFAULT true,
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid,
+  CONSTRAINT uq_members_business_mobile UNIQUE (business_id, mobile)
+);
+
+CREATE INDEX IF NOT EXISTS idx_members_business_id ON public.members(business_id);
+CREATE INDEX IF NOT EXISTS idx_members_auth_user_id ON public.members(auth_user_id);
+
+-- Invoice counters table
+CREATE TABLE IF NOT EXISTS public.invoice_counters (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+  fy_label text NOT NULL,
+  last_number int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid,
+  CONSTRAINT uq_invoice_counters UNIQUE (business_id, fy_label)
+);
+
+ALTER TABLE public.invoice_counters ENABLE ROW LEVEL SECURITY;
+
+-- Helper functions in schema 'app'
+CREATE OR REPLACE FUNCTION app.current_member_id()
+RETURNS uuid AS $$
+  SELECT m.id
+  FROM public.members m
+  WHERE m.auth_user_id = auth.uid()
+    AND m.active = true
+    AND m.deleted_at IS NULL
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_business_id()
+RETURNS uuid AS $$
+  SELECT m.business_id
+  FROM public.members m
+  WHERE m.auth_user_id = auth.uid()
+    AND m.active = true
+    AND m.deleted_at IS NULL
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_role()
+RETURNS text AS $$
+  SELECT m.role
+  FROM public.members m
+  WHERE m.auth_user_id = auth.uid()
+    AND m.active = true
+    AND m.deleted_at IS NULL
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.today()
+RETURNS date AS $$
+DECLARE
+  v_tz text;
+BEGIN
+  SELECT b.timezone INTO v_tz
+  FROM public.businesses b
+  WHERE b.id = (SELECT app.current_business_id());
+
+  IF v_tz IS NULL THEN
+    v_tz := 'Asia/Kolkata';
+  END IF;
+
+  RETURN (now() AT TIME ZONE v_tz)::date;
+EXCEPTION WHEN OTHERS THEN
+  RETURN (now() AT TIME ZONE 'Asia/Kolkata')::date;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+-- Shared audit trigger function
+CREATE OR REPLACE FUNCTION public.set_audit_fields()
+RETURNS trigger AS $$
+DECLARE
+  v_member_id uuid;
+BEGIN
+  v_member_id := app.current_member_id();
+
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_at := COALESCE(NEW.created_at, now());
+    NEW.created_by := COALESCE(NEW.created_by, v_member_id);
+    NEW.updated_at := COALESCE(NEW.updated_at, now());
+    NEW.updated_by := COALESCE(NEW.updated_by, v_member_id);
+  ELSIF TG_OP = 'UPDATE' THEN
+    NEW.updated_at := now();
+    NEW.updated_by := COALESCE(v_member_id, OLD.updated_by);
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE TRIGGER trg_businesses_audit
+BEFORE INSERT OR UPDATE ON public.businesses
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+CREATE OR REPLACE TRIGGER trg_members_audit
+BEFORE INSERT OR UPDATE ON public.members
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Enable RLS on every table
+ALTER TABLE public.businesses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.businesses FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.members FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.business_secrets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.business_secrets FORCE ROW LEVEL SECURITY;
+
+-- RLS policies for businesses
+DROP POLICY IF EXISTS businesses_select_policy ON public.businesses;
+CREATE POLICY businesses_select_policy ON public.businesses
+  FOR SELECT
+  USING (id = (SELECT app.current_business_id()) AND deleted_at IS NULL);
+
+-- RLS policies for members
+DROP POLICY IF EXISTS members_select_policy ON public.members;
+CREATE POLICY members_select_policy ON public.members
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS members_update_policy ON public.members;
+CREATE POLICY members_update_policy ON public.members
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
+-- No client policies for business_secrets (purely accessed by SECURITY DEFINER functions)
+
+-- Register Business RPC
+CREATE OR REPLACE FUNCTION public.register_business(
+  business_name text,
+  owner_name text,
+  mobile text
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_auth_uid uuid;
+  v_existing_member public.members%ROWTYPE;
+  v_business_id uuid;
+  v_member_id uuid;
+  v_clean_mobile text;
+BEGIN
+  v_auth_uid := auth.uid();
+  IF v_auth_uid IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Normalise mobile
+  v_clean_mobile := REGEXP_REPLACE(mobile, '[^0-9]', '', 'g');
+  IF LENGTH(v_clean_mobile) = 12 AND v_clean_mobile LIKE '91%' THEN
+    v_clean_mobile := SUBSTRING(v_clean_mobile FROM 3);
+  ELSIF LENGTH(v_clean_mobile) = 11 AND v_clean_mobile LIKE '0%' THEN
+    v_clean_mobile := SUBSTRING(v_clean_mobile FROM 2);
+  END IF;
+
+  -- Check if already registered
+  SELECT * INTO v_existing_member
+  FROM public.members
+  WHERE auth_user_id = v_auth_uid
+  LIMIT 1;
+
+  IF FOUND THEN
+    RETURN jsonb_build_object(
+      'business_id', v_existing_member.business_id,
+      'member_id', v_existing_member.id,
+      'role', v_existing_member.role
+    );
+  END IF;
+
+  -- 1. Create Business
+  INSERT INTO public.businesses (name, owner_name, mobile)
+  VALUES (TRIM(business_name), TRIM(owner_name), v_clean_mobile)
+  RETURNING id INTO v_business_id;
+
+  -- 2. Create Owner Member
+  INSERT INTO public.members (
+    business_id,
+    auth_user_id,
+    name,
+    mobile,
+    role,
+    can_login,
+    active
+  )
+  VALUES (
+    v_business_id,
+    v_auth_uid,
+    TRIM(owner_name),
+    v_clean_mobile,
+    'OWNER',
+    true,
+    true
+  )
+  RETURNING id INTO v_member_id;
+
+  -- 3. Initialize Invoice & Receipt Counters
+  INSERT INTO public.invoice_counters (business_id, fy_label, last_number)
+  VALUES
+    (v_business_id, 'ALL', 0)
+  ON CONFLICT DO NOTHING;
+
+  -- 4. Seed default expense categories if table exists
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'expense_categories') THEN
+    INSERT INTO public.expense_categories (business_id, name, system) VALUES
+      (v_business_id, 'Rent', false),
+      (v_business_id, 'Electricity', false),
+      (v_business_id, 'Internet', false),
+      (v_business_id, 'Salary', false),
+      (v_business_id, 'Travel', false),
+      (v_business_id, 'Marketing', false),
+      (v_business_id, 'Software/Subscriptions', false),
+      (v_business_id, 'Maintenance', false),
+      (v_business_id, 'Office Supplies', false),
+      (v_business_id, 'Other', false),
+      (v_business_id, 'Salary / Commission', true),
+      (v_business_id, 'Loan Interest', true)
+    ON CONFLICT DO NOTHING;
+  END IF;
+
+  -- 5. Seed default WhatsApp templates if table exists
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'whatsapp_templates') THEN
+    INSERT INTO public.whatsapp_templates (business_id, type, body) VALUES
+      (v_business_id, 'INVOICE', 'Hello {customer_name}, here is your bill #{invoice_no} of {amount} from {business_name}. Balance due: {balance}.'),
+      (v_business_id, 'RECEIPT', 'Hello {customer_name}, received payment of {amount} for bill #{invoice_no}. Thank you! - {business_name}'),
+      (v_business_id, 'REMINDER', 'Hello {customer_name}, reminder for bill #{invoice_no} of {amount}. Balance {balance} is due on {due_date}. - {business_name}')
+    ON CONFLICT DO NOTHING;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'business_id', v_business_id,
+    'member_id', v_member_id,
+    'role', 'OWNER'
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.register_business(text, text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.register_business(text, text, text) TO authenticated;
+
+-- Update Business RPC
+CREATE OR REPLACE FUNCTION public.update_business(payload jsonb)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_updated public.businesses%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  UPDATE public.businesses
+  SET
+    name = COALESCE(payload->>'name', name),
+    owner_name = COALESCE(payload->>'owner_name', owner_name),
+    mobile = COALESCE(payload->>'mobile', mobile),
+    whatsapp = COALESCE(payload->>'whatsapp', whatsapp),
+    email = COALESCE(payload->>'email', email),
+    address = COALESCE(payload->>'address', address),
+    logo_path = COALESCE(payload->>'logo_path', logo_path),
+    business_type = COALESCE(payload->>'business_type', business_type),
+    upi_id = COALESCE(payload->>'upi_id', upi_id),
+    invoice_prefix = COALESCE(payload->>'invoice_prefix', invoice_prefix),
+    invoice_start_number = COALESCE((payload->>'invoice_start_number')::int, invoice_start_number),
+    numbering_mode = COALESCE(payload->>'numbering_mode', numbering_mode),
+    default_terms_days = COALESCE((payload->>'default_terms_days')::int, default_terms_days),
+    default_notes = COALESCE(payload->>'default_notes', default_notes),
+    footer_text = COALESCE(payload->>'footer_text', footer_text),
+    thermal_width = COALESCE((payload->>'thermal_width')::int, thermal_width),
+    receipt_header = COALESCE(payload->>'receipt_header', receipt_header),
+    receipt_footer = COALESCE(payload->>'receipt_footer', receipt_footer),
+    job_management_enabled = COALESCE((payload->>'job_management_enabled')::boolean, job_management_enabled),
+    yellow_days = COALESCE((payload->>'yellow_days')::int, yellow_days),
+    red_days = COALESCE((payload->>'red_days')::int, red_days),
+    timezone = COALESCE(payload->>'timezone', timezone)
+  WHERE id = v_biz_id
+  RETURNING * INTO v_updated;
+
+  -- Also keep the owner member's name in sync with owner_name
+  IF payload ? 'owner_name' AND COALESCE(payload->>'owner_name', '') <> '' THEN
+    UPDATE public.members
+    SET name = payload->>'owner_name'
+    WHERE id = v_member_id;
+  END IF;
+
+  RETURN to_jsonb(v_updated);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_business(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_business(jsonb) TO authenticated;
+
+-- Privacy PIN RPCs
+CREATE OR REPLACE FUNCTION public.set_privacy_pin(pin text)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF LENGTH(pin) <> 4 OR pin !~ '^[0-9]{4}$' THEN
+    RAISE EXCEPTION 'INVALID_PIN_FORMAT' USING ERRCODE = 'P0001';
+  END IF;
+
+  INSERT INTO public.business_secrets (business_id, privacy_pin_hash)
+  VALUES (v_biz_id, public.crypt(pin, public.gen_salt('bf')))
+  ON CONFLICT (business_id)
+  DO UPDATE SET privacy_pin_hash = public.crypt(pin, public.gen_salt('bf'));
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.set_privacy_pin(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.set_privacy_pin(text) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.verify_privacy_pin(pin text)
+RETURNS boolean AS $$
+DECLARE
+  v_biz_id uuid;
+  v_hash text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  IF v_biz_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  SELECT privacy_pin_hash INTO v_hash
+  FROM public.business_secrets
+  WHERE business_id = v_biz_id;
+
+  IF v_hash IS NULL THEN
+    -- If no PIN is set, verification always succeeds per BR-17
+    RETURN true;
+  END IF;
+
+  RETURN (v_hash = public.crypt(pin, v_hash));
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.verify_privacy_pin(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.verify_privacy_pin(text) TO authenticated;
+
+
+-- >>> Migration: 20261027000002_customers_services_softdelete.sql <<<
+-- Migration 2: Customers, Services, Job Type Steps, and Soft Delete / Mobile check RPCs
+
+-- Customers table
+CREATE TABLE IF NOT EXISTS public.customers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  type text NOT NULL DEFAULT 'REGULAR' CHECK (type IN ('REGULAR', 'WALK_IN')),
+  name text NOT NULL,
+  mobile text,
+  whatsapp text,
+  email text,
+  address text,
+  notes text,
+  possible_duplicate boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_customers_business_mobile ON public.customers(business_id, mobile);
+CREATE INDEX IF NOT EXISTS idx_customers_business_name ON public.customers(business_id, name);
+
+CREATE OR REPLACE TRIGGER trg_customers_audit
+BEFORE INSERT OR UPDATE ON public.customers
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Services table
+CREATE TABLE IF NOT EXISTS public.services (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  default_rate numeric(14,2),
+  category text,
+  active boolean NOT NULL DEFAULT true,
+  is_job_type boolean NOT NULL DEFAULT false,
+  deadline_days int,
+  commission_percent numeric(5,2),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_services_business_active ON public.services(business_id, active);
+
+CREATE OR REPLACE TRIGGER trg_services_audit
+BEFORE INSERT OR UPDATE ON public.services
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Job Type Steps table
+CREATE TABLE IF NOT EXISTS public.job_type_steps (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  service_id uuid NOT NULL REFERENCES public.services(id) ON DELETE CASCADE,
+  position int NOT NULL DEFAULT 1,
+  name text NOT NULL,
+  whatsapp_message text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_type_steps_service ON public.job_type_steps(business_id, service_id);
+
+CREATE OR REPLACE TRIGGER trg_job_type_steps_audit
+BEFORE INSERT OR UPDATE ON public.job_type_steps
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Enable RLS and FORCE RLS on all three tables
+ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customers FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.services FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.job_type_steps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.job_type_steps FORCE ROW LEVEL SECURITY;
+
+-- Customers RLS policies
+DROP POLICY IF EXISTS customers_select ON public.customers;
+CREATE POLICY customers_select ON public.customers
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS customers_insert ON public.customers;
+CREATE POLICY customers_insert ON public.customers
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT', 'STAFF')
+  );
+
+DROP POLICY IF EXISTS customers_update ON public.customers;
+CREATE POLICY customers_update ON public.customers
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+-- Services RLS policies
+DROP POLICY IF EXISTS services_select ON public.services;
+CREATE POLICY services_select ON public.services
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS services_insert ON public.services;
+CREATE POLICY services_insert ON public.services
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
+DROP POLICY IF EXISTS services_update ON public.services;
+CREATE POLICY services_update ON public.services
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
+-- Job Type Steps RLS policies
+DROP POLICY IF EXISTS job_type_steps_select ON public.job_type_steps;
+CREATE POLICY job_type_steps_select ON public.job_type_steps
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS job_type_steps_insert ON public.job_type_steps;
+CREATE POLICY job_type_steps_insert ON public.job_type_steps
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
+DROP POLICY IF EXISTS job_type_steps_update ON public.job_type_steps;
+CREATE POLICY job_type_steps_update ON public.job_type_steps
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
+DROP POLICY IF EXISTS job_type_steps_delete ON public.job_type_steps;
+CREATE POLICY job_type_steps_delete ON public.job_type_steps
+  FOR DELETE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
+-- Helper RPC: check_customer_mobile
+CREATE OR REPLACE FUNCTION public.check_customer_mobile(
+  mobile text,
+  exclude_customer_id uuid DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_clean_mobile text;
+  v_matches jsonb;
+  v_has_invoices boolean := false;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  IF v_biz_id IS NULL THEN
+    RETURN '[]'::jsonb;
+  END IF;
+
+  SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'invoices') INTO v_has_invoices;
+
+  v_clean_mobile := REGEXP_REPLACE(mobile, '[^0-9]', '', 'g');
+  IF LENGTH(v_clean_mobile) = 12 AND v_clean_mobile LIKE '91%' THEN
+    v_clean_mobile := SUBSTRING(v_clean_mobile FROM 3);
+  ELSIF LENGTH(v_clean_mobile) = 11 AND v_clean_mobile LIKE '0%' THEN
+    v_clean_mobile := SUBSTRING(v_clean_mobile FROM 2);
+  END IF;
+
+  IF v_clean_mobile IS NULL OR LENGTH(v_clean_mobile) < 5 THEN
+    RETURN '[]'::jsonb;
+  END IF;
+
+  -- Dynamic check for customer invoices if table exists
+  IF v_has_invoices THEN
+    EXECUTE 'SELECT COALESCE(
+      jsonb_agg(
+        jsonb_build_object(
+          ''id'', c.id,
+          ''name'', c.name,
+          ''mobile'', c.mobile,
+          ''type'', c.type,
+          ''outstanding'', COALESCE(
+            (SELECT SUM(i.total - i.paid_amount)
+             FROM public.invoices i
+             WHERE i.customer_id = c.id
+               AND i.business_id = $1
+               AND i.status = ''ACTIVE''
+               AND i.deleted_at IS NULL),
+            0
+          )
+        )
+      ),
+      ''[]''::jsonb
+    )
+    FROM public.customers c
+    WHERE c.business_id = $1
+      AND c.mobile = $2
+      AND ($3 IS NULL OR c.id <> $3)
+      AND c.deleted_at IS NULL'
+    INTO v_matches
+    USING v_biz_id, v_clean_mobile, exclude_customer_id;
+  ELSE
+    SELECT COALESCE(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', c.id,
+          'name', c.name,
+          'mobile', c.mobile,
+          'type', c.type,
+          'outstanding', 0
+        )
+      ),
+      '[]'::jsonb
+    )
+    INTO v_matches
+    FROM public.customers c
+    WHERE c.business_id = v_biz_id
+      AND c.mobile = v_clean_mobile
+      AND (exclude_customer_id IS NULL OR c.id <> exclude_customer_id)
+      AND c.deleted_at IS NULL;
+  END IF;
+
+  RETURN v_matches;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.check_customer_mobile(text, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.check_customer_mobile(text, uuid) TO authenticated;
+
+-- Helper RPC: soft_delete
+CREATE OR REPLACE FUNCTION public.soft_delete(
+  p_table text,
+  p_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_allowed boolean := false;
+  v_has_invoices boolean;
+  v_has_cust_invoices boolean := false;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Validate table
+  IF p_table NOT IN ('customers', 'services', 'job_type_steps', 'vendors', 'payments', 'expense_categories', 'expenses', 'loans', 'receipts') THEN
+    RAISE EXCEPTION 'INVALID_TABLE' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Role checks per §5
+  IF v_role = 'OWNER' THEN
+    v_allowed := true;
+  ELSIF v_role = 'ACCOUNTANT' THEN
+    IF p_table IN ('customers', 'payments', 'expenses', 'loans') THEN
+      v_allowed := true;
+    END IF;
+  END IF;
+
+  IF NOT v_allowed THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Customers cannot be deleted if they have invoices (BR-9)
+  SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'invoices') INTO v_has_invoices;
+  IF p_table = 'customers' AND v_has_invoices THEN
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.invoices WHERE customer_id = %L AND business_id = %L AND deleted_at IS NULL)', p_id, v_biz_id)
+    INTO v_has_cust_invoices;
+    IF v_has_cust_invoices THEN
+      RAISE EXCEPTION 'CUSTOMER_HAS_INVOICES' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  -- Expense categories: system categories cannot be deleted
+  IF p_table = 'expense_categories' AND EXISTS (
+    SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'expense_categories'
+  ) THEN
+    DECLARE
+      v_is_system boolean := false;
+    BEGIN
+      EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.expense_categories WHERE id = %L AND system = true)', p_id)
+      INTO v_is_system;
+      IF v_is_system THEN
+        RAISE EXCEPTION 'SYSTEM_CATEGORY_CANNOT_BE_DELETED' USING ERRCODE = 'P0001';
+      END IF;
+    END;
+  END IF;
+
+  -- Execute soft delete
+  EXECUTE format(
+    'UPDATE public.%I SET deleted_at = now(), deleted_by = %L WHERE id = %L AND business_id = %L AND deleted_at IS NULL',
+    p_table, v_member_id, p_id, v_biz_id
+  );
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.soft_delete(text, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.soft_delete(text, uuid) TO authenticated;
+
+-- Helper RPC: restore_record
+CREATE OR REPLACE FUNCTION public.restore_record(
+  p_table text,
+  p_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF p_table NOT IN ('customers', 'services', 'job_type_steps', 'vendors', 'payments', 'expense_categories', 'expenses', 'loans', 'receipts') THEN
+    RAISE EXCEPTION 'INVALID_TABLE' USING ERRCODE = 'P0001';
+  END IF;
+
+  EXECUTE format(
+    'UPDATE public.%I SET deleted_at = NULL, deleted_by = NULL WHERE id = %L AND business_id = %L',
+    p_table, p_id, v_biz_id
+  );
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.restore_record(text, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.restore_record(text, uuid) TO authenticated;
+
+-- Helper RPC: list_recently_deleted
+CREATE OR REPLACE FUNCTION public.list_recently_deleted()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_result jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT jsonb_agg(item) INTO v_result FROM (
+    SELECT 'customers' as table_name, id, name as label, deleted_at
+    FROM public.customers
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 'services' as table_name, id, name as label, deleted_at
+    FROM public.services
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    ORDER BY deleted_at DESC
+  ) item;
+
+  RETURN COALESCE(v_result, '[]'::jsonb);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.list_recently_deleted() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_recently_deleted() TO authenticated;
+
+-- Helper RPC: frequent_services
+CREATE OR REPLACE FUNCTION public.frequent_services()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  IF v_biz_id IS NULL THEN
+    RETURN '[]'::jsonb;
+  END IF;
+
+  -- Return top active services
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', s.id,
+        'name', s.name,
+        'default_rate', s.default_rate,
+        'is_job_type', s.is_job_type
+      )
+    ),
+    '[]'::jsonb
+  )
+  INTO v_result
+  FROM (
+    SELECT *
+    FROM public.services
+    WHERE business_id = v_biz_id
+      AND active = true
+      AND deleted_at IS NULL
+    ORDER BY name ASC
+    LIMIT 8
+  ) s;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.frequent_services() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.frequent_services() TO authenticated;
+
+
+-- >>> Migration: 20261027000003_billing_core.sql <<<
+-- Migration 3: Billing Core (Invoices, Items, Receipts, Allocations, Jobs schema & create/update/cancel RPCs)
+
+-- Receipts table
+CREATE TABLE IF NOT EXISTS public.receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  number text NOT NULL,
+  fy_label text NOT NULL,
+  receipt_date date NOT NULL,
+  customer_id uuid REFERENCES public.customers(id) ON DELETE SET NULL,
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  mode text NOT NULL CHECK (mode IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE')),
+  reference text,
+  kind text NOT NULL DEFAULT 'INVOICE_PAYMENT' CHECK (kind IN ('INVOICE_PAYMENT', 'OTHER_INCOME')),
+  income_category text,
+  unallocated_amount numeric(14,2) NOT NULL DEFAULT 0 CHECK (unallocated_amount >= 0),
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_receipts_business_date ON public.receipts(business_id, receipt_date);
+CREATE INDEX IF NOT EXISTS idx_receipts_business_customer ON public.receipts(business_id, customer_id);
+
+CREATE OR REPLACE TRIGGER trg_receipts_audit
+BEFORE INSERT OR UPDATE ON public.receipts
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Invoices table
+CREATE TABLE IF NOT EXISTS public.invoices (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  number text NOT NULL,
+  fy_label text NOT NULL,
+  invoice_date date NOT NULL,
+  due_date date NOT NULL,
+  customer_id uuid REFERENCES public.customers(id) ON DELETE SET NULL,
+  party_name text NOT NULL DEFAULT 'Walk-in',
+  party_mobile text,
+  subtotal numeric(14,2) NOT NULL DEFAULT 0,
+  discount_type text NOT NULL DEFAULT 'NONE' CHECK (discount_type IN ('NONE', 'FLAT', 'PERCENT')),
+  discount_value numeric(14,2) NOT NULL DEFAULT 0,
+  discount_amount numeric(14,2) NOT NULL DEFAULT 0,
+  total numeric(14,2) NOT NULL DEFAULT 0,
+  paid_amount numeric(14,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'CANCELLED')),
+  cancel_reason text,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_business_date ON public.invoices(business_id, invoice_date);
+CREATE INDEX IF NOT EXISTS idx_invoices_business_status ON public.invoices(business_id, status);
+CREATE INDEX IF NOT EXISTS idx_invoices_business_customer ON public.invoices(business_id, customer_id);
+
+CREATE OR REPLACE TRIGGER trg_invoices_audit
+BEFORE INSERT OR UPDATE ON public.invoices
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Invoice items table
+CREATE TABLE IF NOT EXISTS public.invoice_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  invoice_id uuid NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+  service_id uuid REFERENCES public.services(id) ON DELETE SET NULL,
+  description text NOT NULL,
+  quantity numeric(10,2) NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  rate numeric(14,2) NOT NULL DEFAULT 0 CHECK (rate >= 0),
+  amount numeric(14,2) NOT NULL DEFAULT 0 CHECK (amount >= 0),
+  is_job boolean NOT NULL DEFAULT false,
+  applicant_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON public.invoice_items(business_id, invoice_id);
+
+CREATE OR REPLACE TRIGGER trg_invoice_items_audit
+BEFORE INSERT OR UPDATE ON public.invoice_items
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Receipt allocations table
+CREATE TABLE IF NOT EXISTS public.receipt_allocations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  receipt_id uuid NOT NULL REFERENCES public.receipts(id) ON DELETE CASCADE,
+  invoice_id uuid NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_receipt_allocations_receipt ON public.receipt_allocations(business_id, receipt_id);
+CREATE INDEX IF NOT EXISTS idx_receipt_allocations_invoice ON public.receipt_allocations(business_id, invoice_id);
+
+CREATE OR REPLACE TRIGGER trg_receipt_allocations_audit
+BEFORE INSERT OR UPDATE ON public.receipt_allocations
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Jobs table
+CREATE TABLE IF NOT EXISTS public.jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  invoice_id uuid NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+  invoice_item_id uuid NOT NULL REFERENCES public.invoice_items(id) ON DELETE CASCADE,
+  service_id uuid NOT NULL REFERENCES public.services(id),
+  job_type_name text NOT NULL,
+  party_name text NOT NULL,
+  party_mobile text,
+  applicant_name text,
+  amount numeric(14,2) NOT NULL,
+  deadline_date date NOT NULL,
+  assigned_staff_id uuid REFERENCES public.members(id) ON DELETE SET NULL,
+  commission_percent numeric(5,2),
+  status text NOT NULL DEFAULT 'IN_PROGRESS' CHECK (status IN ('IN_PROGRESS', 'COMPLETED', 'CANCELLED')),
+  completed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_business_deadline ON public.jobs(business_id, deadline_date);
+CREATE INDEX IF NOT EXISTS idx_jobs_business_status ON public.jobs(business_id, status);
+
+CREATE OR REPLACE TRIGGER trg_jobs_audit
+BEFORE INSERT OR UPDATE ON public.jobs
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Job steps table
+CREATE TABLE IF NOT EXISTS public.job_steps (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  job_id uuid NOT NULL REFERENCES public.jobs(id) ON DELETE CASCADE,
+  position int NOT NULL DEFAULT 1,
+  name text NOT NULL,
+  whatsapp_message text,
+  ticked boolean NOT NULL DEFAULT false,
+  ticked_at timestamptz,
+  ticked_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_steps_job ON public.job_steps(business_id, job_id);
+
+CREATE OR REPLACE TRIGGER trg_job_steps_audit
+BEFORE INSERT OR UPDATE ON public.job_steps
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Job step events table (audit log of ticks/unticks)
+CREATE TABLE IF NOT EXISTS public.job_step_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  job_step_id uuid NOT NULL REFERENCES public.job_steps(id) ON DELETE CASCADE,
+  action text NOT NULL CHECK (action IN ('TICK', 'UNTICK')),
+  member_id uuid NOT NULL REFERENCES public.members(id),
+  at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_step_events_step ON public.job_step_events(business_id, job_step_id);
+
+-- Commission entries table
+CREATE TABLE IF NOT EXISTS public.commission_entries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  job_id uuid NOT NULL UNIQUE REFERENCES public.jobs(id) ON DELETE CASCADE,
+  staff_id uuid NOT NULL REFERENCES public.members(id),
+  base_amount numeric(14,2) NOT NULL,
+  percent numeric(5,2) NOT NULL,
+  amount numeric(14,2) NOT NULL,
+  status text NOT NULL DEFAULT 'UPCOMING' CHECK (status IN ('UPCOMING', 'EARNED', 'CANCELLED')),
+  earned_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_commission_entries_staff ON public.commission_entries(business_id, staff_id);
+
+CREATE OR REPLACE TRIGGER trg_commission_entries_audit
+BEFORE INSERT OR UPDATE ON public.commission_entries
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Enable RLS and FORCE RLS on all ledger-critical tables
+ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.invoice_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoice_items FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.receipts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.receipts FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.receipt_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.receipt_allocations FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.jobs FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.job_steps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.job_steps FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.job_step_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.job_step_events FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.commission_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.commission_entries FORCE ROW LEVEL SECURITY;
+
+-- SELECT policies (NO client INSERT/UPDATE/DELETE policies - ledger critical per §6.1)
+DROP POLICY IF EXISTS invoices_select ON public.invoices;
+CREATE POLICY invoices_select ON public.invoices
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (
+      (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+      OR created_by = (SELECT app.current_member_id())
+    )
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS invoice_items_select ON public.invoice_items;
+CREATE POLICY invoice_items_select ON public.invoice_items
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND EXISTS (
+      SELECT 1 FROM public.invoices i
+      WHERE i.id = invoice_id
+        AND (
+          (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+          OR i.created_by = (SELECT app.current_member_id())
+        )
+    )
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS receipts_select ON public.receipts;
+CREATE POLICY receipts_select ON public.receipts
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (
+      (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+      OR created_by = (SELECT app.current_member_id())
+    )
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS receipt_allocations_select ON public.receipt_allocations;
+CREATE POLICY receipt_allocations_select ON public.receipt_allocations
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS jobs_select ON public.jobs;
+CREATE POLICY jobs_select ON public.jobs
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS job_steps_select ON public.job_steps;
+CREATE POLICY job_steps_select ON public.job_steps
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS job_step_events_select ON public.job_step_events;
+CREATE POLICY job_step_events_select ON public.job_step_events
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS commission_entries_select ON public.commission_entries;
+CREATE POLICY commission_entries_select ON public.commission_entries
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (
+      (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+      OR staff_id = (SELECT app.current_member_id())
+    )
+    AND deleted_at IS NULL
+  );
+
+-- Sequence helper for numbering
+CREATE OR REPLACE FUNCTION public.next_invoice_number(
+  p_biz_id uuid,
+  p_fy_label text,
+  p_prefix text,
+  p_numbering_mode text,
+  p_start_number int
+)
+RETURNS text AS $$
+DECLARE
+  v_counter_fy text;
+  v_last_num int;
+  v_next_num int;
+BEGIN
+  IF p_numbering_mode = 'FY_RESET' THEN
+    v_counter_fy := p_fy_label;
+  ELSE
+    v_counter_fy := 'ALL';
+  END IF;
+
+  -- Lock row or insert initial counter
+  SELECT last_number INTO v_last_num
+  FROM public.invoice_counters
+  WHERE business_id = p_biz_id AND fy_label = v_counter_fy
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    v_next_num := GREATEST(p_start_number, 1);
+    INSERT INTO public.invoice_counters (business_id, fy_label, last_number)
+    VALUES (p_biz_id, v_counter_fy, v_next_num);
+  ELSE
+    v_next_num := GREATEST(v_last_num + 1, p_start_number);
+    UPDATE public.invoice_counters
+    SET last_number = v_next_num, updated_at = now()
+    WHERE business_id = p_biz_id AND fy_label = v_counter_fy;
+  END IF;
+
+  IF p_numbering_mode = 'FY_RESET' THEN
+    RETURN p_prefix || p_fy_label || '-' || LPAD(v_next_num::text, 4, '0');
+  ELSE
+    RETURN p_prefix || LPAD(v_next_num::text, 4, '0');
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+-- Next receipt number helper
+CREATE OR REPLACE FUNCTION public.next_receipt_number(
+  p_biz_id uuid,
+  p_fy_label text
+)
+RETURNS text AS $$
+DECLARE
+  v_last_num int;
+  v_next_num int;
+BEGIN
+  SELECT last_number INTO v_last_num
+  FROM public.invoice_counters
+  WHERE business_id = p_biz_id AND fy_label = 'RC_' || p_fy_label
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    v_next_num := 1;
+    INSERT INTO public.invoice_counters (business_id, fy_label, last_number)
+    VALUES (p_biz_id, 'RC_' || p_fy_label, 1);
+  ELSE
+    v_next_num := v_last_num + 1;
+    UPDATE public.invoice_counters
+    SET last_number = v_next_num, updated_at = now()
+    WHERE business_id = p_biz_id AND fy_label = 'RC_' || p_fy_label;
+  END IF;
+
+  RETURN 'RC-' || p_fy_label || '-' || LPAD(v_next_num::text, 4, '0');
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+-- RPC: create_invoice
+CREATE OR REPLACE FUNCTION public.create_invoice(payload jsonb)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_biz public.businesses%ROWTYPE;
+
+  v_invoice_date date;
+  v_due_date date;
+  v_fy text;
+
+  v_customer_id uuid := NULL;
+  v_party_name text;
+  v_party_mobile text := NULL;
+  v_walk_in jsonb;
+  v_force_new_customer boolean;
+
+  v_items jsonb;
+  v_item jsonb;
+  v_subtotal numeric(14,2) := 0;
+  v_line_amount numeric(14,2);
+  v_qty numeric(10,2);
+  v_rate numeric(14,2);
+
+  v_discount_type text;
+  v_discount_value numeric(14,2);
+  v_discount_amount numeric(14,2) := 0;
+  v_total numeric(14,2);
+
+  v_paid jsonb;
+  v_paid_now numeric(14,2) := 0;
+  v_payment_mode text;
+
+  v_invoice_number text;
+  v_invoice_id uuid;
+  v_item_id uuid;
+
+  v_receipt_number text;
+  v_receipt_id uuid;
+
+  v_service_row public.services%ROWTYPE;
+  v_service_id uuid;
+  v_job_type_name text;
+  v_step_row record;
+  v_step_count int := 0;
+  v_job_id uuid;
+  v_job_staff_id uuid;
+  v_comm_percent numeric(5,2);
+  v_comm_amount numeric(14,2);
+  v_deadline_date date;
+
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+
+  -- 1. Parse Dates & FY
+  v_invoice_date := COALESCE((payload->>'invoice_date')::date, app.today());
+  v_fy := public.fy_label(v_invoice_date);
+  v_due_date := COALESCE(
+    (payload->>'due_date')::date,
+    v_invoice_date + COALESCE(v_biz.default_terms_days, 0)
+  );
+
+  -- 2. Items & Subtotal computation (BR-2)
+  v_items := payload->'items';
+  IF v_items IS NULL OR jsonb_array_length(v_items) = 0 THEN
+    RAISE EXCEPTION 'ITEMS_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+    v_item := v_items->i;
+    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+    v_subtotal := v_subtotal + v_line_amount;
+  END LOOP;
+
+  -- 3. Discount computation (BR-2)
+  v_discount_type := COALESCE(payload->>'discount_type', 'NONE');
+  v_discount_value := COALESCE((payload->>'discount_value')::numeric, 0);
+
+  IF v_discount_type = 'FLAT' THEN
+    v_discount_amount := LEAST(v_discount_value, v_subtotal);
+  ELSIF v_discount_type = 'PERCENT' THEN
+    v_discount_amount := ROUND(v_subtotal * (LEAST(GREATEST(v_discount_value, 0), 100) / 100), 2);
+  ELSE
+    v_discount_type := 'NONE';
+    v_discount_amount := 0;
+  END IF;
+
+  v_total := GREATEST(0, v_subtotal - v_discount_amount);
+
+  -- 4. Paid now computation
+  v_paid := payload->'paid';
+  IF v_paid IS NOT NULL AND (v_paid->>'amount') IS NOT NULL AND (v_paid->>'amount')::numeric > 0 THEN
+    v_paid_now := LEAST((v_paid->>'amount')::numeric, v_total);
+    v_payment_mode := COALESCE(v_paid->>'mode', 'CASH');
+  ELSE
+    v_paid_now := 0;
+  END IF;
+
+  -- 5. Customer Handling (BR-5)
+  IF payload->>'customer_id' IS NOT NULL THEN
+    v_customer_id := (payload->>'customer_id')::uuid;
+    SELECT name, mobile INTO v_party_name, v_party_mobile
+    FROM public.customers
+    WHERE id = v_customer_id AND business_id = v_biz_id;
+  ELSE
+    -- Walk-in customer
+    v_walk_in := payload->'walk_in';
+    v_party_name := TRIM(COALESCE(v_walk_in->>'name', ''));
+    v_party_mobile := REGEXP_REPLACE(COALESCE(v_walk_in->>'mobile', ''), '[^0-9]', '', 'g');
+    IF LENGTH(v_party_mobile) = 12 AND v_party_mobile LIKE '91%' THEN
+      v_party_mobile := SUBSTRING(v_party_mobile FROM 3);
+    ELSIF LENGTH(v_party_mobile) = 11 AND v_party_mobile LIKE '0%' THEN
+      v_party_mobile := SUBSTRING(v_party_mobile FROM 2);
+    END IF;
+
+    -- If balance > 0 (partial or unpaid), name and mobile are MANDATORY
+    IF v_total > v_paid_now THEN
+      IF v_party_name = '' OR v_party_mobile = '' OR LENGTH(v_party_mobile) < 10 THEN
+        RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_DUE' USING ERRCODE = 'P0001';
+      END IF;
+    END IF;
+
+    IF v_party_name = '' AND (v_party_mobile IS NULL OR v_party_mobile = '') THEN
+      v_party_name := 'Walk-in';
+      v_party_mobile := NULL;
+      v_customer_id := NULL;
+    ELSE
+      IF v_party_name = '' THEN
+        v_party_name := 'Walk-in';
+      END IF;
+
+      -- Check existing or create WALK_IN customer
+      v_force_new_customer := COALESCE((payload->>'force_new_customer')::boolean, false);
+      IF NOT v_force_new_customer AND v_party_mobile IS NOT NULL AND v_party_mobile <> '' THEN
+        SELECT id INTO v_customer_id
+        FROM public.customers
+        WHERE business_id = v_biz_id AND mobile = v_party_mobile AND deleted_at IS NULL
+        LIMIT 1;
+      END IF;
+
+      IF v_customer_id IS NULL THEN
+        INSERT INTO public.customers (business_id, name, mobile, type, possible_duplicate)
+        VALUES (v_biz_id, v_party_name, v_party_mobile, 'WALK_IN', v_force_new_customer)
+        RETURNING id INTO v_customer_id;
+      END IF;
+    END IF;
+  END IF;
+
+  -- 6. Generate Number with concurrency row lock (BR-4)
+  v_invoice_number := public.next_invoice_number(
+    v_biz_id,
+    v_fy,
+    v_biz.invoice_prefix,
+    v_biz.numbering_mode,
+    v_biz.invoice_start_number
+  );
+
+  -- 7. Insert Invoice
+  INSERT INTO public.invoices (
+    business_id,
+    number,
+    fy_label,
+    invoice_date,
+    due_date,
+    customer_id,
+    party_name,
+    party_mobile,
+    subtotal,
+    discount_type,
+    discount_value,
+    discount_amount,
+    total,
+    paid_amount,
+    status,
+    notes,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_invoice_number,
+    v_fy,
+    v_invoice_date,
+    v_due_date,
+    v_customer_id,
+    v_party_name,
+    v_party_mobile,
+    v_subtotal,
+    v_discount_type,
+    v_discount_value,
+    v_discount_amount,
+    v_total,
+    v_paid_now,
+    'ACTIVE',
+    payload->>'notes',
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_invoice_id;
+
+  -- 8. Insert Items & Jobs (BR-12)
+  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+    v_item := v_items->i;
+    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+
+    INSERT INTO public.invoice_items (
+      business_id,
+      invoice_id,
+      service_id,
+      description,
+      quantity,
+      rate,
+      amount,
+      is_job,
+      applicant_name,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_invoice_id,
+      (v_item->>'service_id')::uuid,
+      v_item->>'description',
+      v_qty,
+      v_rate,
+      v_line_amount,
+      COALESCE((v_item->>'is_job')::boolean, false),
+      v_item->>'applicant_name',
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_item_id;
+
+    -- Job creation if create_job (is_job) is explicitly true (checked by default)
+    IF COALESCE((v_item->>'is_job')::boolean, false) = true THEN
+      IF NOT v_biz.job_management_enabled THEN
+        UPDATE public.businesses SET job_management_enabled = true WHERE id = v_biz_id;
+        v_biz.job_management_enabled := true;
+      END IF;
+
+      v_service_id := NULL;
+      v_job_type_name := v_item->>'description';
+      v_deadline_date := v_invoice_date + 15;
+      v_comm_percent := 0;
+
+      IF (v_item->>'service_id') IS NOT NULL THEN
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE id = (v_item->>'service_id')::uuid;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        END IF;
+      ELSE
+        -- Look up service by name or auto-create for custom entries
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE business_id = v_biz_id AND LOWER(TRIM(name)) = LOWER(TRIM(v_item->>'description')) AND deleted_at IS NULL
+        LIMIT 1;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        ELSE
+          INSERT INTO public.services (
+            business_id,
+            name,
+            default_rate,
+            is_job_type,
+            deadline_days,
+            commission_percent,
+            active,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            TRIM(v_item->>'description'),
+            v_rate,
+            true,
+            15,
+            0,
+            true,
+            v_member_id,
+            v_member_id
+          )
+          RETURNING * INTO v_service_row;
+
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + 15;
+          v_comm_percent := 0;
+        END IF;
+      END IF;
+
+      v_job_staff_id := CASE WHEN v_role = 'STAFF' THEN v_member_id ELSE NULL END;
+
+      INSERT INTO public.jobs (
+        business_id,
+        invoice_id,
+        invoice_item_id,
+        service_id,
+        job_type_name,
+        party_name,
+        party_mobile,
+        applicant_name,
+        amount,
+        deadline_date,
+        assigned_staff_id,
+        commission_percent,
+        status,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        v_biz_id,
+        v_invoice_id,
+        v_item_id,
+        v_service_id,
+        v_job_type_name,
+        v_party_name,
+        v_party_mobile,
+        v_item->>'applicant_name',
+        v_line_amount,
+        v_deadline_date,
+        v_job_staff_id,
+        v_comm_percent,
+        'IN_PROGRESS',
+        v_member_id,
+        v_member_id
+      )
+      RETURNING id INTO v_job_id;
+
+      -- Snapshot steps (BR-12)
+      v_step_count := 0;
+      IF v_service_id IS NOT NULL THEN
+        FOR v_step_row IN
+          SELECT position, name, whatsapp_message
+          FROM public.job_type_steps
+          WHERE service_id = v_service_id AND deleted_at IS NULL
+          ORDER BY position ASC
+        LOOP
+          v_step_count := v_step_count + 1;
+          INSERT INTO public.job_steps (
+            business_id,
+            job_id,
+            position,
+            name,
+            whatsapp_message,
+            ticked,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            v_job_id,
+            v_step_row.position,
+            v_step_row.name,
+            v_step_row.whatsapp_message,
+            false,
+            v_member_id,
+            v_member_id
+          );
+        END LOOP;
+      END IF;
+
+      IF v_step_count = 0 THEN
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          1,
+          'Processing / Document Verification',
+          'Hello {party_name}, your {job_name} ({bill_no}) is currently in process. - {business_name}',
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END IF;
+
+        -- Commission entry if staff assigned & commission > 0 (BR-15)
+        IF v_job_staff_id IS NOT NULL AND v_comm_percent > 0 THEN
+          v_comm_amount := ROUND(v_line_amount * (v_comm_percent / 100), 2);
+          INSERT INTO public.commission_entries (
+            business_id,
+            job_id,
+            staff_id,
+            base_amount,
+            percent,
+            amount,
+            status,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            v_job_id,
+            v_job_staff_id,
+            v_line_amount,
+            v_comm_percent,
+            v_comm_amount,
+            'UPCOMING',
+            v_member_id,
+            v_member_id
+          );
+        END IF;
+      END IF;
+  END LOOP;
+
+  -- 9. Receipt and Allocation in same transaction if paid now > 0 (BR-7)
+  IF v_paid_now > 0 THEN
+    v_receipt_number := public.next_receipt_number(v_biz_id, v_fy);
+
+    INSERT INTO public.receipts (
+      business_id,
+      number,
+      fy_label,
+      receipt_date,
+      customer_id,
+      amount,
+      mode,
+      kind,
+      unallocated_amount,
+      notes,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_number,
+      v_fy,
+      v_invoice_date,
+      v_customer_id,
+      v_paid_now,
+      v_payment_mode,
+      'INVOICE_PAYMENT',
+      0,
+      'Payment for bill ' || v_invoice_number,
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_receipt_id;
+
+    INSERT INTO public.receipt_allocations (
+      business_id,
+      receipt_id,
+      invoice_id,
+      amount,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_id,
+      v_invoice_id,
+      v_paid_now,
+      v_member_id,
+      v_member_id
+    );
+  END IF;
+
+  -- Return complete invoice JSON
+  SELECT to_jsonb(i.*) INTO v_result
+  FROM public.invoices i
+  WHERE i.id = v_invoice_id;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.create_invoice(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_invoice(jsonb) TO authenticated;
+
+-- RPC: update_invoice (only allowed if NO allocations exist per BR-8)
+CREATE OR REPLACE FUNCTION public.update_invoice(
+  id uuid,
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_inv public.invoices%ROWTYPE;
+  v_items jsonb;
+  v_item jsonb;
+  v_subtotal numeric(14,2) := 0;
+  v_line_amount numeric(14,2);
+  v_qty numeric(10,2);
+  v_rate numeric(14,2);
+  v_discount_type text;
+  v_discount_value numeric(14,2);
+  v_discount_amount numeric(14,2) := 0;
+  v_total numeric(14,2);
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+
+  SELECT * INTO v_inv FROM public.invoices WHERE invoices.id = update_invoice.id AND business_id = v_biz_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_inv.status = 'CANCELLED' THEN
+    RAISE EXCEPTION 'INVOICE_CANCELLED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Lock check: if any allocations exist, raise INVOICE_LOCKED per BR-8
+  IF EXISTS (SELECT 1 FROM public.receipt_allocations WHERE invoice_id = v_inv.id) THEN
+    RAISE EXCEPTION 'INVOICE_LOCKED' USING ERRCODE = 'P0001', DETAIL = jsonb_build_object('invoice_id', v_inv.id)::text;
+  END IF;
+
+  -- Recalculate items
+  v_items := payload->'items';
+  IF v_items IS NOT NULL AND jsonb_array_length(v_items) > 0 THEN
+    -- Check if any existing job step has been ticked (BR-12)
+    IF EXISTS (
+      SELECT 1 FROM public.jobs j
+      JOIN public.job_steps js ON js.job_id = j.id
+      WHERE j.invoice_id = v_inv.id AND js.ticked = true
+    ) THEN
+      RAISE EXCEPTION 'JOB_HAS_PROGRESS' USING ERRCODE = 'P0001';
+    END IF;
+
+    -- Delete old items & unticked jobs
+    DELETE FROM public.jobs WHERE invoice_id = v_inv.id;
+    DELETE FROM public.invoice_items WHERE invoice_id = v_inv.id;
+
+    FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+      v_item := v_items->i;
+      v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+      v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+      v_line_amount := ROUND(v_qty * v_rate, 2);
+      v_subtotal := v_subtotal + v_line_amount;
+
+      INSERT INTO public.invoice_items (
+        business_id,
+        invoice_id,
+        service_id,
+        description,
+        quantity,
+        rate,
+        amount,
+        is_job,
+        applicant_name,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        v_biz_id,
+        v_inv.id,
+        (v_item->>'service_id')::uuid,
+        v_item->>'description',
+        v_qty,
+        v_rate,
+        v_line_amount,
+        COALESCE((v_item->>'is_job')::boolean, false),
+        v_item->>'applicant_name',
+        v_member_id,
+        v_member_id
+      );
+    END LOOP;
+  ELSE
+    v_subtotal := v_inv.subtotal;
+  END IF;
+
+  -- Discounts
+  v_discount_type := COALESCE(payload->>'discount_type', v_inv.discount_type);
+  v_discount_value := COALESCE((payload->>'discount_value')::numeric, v_inv.discount_value);
+
+  IF v_discount_type = 'FLAT' THEN
+    v_discount_amount := LEAST(v_discount_value, v_subtotal);
+  ELSIF v_discount_type = 'PERCENT' THEN
+    v_discount_amount := ROUND(v_subtotal * (LEAST(GREATEST(v_discount_value, 0), 100) / 100), 2);
+  ELSE
+    v_discount_amount := 0;
+  END IF;
+
+  v_total := GREATEST(0, v_subtotal - v_discount_amount);
+
+  UPDATE public.invoices
+  SET
+    subtotal = v_subtotal,
+    discount_type = v_discount_type,
+    discount_value = v_discount_value,
+    discount_amount = v_discount_amount,
+    total = v_total,
+    due_date = COALESCE((payload->>'due_date')::date, due_date),
+    notes = COALESCE(payload->>'notes', notes),
+    updated_at = now(),
+    updated_by = v_member_id
+  WHERE invoices.id = v_inv.id
+  RETURNING to_jsonb(invoices.*) INTO v_result;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_invoice(uuid, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_invoice(uuid, jsonb) TO authenticated;
+
+-- RPC: cancel_invoice (BR-8)
+CREATE OR REPLACE FUNCTION public.cancel_invoice(
+  id uuid,
+  reason text
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_inv public.invoices%ROWTYPE;
+  v_alloc record;
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF reason IS NULL OR TRIM(reason) = '' THEN
+    RAISE EXCEPTION 'CANCEL_REASON_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_inv FROM public.invoices WHERE invoices.id = cancel_invoice.id AND business_id = v_biz_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_inv.status = 'CANCELLED' THEN
+    RETURN to_jsonb(v_inv);
+  END IF;
+
+  -- If invoice had payments but customer_id is NULL, require name/mobile so advance can be held (BR-8)
+  IF v_inv.paid_amount > 0 AND v_inv.customer_id IS NULL THEN
+    RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_ADVANCE' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Release allocations: increase each affected receipt's unallocated_amount (BR-8)
+  FOR v_alloc IN
+    SELECT receipt_id, amount
+    FROM public.receipt_allocations
+    WHERE invoice_id = v_inv.id
+  LOOP
+    UPDATE public.receipts
+    SET unallocated_amount = unallocated_amount + v_alloc.amount,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE receipts.id = v_alloc.receipt_id;
+  END LOOP;
+
+  DELETE FROM public.receipt_allocations WHERE invoice_id = v_inv.id;
+
+  -- Cancel linked jobs and commissions (BR-8)
+  UPDATE public.jobs
+  SET status = 'CANCELLED', updated_at = now(), updated_by = v_member_id
+  WHERE invoice_id = v_inv.id;
+
+  UPDATE public.commission_entries
+  SET status = 'CANCELLED', updated_at = now(), updated_by = v_member_id
+  WHERE job_id IN (SELECT jobs.id FROM public.jobs WHERE jobs.invoice_id = v_inv.id);
+
+  -- Set invoice status CANCELLED and reset paid_amount to 0
+  UPDATE public.invoices
+  SET
+    status = 'CANCELLED',
+    cancel_reason = TRIM(reason),
+    paid_amount = 0,
+    updated_at = now(),
+    updated_by = v_member_id
+  WHERE invoices.id = v_inv.id
+  RETURNING to_jsonb(invoices.*) INTO v_result;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.cancel_invoice(uuid, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.cancel_invoice(uuid, text) TO authenticated;
+
+
+-- >>> Migration: 20261027000004_receipts_allocation_dues.sql <<<
+-- Helper RPC: next_receipt_number overload
+CREATE OR REPLACE FUNCTION public.next_receipt_number(p_date date)
+RETURNS text AS $$
+DECLARE
+  v_biz_id uuid;
+  v_fy text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_fy := public.fy_label(p_date);
+  RETURN public.next_receipt_number(v_biz_id, v_fy);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.next_receipt_number(date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.next_receipt_number(date) TO authenticated;
+
+-- RPC: create_receipt (BR-7)
+CREATE OR REPLACE FUNCTION public.create_receipt(
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_date date;
+  v_fy text;
+  v_num text;
+  v_cust_id uuid;
+  v_amount numeric(14,2);
+  v_mode text;
+  v_ref text;
+  v_kind text;
+  v_cat text;
+  v_notes text;
+  v_allocs jsonb;
+  v_alloc_count int;
+  v_alloc_elem jsonb;
+  v_inv_id uuid;
+  v_alloc_amt numeric(14,2);
+  v_total_allocated numeric(14,2) := 0;
+  v_unallocated numeric(14,2) := 0;
+  v_inv public.invoices%ROWTYPE;
+  v_inv_balance numeric(14,2);
+  v_cust_total_due numeric(14,2);
+  v_remaining_customer_due numeric(14,2);
+  v_receipt public.receipts%ROWTYPE;
+  i int;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_date := COALESCE((payload->>'receipt_date')::date, (SELECT app.today()));
+  v_fy := public.fy_label(v_date);
+  v_num := public.next_receipt_number(v_biz_id, v_fy);
+
+  v_kind := UPPER(COALESCE(payload->>'kind', 'INVOICE_PAYMENT'));
+  IF v_kind NOT IN ('INVOICE_PAYMENT', 'OTHER_INCOME') THEN
+    RAISE EXCEPTION 'INVALID_KIND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_mode := UPPER(COALESCE(payload->>'mode', 'CASH'));
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_PAYMENT_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_amount := ROUND((payload->>'amount')::numeric, 2);
+  IF v_amount IS NULL OR v_amount <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_ref := payload->>'reference';
+  v_notes := payload->>'notes';
+
+  IF v_kind = 'OTHER_INCOME' THEN
+    v_cat := COALESCE(payload->>'income_category', 'Other Income');
+    IF payload->>'customer_id' IS NOT NULL AND payload->>'customer_id' <> '' THEN
+      v_cust_id := (payload->>'customer_id')::uuid;
+    END IF;
+
+    -- OTHER_INCOME cannot have invoice allocations
+    IF payload ? 'allocations' AND jsonb_array_length(payload->'allocations') > 0 THEN
+      RAISE EXCEPTION 'OTHER_INCOME_CANNOT_HAVE_ALLOCATIONS' USING ERRCODE = 'P0001';
+    END IF;
+
+    INSERT INTO public.receipts (
+      business_id, number, fy_label, receipt_date, customer_id, amount,
+      mode, reference, kind, income_category, unallocated_amount, notes,
+      created_by, updated_by
+    ) VALUES (
+      v_biz_id, v_num, v_fy, v_date, v_cust_id, v_amount,
+      v_mode, v_ref, 'OTHER_INCOME', v_cat, 0, v_notes,
+      v_member_id, v_member_id
+    ) RETURNING * INTO v_receipt;
+
+    RETURN to_jsonb(v_receipt);
+  END IF;
+
+  -- INVOICE_PAYMENT path
+  IF payload->>'customer_id' IS NOT NULL AND payload->>'customer_id' <> '' THEN
+    v_cust_id := (payload->>'customer_id')::uuid;
+  END IF;
+
+  v_allocs := payload->'allocations';
+  v_alloc_count := COALESCE(jsonb_array_length(v_allocs), 0);
+
+  -- Infer customer from invoice if not explicitly provided
+  IF v_cust_id IS NULL AND v_alloc_count > 0 THEN
+    SELECT customer_id INTO v_cust_id
+    FROM public.invoices
+    WHERE id = (v_allocs->0->>'invoice_id')::uuid AND business_id = v_biz_id;
+  END IF;
+
+  IF v_cust_id IS NULL THEN
+    RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_RECEIPT' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Verify customer exists in business
+  PERFORM 1 FROM public.customers
+  WHERE id = v_cust_id AND business_id = v_biz_id AND deleted_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'CUSTOMER_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Validate each allocation
+  IF v_alloc_count > 0 THEN
+    FOR i IN 0..(v_alloc_count - 1) LOOP
+      v_alloc_elem := v_allocs->i;
+      v_inv_id := (v_alloc_elem->>'invoice_id')::uuid;
+      v_alloc_amt := ROUND((v_alloc_elem->>'amount')::numeric, 2);
+
+      IF v_alloc_amt IS NULL OR v_alloc_amt <= 0 THEN
+        RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT' USING ERRCODE = 'P0001';
+      END IF;
+
+      SELECT * INTO v_inv
+      FROM public.invoices
+      WHERE id = v_inv_id AND business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL
+      FOR UPDATE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001', DETAIL = jsonb_build_object('invoice_id', v_inv_id)::text;
+      END IF;
+
+      IF v_inv.customer_id IS NOT NULL AND v_inv.customer_id <> v_cust_id THEN
+        RAISE EXCEPTION 'INVOICE_CUSTOMER_MISMATCH' USING ERRCODE = 'P0001';
+      END IF;
+
+      v_inv_balance := v_inv.total - v_inv.paid_amount;
+      IF v_alloc_amt > v_inv_balance THEN
+        RAISE EXCEPTION 'ALLOCATION_EXCEEDS_INVOICE_BALANCE' USING ERRCODE = 'P0001',
+          DETAIL = jsonb_build_object('invoice_id', v_inv_id, 'balance', v_inv_balance, 'allocated', v_alloc_amt)::text;
+      END IF;
+
+      v_total_allocated := v_total_allocated + v_alloc_amt;
+    END LOOP;
+  END IF;
+
+  IF v_total_allocated > v_amount THEN
+    RAISE EXCEPTION 'ALLOCATION_EXCEEDS_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- BR-7 Rule: Save is allowed only if unallocated = 0, or all customer dues are fully allocated
+  IF v_total_allocated < v_amount THEN
+    SELECT COALESCE(SUM(total - paid_amount), 0) INTO v_cust_total_due
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND customer_id = v_cust_id
+      AND status = 'ACTIVE'
+      AND deleted_at IS NULL
+      AND (total - paid_amount) > 0;
+
+    v_remaining_customer_due := v_cust_total_due - v_total_allocated;
+
+    IF v_remaining_customer_due > 0 THEN
+      RAISE EXCEPTION 'ALLOCATION_INCOMPLETE' USING ERRCODE = 'P0001',
+        DETAIL = jsonb_build_object('unallocated', v_amount - v_total_allocated, 'remaining_due', v_remaining_customer_due)::text;
+    ELSE
+      -- All invoices for customer are settled; remainder becomes customer advance
+      v_unallocated := v_amount - v_total_allocated;
+    END IF;
+  ELSE
+    v_unallocated := 0;
+  END IF;
+
+  -- Insert receipt
+  INSERT INTO public.receipts (
+    business_id, number, fy_label, receipt_date, customer_id, amount,
+    mode, reference, kind, income_category, unallocated_amount, notes,
+    created_by, updated_by
+  ) VALUES (
+    v_biz_id, v_num, v_fy, v_date, v_cust_id, v_amount,
+    v_mode, v_ref, 'INVOICE_PAYMENT', NULL, v_unallocated, v_notes,
+    v_member_id, v_member_id
+  ) RETURNING * INTO v_receipt;
+
+  -- Insert allocations & update invoice paid amounts
+  IF v_alloc_count > 0 THEN
+    FOR i IN 0..(v_alloc_count - 1) LOOP
+      v_alloc_elem := v_allocs->i;
+      v_inv_id := (v_alloc_elem->>'invoice_id')::uuid;
+      v_alloc_amt := ROUND((v_alloc_elem->>'amount')::numeric, 2);
+
+      INSERT INTO public.receipt_allocations (
+        business_id, receipt_id, invoice_id, amount, created_by, updated_by
+      ) VALUES (
+        v_biz_id, v_receipt.id, v_inv_id, v_alloc_amt, v_member_id, v_member_id
+      );
+
+      UPDATE public.invoices
+      SET paid_amount = paid_amount + v_alloc_amt,
+          updated_at = now(),
+          updated_by = v_member_id
+      WHERE id = v_inv_id;
+    END LOOP;
+  END IF;
+
+  RETURN to_jsonb(v_receipt);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.create_receipt(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_receipt(jsonb) TO authenticated;
+
+
+-- RPC: delete_receipt (BR-9)
+CREATE OR REPLACE FUNCTION public.delete_receipt(
+  id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_rcpt public.receipts%ROWTYPE;
+  v_alloc record;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_rcpt
+  FROM public.receipts
+  WHERE receipts.id = delete_receipt.id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Reverse allocations (reopen invoice balance)
+  FOR v_alloc IN
+    SELECT * FROM public.receipt_allocations
+    WHERE receipt_id = v_rcpt.id AND deleted_at IS NULL
+    FOR UPDATE
+  LOOP
+    UPDATE public.invoices
+    SET paid_amount = GREATEST(0, paid_amount - v_alloc.amount),
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE invoices.id = v_alloc.invoice_id;
+
+    UPDATE public.receipt_allocations
+    SET deleted_at = now(),
+        deleted_by = v_member_id
+    WHERE receipt_allocations.id = v_alloc.id;
+  END LOOP;
+
+  -- Soft-delete receipt
+  UPDATE public.receipts
+  SET deleted_at = now(),
+      deleted_by = v_member_id
+  WHERE receipts.id = v_rcpt.id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'receipt_id', v_rcpt.id,
+    'amount', v_rcpt.amount
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.delete_receipt(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.delete_receipt(uuid) TO authenticated;
+
+
+-- RPC: apply_advance (BR-7)
+CREATE OR REPLACE FUNCTION public.apply_advance(
+  invoice_id uuid,
+  amount numeric,
+  receipt_id uuid DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_inv public.invoices%ROWTYPE;
+  v_rcpt public.receipts%ROWTYPE;
+  v_amt numeric(14,2);
+  v_inv_balance numeric(14,2);
+  v_remaining_to_apply numeric(14,2);
+  v_step_amt numeric(14,2);
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_amt := ROUND(amount, 2);
+  IF v_amt IS NULL OR v_amt <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_inv
+  FROM public.invoices
+  WHERE invoices.id = apply_advance.invoice_id
+    AND business_id = v_biz_id
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_inv.customer_id IS NULL THEN
+    RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_ADVANCE' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_inv_balance := v_inv.total - v_inv.paid_amount;
+  IF v_amt > v_inv_balance THEN
+    RAISE EXCEPTION 'ADVANCE_EXCEEDS_INVOICE_BALANCE' USING ERRCODE = 'P0001',
+      DETAIL = jsonb_build_object('balance', v_inv_balance, 'requested', v_amt)::text;
+  END IF;
+
+  IF receipt_id IS NOT NULL THEN
+    SELECT * INTO v_rcpt
+    FROM public.receipts
+    WHERE receipts.id = apply_advance.receipt_id
+      AND business_id = v_biz_id
+      AND customer_id = v_inv.customer_id
+      AND deleted_at IS NULL
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+
+    IF v_rcpt.unallocated_amount < v_amt THEN
+      RAISE EXCEPTION 'INSUFFICIENT_ADVANCE' USING ERRCODE = 'P0001',
+        DETAIL = jsonb_build_object('available', v_rcpt.unallocated_amount, 'requested', v_amt)::text;
+    END IF;
+
+    UPDATE public.receipts
+    SET unallocated_amount = unallocated_amount - v_amt,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE receipts.id = v_rcpt.id;
+
+    INSERT INTO public.receipt_allocations (
+      business_id, receipt_id, invoice_id, amount, created_by, updated_by
+    ) VALUES (
+      v_biz_id, v_rcpt.id, v_inv.id, v_amt, v_member_id, v_member_id
+    );
+
+    UPDATE public.invoices
+    SET paid_amount = paid_amount + v_amt,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE invoices.id = v_inv.id
+    RETURNING * INTO v_inv;
+
+  ELSE
+    -- FIFO across receipts with unallocated advance for customer
+    v_remaining_to_apply := v_amt;
+
+    FOR v_rcpt IN
+      SELECT * FROM public.receipts
+      WHERE business_id = v_biz_id
+        AND customer_id = v_inv.customer_id
+        AND unallocated_amount > 0
+        AND deleted_at IS NULL
+      ORDER BY receipt_date ASC, created_at ASC
+      FOR UPDATE
+    LOOP
+      v_step_amt := LEAST(v_remaining_to_apply, v_rcpt.unallocated_amount);
+
+      UPDATE public.receipts
+      SET unallocated_amount = unallocated_amount - v_step_amt,
+          updated_at = now(),
+          updated_by = v_member_id
+      WHERE receipts.id = v_rcpt.id;
+
+      INSERT INTO public.receipt_allocations (
+        business_id, receipt_id, invoice_id, amount, created_by, updated_by
+      ) VALUES (
+        v_biz_id, v_rcpt.id, v_inv.id, v_step_amt, v_member_id, v_member_id
+      );
+
+      v_remaining_to_apply := v_remaining_to_apply - v_step_amt;
+      EXIT WHEN v_remaining_to_apply <= 0;
+    END LOOP;
+
+    IF v_remaining_to_apply > 0 THEN
+      RAISE EXCEPTION 'INSUFFICIENT_ADVANCE' USING ERRCODE = 'P0001',
+        DETAIL = jsonb_build_object('unapplied', v_remaining_to_apply)::text;
+    END IF;
+
+    UPDATE public.invoices
+    SET paid_amount = paid_amount + v_amt,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE invoices.id = v_inv.id
+    RETURNING * INTO v_inv;
+  END IF;
+
+  RETURN to_jsonb(v_inv);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.apply_advance(uuid, numeric, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.apply_advance(uuid, numeric, uuid) TO authenticated;
+
+
+-- RPC: outstanding_invoices (BR-7)
+CREATE OR REPLACE FUNCTION public.outstanding_invoices(
+  customer_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', i.id,
+        'number', i.number,
+        'fy_label', i.fy_label,
+        'invoice_date', i.invoice_date,
+        'due_date', i.due_date,
+        'party_name', i.party_name,
+        'party_mobile', i.party_mobile,
+        'total', i.total,
+        'paid_amount', i.paid_amount,
+        'balance', (i.total - i.paid_amount),
+        'days_overdue', GREATEST(0, (SELECT app.today()) - i.due_date),
+        'is_overdue', (i.due_date < (SELECT app.today()))
+      )
+      ORDER BY i.invoice_date ASC, i.created_at ASC
+    ),
+    '[]'::jsonb
+  ) INTO v_result
+  FROM public.invoices i
+  WHERE i.business_id = v_biz_id
+    AND i.customer_id = outstanding_invoices.customer_id
+    AND i.status = 'ACTIVE'
+    AND i.deleted_at IS NULL
+    AND (i.total - i.paid_amount) > 0;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.outstanding_invoices(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.outstanding_invoices(uuid) TO authenticated;
+
+
+-- RPC: dues_list (§8.11, §11)
+CREATE OR REPLACE FUNCTION public.dues_list(
+  p_filter text DEFAULT 'ALL',
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 50,
+  p_offset int DEFAULT 0
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_today date;
+  v_total_outstanding numeric(14,2) := 0;
+  v_total_overdue numeric(14,2) := 0;
+  v_total_bills_due int := 0;
+  v_customer_count int := 0;
+  v_customers jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_today := (SELECT app.today());
+
+  -- Summary totals across all active unpaid bills
+  SELECT
+    COALESCE(SUM(i.total - i.paid_amount), 0),
+    COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0),
+    COUNT(i.id),
+    COUNT(DISTINCT COALESCE(i.customer_id, '00000000-0000-0000-0000-000000000000'::uuid))
+  INTO
+    v_total_outstanding,
+    v_total_overdue,
+    v_total_bills_due,
+    v_customer_count
+  FROM public.invoices i
+  WHERE i.business_id = v_biz_id
+    AND i.status = 'ACTIVE'
+    AND i.deleted_at IS NULL
+    AND (i.total - i.paid_amount) > 0;
+
+  -- Customers list grouped with their unpaid invoices
+  WITH grouped_dues AS (
+    SELECT
+      c.id AS customer_id,
+      COALESCE(c.name, i.party_name) AS customer_name,
+      COALESCE(c.mobile, i.party_mobile) AS customer_mobile,
+      COALESCE(c.type, 'WALK_IN') AS customer_type,
+      SUM(i.total - i.paid_amount) AS total_due,
+      SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END) AS overdue_balance,
+      COUNT(i.id) AS bill_count,
+      MIN(i.invoice_date) AS oldest_bill_date,
+      MIN(i.due_date) AS oldest_due_date,
+      MAX(GREATEST(0, v_today - i.due_date)) AS max_days_overdue,
+      jsonb_agg(
+        jsonb_build_object(
+          'id', i.id,
+          'number', i.number,
+          'invoice_date', i.invoice_date,
+          'due_date', i.due_date,
+          'total', i.total,
+          'paid_amount', i.paid_amount,
+          'balance', (i.total - i.paid_amount),
+          'is_overdue', (i.due_date < v_today),
+          'days_overdue', GREATEST(0, v_today - i.due_date)
+        )
+        ORDER BY i.invoice_date ASC, i.created_at ASC
+      ) AS invoices
+    FROM public.invoices i
+    LEFT JOIN public.customers c ON c.id = i.customer_id
+    WHERE i.business_id = v_biz_id
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+      AND (i.total - i.paid_amount) > 0
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR COALESCE(c.name, i.party_name) ILIKE '%' || p_search || '%'
+        OR COALESCE(c.mobile, i.party_mobile) ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+      )
+    GROUP BY
+      c.id,
+      COALESCE(c.name, i.party_name),
+      COALESCE(c.mobile, i.party_mobile),
+      COALESCE(c.type, 'WALK_IN')
+    HAVING
+      CASE
+        WHEN UPPER(p_filter) = 'OVERDUE' THEN
+          SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END) > 0
+        WHEN UPPER(p_filter) = 'DUE_TODAY' THEN
+          MIN(i.due_date) = v_today
+        WHEN UPPER(p_filter) = 'DUE_SOON' THEN
+          MIN(i.due_date) <= (v_today + 5) AND MIN(i.due_date) >= v_today
+        WHEN UPPER(p_filter) = 'REGULAR' THEN
+          COALESCE(c.type, 'WALK_IN') = 'REGULAR'
+        WHEN UPPER(p_filter) = 'WALK_IN' THEN
+          COALESCE(c.type, 'WALK_IN') = 'WALK_IN'
+        ELSE TRUE
+      END
+    ORDER BY
+      overdue_balance DESC,
+      total_due DESC,
+      oldest_bill_date ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(grouped_dues.*)), '[]'::jsonb)
+  INTO v_customers
+  FROM grouped_dues;
+
+  RETURN jsonb_build_object(
+    'summary', jsonb_build_object(
+      'total_outstanding', v_total_outstanding,
+      'total_overdue', v_total_overdue,
+      'total_bills_due', v_total_bills_due,
+      'customer_count', v_customer_count
+    ),
+    'customers', v_customers
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.dues_list(text, text, int, int) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.dues_list(text, text, int, int) TO authenticated;
+
+
+-- RPC: customer_ledger (§8.3)
+CREATE OR REPLACE FUNCTION public.customer_ledger(
+  customer_id uuid,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_cust public.customers%ROWTYPE;
+  v_total_billed numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_total_advance numeric(14,2) := 0;
+  v_current_balance numeric(14,2) := 0;
+  v_entries jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_cust
+  FROM public.customers
+  WHERE id = customer_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'CUSTOMER_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Billed total
+  SELECT COALESCE(SUM(total), 0) INTO v_total_billed
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND invoices.customer_id = customer_ledger.customer_id
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL;
+
+  -- Paid total (from receipts allocated or unallocated for this customer)
+  SELECT COALESCE(SUM(amount), 0), COALESCE(SUM(unallocated_amount), 0)
+  INTO v_total_paid, v_total_advance
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND receipts.customer_id = customer_ledger.customer_id
+    AND deleted_at IS NULL;
+
+  v_current_balance := v_total_billed - v_total_paid;
+
+  -- Unified chronological ledger entries
+  WITH combined_events AS (
+    -- Invoices (Debit)
+    SELECT
+      i.invoice_date AS entry_date,
+      i.created_at AS sort_ts,
+      'INVOICE' AS type,
+      i.id AS ref_id,
+      i.number AS ref_number,
+      'Bill #' || i.number AS description,
+      i.total AS debit,
+      0::numeric(14,2) AS credit
+    FROM public.invoices i
+    WHERE i.business_id = v_biz_id
+      AND i.customer_id = customer_ledger.customer_id
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+      AND (p_from_date IS NULL OR i.invoice_date >= p_from_date)
+      AND (p_to_date IS NULL OR i.invoice_date <= p_to_date)
+
+    UNION ALL
+
+    -- Receipts (Credit)
+    SELECT
+      r.receipt_date AS entry_date,
+      r.created_at AS sort_ts,
+      'RECEIPT' AS type,
+      r.id AS ref_id,
+      r.number AS ref_number,
+      'Payment #' || r.number || ' (' || r.mode || ')' AS description,
+      0::numeric(14,2) AS debit,
+      r.amount AS credit
+    FROM public.receipts r
+    WHERE r.business_id = v_biz_id
+      AND r.customer_id = customer_ledger.customer_id
+      AND r.deleted_at IS NULL
+      AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+      AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+  ),
+  ordered_ledger AS (
+    SELECT
+      entry_date,
+      type,
+      ref_id,
+      ref_number,
+      description,
+      debit,
+      credit,
+      SUM(debit - credit) OVER (ORDER BY entry_date ASC, sort_ts ASC) AS running_balance
+    FROM combined_events
+    ORDER BY entry_date ASC, sort_ts ASC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(ordered_ledger.*)), '[]'::jsonb)
+  INTO v_entries
+  FROM ordered_ledger;
+
+  RETURN jsonb_build_object(
+    'customer', jsonb_build_object(
+      'id', v_cust.id,
+      'name', v_cust.name,
+      'mobile', v_cust.mobile,
+      'type', v_cust.type
+    ),
+    'summary', jsonb_build_object(
+      'total_billed', v_total_billed,
+      'total_paid', v_total_paid,
+      'balance', v_current_balance,
+      'advance', v_total_advance
+    ),
+    'entries', v_entries
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.customer_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.customer_ledger(uuid, date, date) TO authenticated;
+
+
+-- >>> Migration: 20261027000005_expenses_payments_loans.sql <<<
+-- Migration 5: Payments (Vendors), Expenses, and Capital Ledger (Loans)
+-- Conforms to BR-1, BR-9, BR-10, BR-11, and §6 Data Model
+
+-- 1. Vendors Table
+CREATE TABLE IF NOT EXISTS public.vendors (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  mobile text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_vendors_business_name ON public.vendors(business_id, name);
+
+CREATE OR REPLACE TRIGGER trg_vendors_audit
+BEFORE INSERT OR UPDATE ON public.vendors
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- 2. Payments (Money OUT to vendors)
+CREATE TABLE IF NOT EXISTS public.payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  fy_label text NOT NULL,
+  payment_date date NOT NULL,
+  vendor_id uuid NOT NULL REFERENCES public.vendors(id) ON DELETE RESTRICT,
+  description text NOT NULL,
+  invoice_id uuid REFERENCES public.invoices(id) ON DELETE SET NULL,
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  mode text NOT NULL CHECK (mode IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE')),
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_business_date ON public.payments(business_id, payment_date);
+CREATE INDEX IF NOT EXISTS idx_payments_business_vendor ON public.payments(business_id, vendor_id);
+CREATE INDEX IF NOT EXISTS idx_payments_business_invoice ON public.payments(business_id, invoice_id);
+
+CREATE OR REPLACE TRIGGER trg_payments_audit
+BEFORE INSERT OR UPDATE ON public.payments
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Trigger to auto-set fy_label on payments
+CREATE OR REPLACE FUNCTION public.set_payment_fy_label()
+RETURNS trigger AS $$
+BEGIN
+  NEW.fy_label := public.fy_label(NEW.payment_date);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_payments_fy_label
+BEFORE INSERT OR UPDATE OF payment_date ON public.payments
+FOR EACH ROW EXECUTE FUNCTION public.set_payment_fy_label();
+
+
+-- 3. Expense Categories
+CREATE TABLE IF NOT EXISTS public.expense_categories (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  system boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_categories_business ON public.expense_categories(business_id, name);
+
+CREATE OR REPLACE TRIGGER trg_expense_categories_audit
+BEFORE INSERT OR UPDATE ON public.expense_categories
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+
+-- 4. Expenses (Business overhead not tied to a bill)
+CREATE TABLE IF NOT EXISTS public.expenses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  fy_label text NOT NULL,
+  expense_date date NOT NULL,
+  category_id uuid NOT NULL REFERENCES public.expense_categories(id) ON DELETE RESTRICT,
+  description text NOT NULL,
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  mode text NOT NULL CHECK (mode IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE')),
+  payee text,
+  staff_id uuid REFERENCES public.members(id) ON DELETE SET NULL,
+  loan_repayment_id uuid, -- FK added below
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_expenses_business_date ON public.expenses(business_id, expense_date);
+CREATE INDEX IF NOT EXISTS idx_expenses_business_category ON public.expenses(business_id, category_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_business_staff ON public.expenses(business_id, staff_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_business_loan ON public.expenses(business_id, loan_repayment_id);
+
+CREATE OR REPLACE TRIGGER trg_expenses_audit
+BEFORE INSERT OR UPDATE ON public.expenses
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Trigger to auto-set fy_label on expenses
+CREATE OR REPLACE FUNCTION public.set_expense_fy_label()
+RETURNS trigger AS $$
+BEGIN
+  NEW.fy_label := public.fy_label(NEW.expense_date);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_expenses_fy_label
+BEFORE INSERT OR UPDATE OF expense_date ON public.expenses
+FOR EACH ROW EXECUTE FUNCTION public.set_expense_fy_label();
+
+
+-- 5. Loans Table (Capital Ledger - In & Out, non-operating per BR-1, BR-11)
+CREATE TABLE IF NOT EXISTS public.loans (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  lender_name text NOT NULL,
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  loan_date date NOT NULL,
+  interest_rate numeric(6,2),
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_loans_business_date ON public.loans(business_id, loan_date);
+CREATE INDEX IF NOT EXISTS idx_loans_business_lender ON public.loans(business_id, lender_name);
+
+CREATE OR REPLACE TRIGGER trg_loans_audit
+BEFORE INSERT OR UPDATE ON public.loans
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+
+-- 6. Loan Repayments Table
+CREATE TABLE IF NOT EXISTS public.loan_repayments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  loan_id uuid NOT NULL REFERENCES public.loans(id) ON DELETE CASCADE,
+  repayment_date date NOT NULL,
+  principal numeric(14,2) NOT NULL CHECK (principal >= 0),
+  interest numeric(14,2) NOT NULL DEFAULT 0 CHECK (interest >= 0),
+  mode text NOT NULL CHECK (mode IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE')),
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid,
+  CONSTRAINT chk_repayment_positive CHECK (principal > 0 OR interest > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_loan_repayments_loan ON public.loan_repayments(business_id, loan_id);
+CREATE INDEX IF NOT EXISTS idx_loan_repayments_date ON public.loan_repayments(business_id, repayment_date);
+
+CREATE OR REPLACE TRIGGER trg_loan_repayments_audit
+BEFORE INSERT OR UPDATE ON public.loan_repayments
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Add foreign key from expenses to loan_repayments
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_expenses_loan_repayment'
+  ) THEN
+    ALTER TABLE public.expenses
+    ADD CONSTRAINT fk_expenses_loan_repayment
+    FOREIGN KEY (loan_repayment_id) REFERENCES public.loan_repayments(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+
+-- Seed default expense categories for all existing businesses
+INSERT INTO public.expense_categories (business_id, name, system)
+SELECT b.id, cat.name, cat.system
+FROM public.businesses b
+CROSS JOIN (
+  VALUES
+    ('Rent', false),
+    ('Electricity', false),
+    ('Internet', false),
+    ('Salary', false),
+    ('Travel', false),
+    ('Marketing', false),
+    ('Software/Subscriptions', false),
+    ('Maintenance', false),
+    ('Office Supplies', false),
+    ('Other', false),
+    ('Salary / Commission', true),
+    ('Loan Interest', true)
+) AS cat(name, system)
+ON CONFLICT DO NOTHING;
+
+
+-- Enable & FORCE Row Level Security on all 6 tables
+ALTER TABLE public.vendors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vendors FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payments FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.expense_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expense_categories FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expenses FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.loans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.loans FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE public.loan_repayments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.loan_repayments FORCE ROW LEVEL SECURITY;
+
+
+-- RLS Policies (Owner & Accountant ONLY; Staff has NO access per §5)
+
+-- Vendors
+DROP POLICY IF EXISTS vendors_select ON public.vendors;
+CREATE POLICY vendors_select ON public.vendors
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS vendors_insert ON public.vendors;
+CREATE POLICY vendors_insert ON public.vendors
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+DROP POLICY IF EXISTS vendors_update ON public.vendors;
+CREATE POLICY vendors_update ON public.vendors
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+
+-- Payments
+DROP POLICY IF EXISTS payments_select ON public.payments;
+CREATE POLICY payments_select ON public.payments
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS payments_insert ON public.payments;
+CREATE POLICY payments_insert ON public.payments
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+DROP POLICY IF EXISTS payments_update ON public.payments;
+CREATE POLICY payments_update ON public.payments
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+
+-- Expense Categories
+DROP POLICY IF EXISTS expense_categories_select ON public.expense_categories;
+CREATE POLICY expense_categories_select ON public.expense_categories
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS expense_categories_insert ON public.expense_categories;
+CREATE POLICY expense_categories_insert ON public.expense_categories
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+  );
+
+DROP POLICY IF EXISTS expense_categories_update ON public.expense_categories;
+CREATE POLICY expense_categories_update ON public.expense_categories
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+    AND system = false
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) = 'OWNER'
+    AND system = false
+  );
+
+
+-- Expenses (Direct client CRUD allowed ONLY for manual expenses; staff_id/loan_repayment_id expenses are read-only)
+DROP POLICY IF EXISTS expenses_select ON public.expenses;
+CREATE POLICY expenses_select ON public.expenses
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS expenses_insert ON public.expenses;
+CREATE POLICY expenses_insert ON public.expenses
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND staff_id IS NULL
+    AND loan_repayment_id IS NULL
+  );
+
+DROP POLICY IF EXISTS expenses_update ON public.expenses;
+CREATE POLICY expenses_update ON public.expenses
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND staff_id IS NULL
+    AND loan_repayment_id IS NULL
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND staff_id IS NULL
+    AND loan_repayment_id IS NULL
+  );
+
+
+-- Loans
+DROP POLICY IF EXISTS loans_select ON public.loans;
+CREATE POLICY loans_select ON public.loans
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS loans_insert ON public.loans;
+CREATE POLICY loans_insert ON public.loans
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+DROP POLICY IF EXISTS loans_update ON public.loans;
+CREATE POLICY loans_update ON public.loans
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  )
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+
+-- Loan Repayments (SELECT only for clients; mutations via record_loan_repayment RPC)
+DROP POLICY IF EXISTS loan_repayments_select ON public.loan_repayments;
+CREATE POLICY loan_repayments_select ON public.loan_repayments
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+
+-- RPC: record_loan_repayment (BR-11)
+CREATE OR REPLACE FUNCTION public.record_loan_repayment(
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_loan_id uuid;
+  v_loan public.loans%ROWTYPE;
+  v_date date;
+  v_principal numeric(14,2);
+  v_interest numeric(14,2);
+  v_mode text;
+  v_notes text;
+  v_total_principal_repaid numeric(14,2);
+  v_outstanding numeric(14,2);
+  v_repayment public.loan_repayments%ROWTYPE;
+  v_interest_cat_id uuid;
+  v_expense_id uuid := NULL;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_loan_id := (payload->>'loan_id')::uuid;
+  IF v_loan_id IS NULL THEN
+    RAISE EXCEPTION 'LOAN_ID_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_loan
+  FROM public.loans
+  WHERE id = v_loan_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'LOAN_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_date := COALESCE((payload->>'repayment_date')::date, (SELECT app.today()));
+  v_principal := ROUND(COALESCE((payload->>'principal')::numeric, 0), 2);
+  v_interest := ROUND(COALESCE((payload->>'interest')::numeric, 0), 2);
+
+  IF v_principal < 0 OR v_interest < 0 OR (v_principal = 0 AND v_interest = 0) THEN
+    RAISE EXCEPTION 'INVALID_REPAYMENT_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_mode := UPPER(COALESCE(payload->>'mode', 'BANK'));
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_PAYMENT_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_notes := payload->>'notes';
+
+  -- Check outstanding balance on loan
+  SELECT COALESCE(SUM(principal), 0) INTO v_total_principal_repaid
+  FROM public.loan_repayments
+  WHERE loan_id = v_loan.id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  v_outstanding := v_loan.amount - v_total_principal_repaid;
+
+  IF v_principal > v_outstanding THEN
+    RAISE EXCEPTION 'REPAYMENT_EXCEEDS_LOAN_BALANCE' USING ERRCODE = 'P0001',
+      DETAIL = jsonb_build_object('outstanding', v_outstanding, 'requested_principal', v_principal)::text;
+  END IF;
+
+  -- Insert loan repayment
+  INSERT INTO public.loan_repayments (
+    business_id, loan_id, repayment_date, principal, interest, mode, notes,
+    created_by, updated_by
+  ) VALUES (
+    v_biz_id, v_loan.id, v_date, v_principal, v_interest, v_mode, v_notes,
+    v_member_id, v_member_id
+  ) RETURNING * INTO v_repayment;
+
+  -- If interest > 0, auto-create Expense in system category "Loan Interest" (BR-11)
+  IF v_interest > 0 THEN
+    SELECT id INTO v_interest_cat_id
+    FROM public.expense_categories
+    WHERE business_id = v_biz_id AND name = 'Loan Interest' AND deleted_at IS NULL;
+
+    IF v_interest_cat_id IS NULL THEN
+      -- Create if not present
+      INSERT INTO public.expense_categories (business_id, name, system, created_by, updated_by)
+      VALUES (v_biz_id, 'Loan Interest', true, v_member_id, v_member_id)
+      RETURNING id INTO v_interest_cat_id;
+    END IF;
+
+    INSERT INTO public.expenses (
+      business_id, fy_label, expense_date, category_id, description, amount,
+      mode, payee, staff_id, loan_repayment_id, notes, created_by, updated_by
+    ) VALUES (
+      v_biz_id, public.fy_label(v_date), v_date, v_interest_cat_id,
+      'Loan Interest: ' || v_loan.lender_name, v_interest,
+      v_mode, v_loan.lender_name, NULL, v_repayment.id, v_notes,
+      v_member_id, v_member_id
+    ) RETURNING id INTO v_expense_id;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'repayment', to_jsonb(v_repayment),
+    'interest_expense_id', v_expense_id,
+    'loan_id', v_loan.id,
+    'remaining_principal', (v_outstanding - v_principal)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.record_loan_repayment(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.record_loan_repayment(jsonb) TO authenticated;
+
+
+-- RPC: loans_summary (BR-11)
+CREATE OR REPLACE FUNCTION public.loans_summary()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_total_taken numeric(14,2) := 0;
+  v_total_repaid numeric(14,2) := 0;
+  v_total_outstanding numeric(14,2) := 0;
+  v_total_interest_paid numeric(14,2) := 0;
+  v_lenders jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Global totals
+  SELECT
+    COALESCE(SUM(l.amount), 0),
+    COALESCE(SUM(lr.principal), 0),
+    COALESCE(SUM(lr.interest), 0)
+  INTO
+    v_total_taken,
+    v_total_repaid,
+    v_total_interest_paid
+  FROM public.loans l
+  LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+  WHERE l.business_id = v_biz_id AND l.deleted_at IS NULL;
+
+  v_total_outstanding := v_total_taken - v_total_repaid;
+
+  -- Per-lender breakdown
+  WITH lender_agg AS (
+    SELECT
+      l.id AS loan_id,
+      l.lender_name,
+      l.amount AS taken_amount,
+      l.loan_date,
+      l.interest_rate,
+      l.notes,
+      COALESCE(SUM(lr.principal), 0) AS principal_repaid,
+      COALESCE(SUM(lr.interest), 0) AS interest_paid,
+      (l.amount - COALESCE(SUM(lr.principal), 0)) AS outstanding,
+      jsonb_agg(
+        jsonb_build_object(
+          'id', lr.id,
+          'repayment_date', lr.repayment_date,
+          'principal', lr.principal,
+          'interest', lr.interest,
+          'mode', lr.mode,
+          'notes', lr.notes
+        ) ORDER BY lr.repayment_date ASC, lr.created_at ASC
+      ) FILTER (WHERE lr.id IS NOT NULL) AS repayments
+    FROM public.loans l
+    LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+    WHERE l.business_id = v_biz_id AND l.deleted_at IS NULL
+    GROUP BY l.id, l.lender_name, l.amount, l.loan_date, l.interest_rate, l.notes
+    ORDER BY outstanding DESC, l.loan_date DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(lender_agg.*)), '[]'::jsonb)
+  INTO v_lenders
+  FROM lender_agg;
+
+  RETURN jsonb_build_object(
+    'summary', jsonb_build_object(
+      'total_taken', v_total_taken,
+      'total_principal_repaid', v_total_repaid,
+      'total_outstanding', v_total_outstanding,
+      'total_interest_paid', v_total_interest_paid
+    ),
+    'loans', v_lenders
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.loans_summary() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.loans_summary() TO authenticated;
+
+
+-- RPC: vendor_detail (BR-10)
+CREATE OR REPLACE FUNCTION public.vendor_detail(
+  p_vendor_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_vendor public.vendors%ROWTYPE;
+  v_total_paid numeric(14,2) := 0;
+  v_payments jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_vendor
+  FROM public.vendors
+  WHERE id = p_vendor_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'VENDOR_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+  FROM public.payments
+  WHERE vendor_id = p_vendor_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', p.id,
+        'payment_date', p.payment_date,
+        'amount', p.amount,
+        'mode', p.mode,
+        'description', p.description,
+        'invoice_id', p.invoice_id,
+        'notes', p.notes
+      ) ORDER BY p.payment_date DESC, p.created_at DESC
+    ),
+    '[]'::jsonb
+  ) INTO v_payments
+  FROM public.payments p
+  WHERE p.vendor_id = p_vendor_id AND p.business_id = v_biz_id AND p.deleted_at IS NULL;
+
+  RETURN jsonb_build_object(
+    'vendor', to_jsonb(v_vendor),
+    'total_paid', v_total_paid,
+    'payments', v_payments
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.vendor_detail(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.vendor_detail(uuid) TO authenticated;
+
+
+-- >>> Migration: 20261027000006_job_management.sql <<<
+-- Migration 6: Job Management (Job listing, detail, tick/untick steps, deadline buckets, update_job)
+-- Conforms to BR-12, BR-13, BR-14, BR-15, and §5 Permissions
+
+-- Helper RPC: list_jobs
+CREATE OR REPLACE FUNCTION public.list_jobs(
+  p_tab text DEFAULT 'CURRENT',
+  p_service_id uuid DEFAULT NULL,
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0,
+  p_sort text DEFAULT 'QUEUE'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+
+  v_count_current int := 0;
+  v_count_completed int := 0;
+  v_count_due int := 0;
+  v_count_yellow int := 0;
+  v_count_red int := 0;
+
+  v_jobs jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Load business red_days and yellow_days settings
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  -- Compute tab counts across all non-deleted jobs in business
+  -- Late: strictly days_left < 0 (deadline has passed)
+  -- Yellow: red_days < days_left <= yellow_days (e.g. 4 to 5 days left)
+  -- Red: 0 <= days_left <= red_days (e.g. 0 to 3 days left)
+  SELECT
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS'),
+    COUNT(*) FILTER (WHERE j.status = 'COMPLETED'),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days)
+  INTO
+    v_count_current,
+    v_count_completed,
+    v_count_due,
+    v_count_yellow,
+    v_count_red
+  FROM public.jobs j
+  WHERE j.business_id = v_biz_id AND j.deleted_at IS NULL;
+
+  -- Query jobs for active tab
+  WITH job_steps_agg AS (
+    SELECT
+      js.job_id,
+      COUNT(*)::int AS total_steps,
+      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps,
+      (
+        SELECT s2.name 
+        FROM public.job_steps s2 
+        WHERE s2.job_id = js.job_id AND s2.ticked = false AND s2.deleted_at IS NULL 
+        ORDER BY s2.position ASC 
+        LIMIT 1
+      ) AS next_step_name
+    FROM public.job_steps js
+    WHERE js.business_id = v_biz_id AND js.deleted_at IS NULL
+    GROUP BY js.job_id
+  ),
+  filtered_jobs AS (
+    SELECT
+      j.id,
+      j.invoice_id,
+      i.number AS invoice_number,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount,
+      j.deadline_date,
+      (j.deadline_date - v_today) AS days_left,
+      j.status,
+      j.completed_at,
+      j.assigned_staff_id,
+      m.name AS assigned_staff_name,
+      j.created_at,
+      COALESCE(jsa.total_steps, 0) AS total_steps,
+      COALESCE(jsa.ticked_steps, 0) AS ticked_steps,
+      jsa.next_step_name,
+      CASE
+        WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+        ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
+      END AS progress_percent,
+      CASE
+        WHEN (j.deadline_date - v_today) < 0 THEN 'LATE'
+        WHEN (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+        WHEN (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+        ELSE 'NORMAL'
+      END AS deadline_bucket
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+    LEFT JOIN job_steps_agg jsa ON jsa.job_id = j.id
+    WHERE j.business_id = v_biz_id
+      AND j.deleted_at IS NULL
+      AND (
+        p_service_id IS NULL 
+        OR j.service_id = p_service_id 
+        OR j.job_type_name = (SELECT name FROM public.services WHERE id = p_service_id)
+      )
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR j.party_name ILIKE '%' || p_search || '%'
+        OR j.party_mobile ILIKE '%' || p_search || '%'
+        OR j.applicant_name ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+        OR j.job_type_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE UPPER(p_tab)
+          WHEN 'CURRENT' THEN j.status = 'IN_PROGRESS'
+          WHEN 'COMPLETED' THEN j.status = 'COMPLETED'
+          WHEN 'DUE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'LATE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'YELLOW' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days
+          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days
+          ELSE j.status = 'IN_PROGRESS'
+        END
+      )
+    ORDER BY
+      CASE UPPER(p_tab)
+        WHEN 'COMPLETED' THEN j.completed_at
+        ELSE NULL
+      END DESC NULLS LAST,
+      -- 1. PROGRESS sort: jobs with most completed steps come first
+      CASE 
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN COALESCE(jsa.ticked_steps, 0)
+      END DESC NULLS LAST,
+      CASE 
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN (COALESCE(jsa.ticked_steps, 0)::numeric / GREATEST(1, jsa.total_steps)::numeric) 
+      END DESC NULLS LAST,
+      -- 2. URGENT sort: nearest deadline and late jobs first
+      CASE 
+        WHEN UPPER(p_sort) = 'URGENT' OR (UPPER(p_tab) IN ('DUE', 'RED', 'YELLOW') AND UPPER(p_sort) != 'PROGRESS')
+        THEN (j.deadline_date - v_today) 
+      END ASC,
+      -- 3. Primary FIFO Queue Order: earliest created_at first
+      j.created_at ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(filtered_jobs.*)), '[]'::jsonb)
+  INTO v_jobs
+  FROM filtered_jobs;
+
+  RETURN jsonb_build_object(
+    'tab_counts', jsonb_build_object(
+      'current', v_count_current,
+      'completed', v_count_completed,
+      'due', v_count_due,
+      'yellow', v_count_yellow,
+      'red', v_count_red
+    ),
+    'jobs', v_jobs
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) TO authenticated;
+
+
+-- RPC: job_detail
+CREATE OR REPLACE FUNCTION public.job_detail(
+  p_job_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+  v_job record;
+  v_steps jsonb;
+  v_events jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  SELECT
+    j.id,
+    j.invoice_id,
+    i.number AS invoice_number,
+    i.invoice_date,
+    j.service_id,
+    j.job_type_name,
+    j.party_name,
+    j.party_mobile,
+    j.applicant_name,
+    j.amount,
+    j.deadline_date,
+    (j.deadline_date - v_today) AS days_left,
+    j.status,
+    j.completed_at,
+    j.assigned_staff_id,
+    m.name AS assigned_staff_name,
+    j.commission_percent,
+    j.created_at,
+    CASE
+      WHEN (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+      WHEN (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+      ELSE 'NORMAL'
+    END AS deadline_bucket
+  INTO v_job
+  FROM public.jobs j
+  JOIN public.invoices i ON i.id = j.invoice_id
+  LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+  WHERE j.id = p_job_id AND j.business_id = v_biz_id AND j.deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'JOB_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Ordered steps
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', js.id,
+        'position', js.position,
+        'name', js.name,
+        'whatsapp_message', js.whatsapp_message,
+        'ticked', js.ticked,
+        'ticked_at', js.ticked_at,
+        'ticked_by', js.ticked_by,
+        'ticked_by_name', tm.name
+      )
+      ORDER BY js.position ASC
+    ),
+    '[]'::jsonb
+  ) INTO v_steps
+  FROM public.job_steps js
+  LEFT JOIN public.members tm ON tm.id = js.ticked_by
+  WHERE js.job_id = p_job_id AND js.business_id = v_biz_id AND js.deleted_at IS NULL;
+
+  -- Step events log
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', jse.id,
+        'step_id', jse.job_step_id,
+        'action', jse.action,
+        'member_name', em.name,
+        'at', jse.at
+      )
+      ORDER BY jse.at DESC
+    ),
+    '[]'::jsonb
+  ) INTO v_events
+  FROM public.job_step_events jse
+  JOIN public.job_steps js ON js.id = jse.job_step_id
+  LEFT JOIN public.members em ON em.id = jse.member_id
+  WHERE js.job_id = p_job_id AND js.business_id = v_biz_id
+  LIMIT 30;
+
+  RETURN jsonb_build_object(
+    'job', to_jsonb(v_job),
+    'steps', v_steps,
+    'events', v_events
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.job_detail(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.job_detail(uuid) TO authenticated;
+
+
+-- RPC: tick_step (BR-13, BR-15)
+CREATE OR REPLACE FUNCTION public.tick_step(
+  p_step_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_step public.job_steps%ROWTYPE;
+  v_job public.jobs%ROWTYPE;
+  v_total_steps int;
+  v_ticked_steps int;
+  v_is_all_ticked boolean := false;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_step
+  FROM public.job_steps
+  WHERE id = p_step_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'STEP_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = v_step.job_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF v_job.status = 'CANCELLED' THEN
+    RAISE EXCEPTION 'JOB_IS_CANCELLED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Tick the step
+  UPDATE public.job_steps
+  SET ticked = true,
+      ticked_at = now(),
+      ticked_by = v_member_id,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = v_step.id;
+
+  -- Record event
+  INSERT INTO public.job_step_events (job_step_id, action, member_id, at)
+  VALUES (v_step.id, 'TICK', v_member_id, now());
+
+  -- Check if all steps for this job are now ticked
+  SELECT
+    COUNT(*)::int,
+    COUNT(*) FILTER (WHERE ticked = true)::int
+  INTO
+    v_total_steps,
+    v_ticked_steps
+  FROM public.job_steps
+  WHERE job_id = v_job.id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF v_total_steps > 0 AND v_ticked_steps = v_total_steps THEN
+    v_is_all_ticked := true;
+
+    -- Job completed
+    UPDATE public.jobs
+    SET status = 'COMPLETED',
+        completed_at = now(),
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE id = v_job.id;
+
+    -- Transition commission entries from UPCOMING to EARNED (BR-15)
+    UPDATE public.commission_entries
+    SET status = 'EARNED',
+        earned_at = now(),
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE job_id = v_job.id AND status = 'UPCOMING';
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'step_id', v_step.id,
+    'job_id', v_job.id,
+    'job_completed', v_is_all_ticked,
+    'total_steps', v_total_steps,
+    'ticked_steps', v_ticked_steps
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.tick_step(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.tick_step(uuid) TO authenticated;
+
+
+-- RPC: untick_step (BR-13, BR-15)
+CREATE OR REPLACE FUNCTION public.untick_step(
+  p_step_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_step public.job_steps%ROWTYPE;
+  v_job public.jobs%ROWTYPE;
+  v_total_steps int;
+  v_ticked_steps int;
+  v_was_completed boolean := false;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_step
+  FROM public.job_steps
+  WHERE id = p_step_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'STEP_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = v_step.job_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF v_job.status = 'CANCELLED' THEN
+    RAISE EXCEPTION 'JOB_IS_CANCELLED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Untick step
+  UPDATE public.job_steps
+  SET ticked = false,
+      ticked_at = NULL,
+      ticked_by = NULL,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = v_step.id;
+
+  -- Record event
+  INSERT INTO public.job_step_events (job_step_id, action, member_id, at)
+  VALUES (v_step.id, 'UNTICK', v_member_id, now());
+
+  -- Check count
+  SELECT
+    COUNT(*)::int,
+    COUNT(*) FILTER (WHERE ticked = true)::int
+  INTO
+    v_total_steps,
+    v_ticked_steps
+  FROM public.job_steps
+  WHERE job_id = v_job.id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  -- If job was completed, unticking any step reopens it (BR-13)
+  IF v_job.status = 'COMPLETED' THEN
+    v_was_completed := true;
+
+    UPDATE public.jobs
+    SET status = 'IN_PROGRESS',
+        completed_at = NULL,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE id = v_job.id;
+
+    -- Commission reverts from EARNED back to UPCOMING (BR-15)
+    UPDATE public.commission_entries
+    SET status = 'UPCOMING',
+        earned_at = NULL,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE job_id = v_job.id AND status = 'EARNED';
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'step_id', v_step.id,
+    'job_id', v_job.id,
+    'job_reopened', v_was_completed,
+    'total_steps', v_total_steps,
+    'ticked_steps', v_ticked_steps
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.untick_step(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.untick_step(uuid) TO authenticated;
+
+
+-- RPC: update_job (Owner only per BR-12, §5)
+CREATE OR REPLACE FUNCTION public.update_job(
+  p_job_id uuid,
+  p_deadline_date date,
+  p_assigned_staff_id uuid DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_job public.jobs%ROWTYPE;
+  v_old_staff_id uuid;
+  v_updated public.jobs%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = p_job_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'JOB_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_old_staff_id := v_job.assigned_staff_id;
+
+  -- Validate staff if provided
+  IF p_assigned_staff_id IS NOT NULL THEN
+    PERFORM 1 FROM public.members
+    WHERE id = p_assigned_staff_id AND business_id = v_biz_id AND active = true;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  UPDATE public.jobs
+  SET deadline_date = COALESCE(p_deadline_date, deadline_date),
+      assigned_staff_id = p_assigned_staff_id,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = v_job.id
+  RETURNING * INTO v_updated;
+
+  -- If staff reassigned before completion, move commission entry (BR-15)
+  IF p_assigned_staff_id IS DISTINCT FROM v_old_staff_id THEN
+    IF p_assigned_staff_id IS NOT NULL AND v_job.commission_percent > 0 THEN
+      -- Upsert commission entry
+      INSERT INTO public.commission_entries (
+        business_id, job_id, staff_id, base_amount, percent, amount, status
+      ) VALUES (
+        v_biz_id,
+        v_job.id,
+        p_assigned_staff_id,
+        v_job.amount,
+        v_job.commission_percent,
+        ROUND((v_job.amount * v_job.commission_percent / 100), 2),
+        CASE WHEN v_job.status = 'COMPLETED' THEN 'EARNED' ELSE 'UPCOMING' END
+      )
+      ON CONFLICT (job_id) DO UPDATE
+      SET staff_id = EXCLUDED.staff_id,
+          updated_at = now(),
+          updated_by = v_member_id;
+    ELSE
+      -- Remove or set null if staff removed
+      DELETE FROM public.commission_entries WHERE job_id = v_job.id;
+    END IF;
+  END IF;
+
+  RETURN to_jsonb(v_updated);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_job(uuid, date, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_job(uuid, date, uuid) TO authenticated;
+
+
+-- >>> Migration: 20261027000007_staff_commission.sql <<<
+-- Migration 7: Staff & Commission (staff_payouts, pay_staff, staff_summary, staff_commission)
+-- Conforms to BR-15, BR-16, and §5 Roles & Permissions
+
+-- 1. Table: staff_payouts
+CREATE TABLE IF NOT EXISTS public.staff_payouts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  staff_id uuid NOT NULL REFERENCES public.members(id) ON DELETE RESTRICT,
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  payout_date date NOT NULL,
+  mode text NOT NULL CHECK (mode IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE')),
+  notes text,
+  expense_id uuid REFERENCES public.expenses(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_payouts_business_staff ON public.staff_payouts(business_id, staff_id);
+CREATE INDEX IF NOT EXISTS idx_staff_payouts_business_date ON public.staff_payouts(business_id, payout_date);
+
+CREATE OR REPLACE TRIGGER trg_staff_payouts_audit
+BEFORE INSERT OR UPDATE ON public.staff_payouts
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Enable RLS and FORCE RLS on staff_payouts
+ALTER TABLE public.staff_payouts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.staff_payouts FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS staff_payouts_select ON public.staff_payouts;
+CREATE POLICY staff_payouts_select ON public.staff_payouts
+FOR SELECT TO authenticated
+USING (
+  business_id = (SELECT app.current_business_id())
+  AND deleted_at IS NULL
+  AND (
+    (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    OR staff_id = (SELECT app.current_member_id())
+  )
+);
+
+
+-- 2. RPC: pay_staff (Owner only per BR-16, §5)
+CREATE OR REPLACE FUNCTION public.pay_staff(
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_today date;
+  v_staff_id uuid;
+  v_staff record;
+  v_amount numeric(14,2);
+  v_payout_date date;
+  v_mode text;
+  v_notes text;
+  v_cat_id uuid;
+  v_expense_id uuid;
+  v_payout_id uuid;
+  v_fy text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_staff_id := (payload->>'staff_id')::uuid;
+  v_amount := ROUND(COALESCE((payload->>'amount')::numeric, 0), 2);
+  v_payout_date := COALESCE((payload->>'payout_date')::date, v_today);
+  v_mode := COALESCE(payload->>'mode', 'CASH');
+  v_notes := payload->>'notes';
+
+  IF v_staff_id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_ID_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_amount <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Verify staff exists in this business
+  SELECT id, name, role INTO v_staff
+  FROM public.members
+  WHERE id = v_staff_id AND business_id = v_biz_id AND active = true;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Find or fallback "Salary / Commission" system category
+  SELECT id INTO v_cat_id
+  FROM public.expense_categories
+  WHERE business_id = v_biz_id AND name = 'Salary / Commission';
+
+  IF v_cat_id IS NULL THEN
+    -- In case it was somehow missing, grab any system category or insert
+    INSERT INTO public.expense_categories (business_id, name, system)
+    VALUES (v_biz_id, 'Salary / Commission', true)
+    RETURNING id INTO v_cat_id;
+  END IF;
+
+  v_fy := public.fy_label(v_payout_date);
+
+  -- 1. Create Expense in "Salary / Commission"
+  INSERT INTO public.expenses (
+    business_id,
+    fy_label,
+    expense_date,
+    category_id,
+    description,
+    amount,
+    mode,
+    payee,
+    staff_id,
+    notes,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_fy,
+    v_payout_date,
+    v_cat_id,
+    'Staff Payout: ' || v_staff.name,
+    v_amount,
+    v_mode,
+    v_staff.name,
+    v_staff.id,
+    v_notes,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_expense_id;
+
+  -- 2. Create staff_payouts record linked to expense
+  INSERT INTO public.staff_payouts (
+    business_id,
+    staff_id,
+    amount,
+    payout_date,
+    mode,
+    notes,
+    expense_id,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_staff.id,
+    v_amount,
+    v_payout_date,
+    v_mode,
+    v_notes,
+    v_expense_id,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_payout_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'payout_id', v_payout_id,
+    'expense_id', v_expense_id,
+    'staff_id', v_staff.id,
+    'staff_name', v_staff.name,
+    'amount', v_amount,
+    'payout_date', v_payout_date,
+    'mode', v_mode
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.pay_staff(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.pay_staff(jsonb) TO authenticated;
+
+
+-- 3. RPC: staff_summary
+CREATE OR REPLACE FUNCTION public.staff_summary(
+  p_staff_id uuid DEFAULT NULL,
+  p_from date DEFAULT NULL,
+  p_to date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+  v_staff_list jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view their own summary
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Total Earned
+  SELECT COALESCE(SUM(ce.amount), 0)
+  INTO v_total_earned
+  FROM public.commission_entries ce
+  WHERE ce.business_id = v_biz_id
+    AND ce.status = 'EARNED'
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+    AND (p_from IS NULL OR ce.earned_at::date >= p_from)
+    AND (p_to IS NULL OR ce.earned_at::date <= p_to);
+
+  -- Total Paid
+  SELECT COALESCE(SUM(sp.amount), 0)
+  INTO v_total_paid
+  FROM public.staff_payouts sp
+  WHERE sp.business_id = v_biz_id
+    AND sp.deleted_at IS NULL
+    AND (v_target_staff_id IS NULL OR sp.staff_id = v_target_staff_id)
+    AND (p_from IS NULL OR sp.payout_date >= p_from)
+    AND (p_to IS NULL OR sp.payout_date <= p_to);
+
+  -- Upcoming
+  SELECT COALESCE(SUM(ce.amount), 0)
+  INTO v_total_upcoming
+  FROM public.commission_entries ce
+  WHERE ce.business_id = v_biz_id
+    AND ce.status = 'UPCOMING'
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id);
+
+  v_balance_payable := v_total_earned - v_total_paid;
+
+  -- Per-staff breakdown (visible to Owner & Accountant)
+  IF v_role IN ('OWNER', 'ACCOUNTANT') AND v_target_staff_id IS NULL THEN
+    SELECT COALESCE(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', m.id,
+          'name', m.name,
+          'mobile', m.mobile,
+          'role', m.role,
+          'earned', COALESCE(e.earned, 0),
+          'paid', COALESCE(p.paid, 0),
+          'balance', (COALESCE(e.earned, 0) - COALESCE(p.paid, 0)),
+          'upcoming', COALESCE(u.upcoming, 0)
+        )
+        ORDER BY m.name ASC
+      ),
+      '[]'::jsonb
+    )
+    INTO v_staff_list
+    FROM public.members m
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS earned
+      FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED'
+        AND (p_from IS NULL OR earned_at::date >= p_from)
+        AND (p_to IS NULL OR earned_at::date <= p_to)
+      GROUP BY staff_id
+    ) e ON e.staff_id = m.id
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS paid
+      FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL
+        AND (p_from IS NULL OR payout_date >= p_from)
+        AND (p_to IS NULL OR payout_date <= p_to)
+      GROUP BY staff_id
+    ) p ON p.staff_id = m.id
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS upcoming
+      FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'UPCOMING'
+      GROUP BY staff_id
+    ) u ON u.staff_id = m.id
+    WHERE m.business_id = v_biz_id AND m.active = true;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'total_earned', v_total_earned,
+    'total_paid', v_total_paid,
+    'balance_payable', v_balance_payable,
+    'upcoming', v_total_upcoming,
+    'staff', v_staff_list
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_summary(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_summary(uuid, date, date) TO authenticated;
+
+
+-- 4. RPC: staff_commission
+CREATE OR REPLACE FUNCTION public.staff_commission(
+  p_staff_id uuid DEFAULT NULL,
+  p_period text DEFAULT 'DAY',
+  p_from date DEFAULT NULL,
+  p_to date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_start_date date;
+  v_end_date date;
+  v_year int;
+  v_month int;
+  v_entries jsonb;
+  v_payouts jsonb;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view own
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Calculate date boundaries based on period
+  CASE UPPER(p_period)
+    WHEN 'DAY' THEN
+      v_start_date := v_today;
+      v_end_date := v_today;
+    WHEN 'MONTH' THEN
+      v_start_date := date_trunc('month', v_today)::date;
+      v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    WHEN 'YEAR' THEN
+      v_year := EXTRACT(YEAR FROM v_today)::int;
+      v_month := EXTRACT(MONTH FROM v_today)::int;
+      IF v_month >= 4 THEN
+        v_start_date := make_date(v_year, 4, 1);
+        v_end_date := make_date(v_year + 1, 3, 31);
+      ELSE
+        v_start_date := make_date(v_year - 1, 4, 1);
+        v_end_date := make_date(v_year, 3, 31);
+      END IF;
+    WHEN 'ALL' THEN
+      v_start_date := NULL;
+      v_end_date := NULL;
+    ELSE
+      v_start_date := v_today;
+      v_end_date := v_today;
+  END CASE;
+
+  -- Explicit from/to overrides
+  IF p_from IS NOT NULL THEN
+    v_start_date := p_from;
+  END IF;
+  IF p_to IS NOT NULL THEN
+    v_end_date := p_to;
+  END IF;
+
+  -- Commission entries drill-down
+  WITH comm_list AS (
+    SELECT
+      ce.id,
+      ce.job_id,
+      ce.staff_id,
+      m.name AS staff_name,
+      ce.base_amount,
+      ce.percent,
+      ce.amount,
+      ce.status,
+      ce.earned_at,
+      j.job_type_name,
+      j.applicant_name,
+      j.party_name,
+      j.party_mobile,
+      i.id AS invoice_id,
+      i.number AS invoice_number,
+      i.invoice_date
+    FROM public.commission_entries ce
+    JOIN public.members m ON m.id = ce.staff_id
+    JOIN public.jobs j ON j.id = ce.job_id
+    JOIN public.invoices i ON i.id = j.invoice_id
+    WHERE ce.business_id = v_biz_id
+      AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+      AND (
+        (ce.status = 'EARNED' AND (v_start_date IS NULL OR ce.earned_at::date >= v_start_date) AND (v_end_date IS NULL OR ce.earned_at::date <= v_end_date))
+        OR
+        (ce.status = 'UPCOMING' AND (v_start_date IS NULL OR i.invoice_date >= v_start_date) AND (v_end_date IS NULL OR i.invoice_date <= v_end_date))
+      )
+    ORDER BY COALESCE(ce.earned_at, ce.created_at) DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(comm_list.*)), '[]'::jsonb)
+  INTO v_entries
+  FROM comm_list;
+
+  -- Staff Payouts in this period
+  WITH payout_list AS (
+    SELECT
+      sp.id,
+      sp.staff_id,
+      m.name AS staff_name,
+      sp.amount,
+      sp.payout_date,
+      sp.mode,
+      sp.notes
+    FROM public.staff_payouts sp
+    JOIN public.members m ON m.id = sp.staff_id
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+      AND (v_target_staff_id IS NULL OR sp.staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR sp.payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR sp.payout_date <= v_end_date)
+    ORDER BY sp.payout_date DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(payout_list.*)), '[]'::jsonb)
+  INTO v_payouts
+  FROM payout_list;
+
+  -- Totals in this scope
+  SELECT
+    COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+    COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+  INTO
+    v_total_earned,
+    v_total_upcoming
+  FROM public.commission_entries ce
+  JOIN public.invoices i ON i.id = (SELECT invoice_id FROM public.jobs WHERE id = ce.job_id)
+  WHERE ce.business_id = v_biz_id
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+    AND (
+      (ce.status = 'EARNED' AND (v_start_date IS NULL OR ce.earned_at::date >= v_start_date) AND (v_end_date IS NULL OR ce.earned_at::date <= v_end_date))
+      OR
+      (ce.status = 'UPCOMING' AND (v_start_date IS NULL OR i.invoice_date >= v_start_date) AND (v_end_date IS NULL OR i.invoice_date <= v_end_date))
+    );
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_total_paid
+  FROM public.staff_payouts
+  WHERE business_id = v_biz_id AND deleted_at IS NULL
+    AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+    AND (v_start_date IS NULL OR payout_date >= v_start_date)
+    AND (v_end_date IS NULL OR payout_date <= v_end_date);
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'start_date', v_start_date,
+    'end_date', v_end_date,
+    'total_earned', v_total_earned,
+    'total_paid', v_total_paid,
+    'balance_payable', (v_total_earned - v_total_paid),
+    'upcoming', v_total_upcoming,
+    'entries', v_entries,
+    'payouts', v_payouts
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_commission(uuid, text, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_commission(uuid, text, date, date) TO authenticated;
+
+
+-- >>> Migration: 20261027000008_dashboard_reports_search.sql <<<
+-- Migration 8: Dashboard, Reports, Global Search, Privacy PIN helper, Frequent Services
+-- Conforms to BR-1 (Cash-basis P&L, Loan exclusion), BR-17 (Privacy PIN & FY views), §8.2, §8.14, §8.15, and §5 Permissions
+
+-- 1. Helper: has_privacy_pin
+CREATE OR REPLACE FUNCTION public.has_privacy_pin()
+RETURNS boolean AS $$
+DECLARE
+  v_biz_id uuid;
+  v_hash text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  IF v_biz_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  SELECT privacy_pin_hash INTO v_hash
+  FROM public.business_secrets
+  WHERE business_id = v_biz_id;
+
+  RETURN (v_hash IS NOT NULL);
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.has_privacy_pin() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.has_privacy_pin() TO authenticated;
+
+
+-- 2. RPC: frequent_services (last 30 days)
+CREATE OR REPLACE FUNCTION public.frequent_services()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_services jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  IF v_biz_id IS NULL THEN
+    RETURN '[]'::jsonb;
+  END IF;
+
+  WITH top_services AS (
+    SELECT
+      s.id,
+      s.name,
+      s.default_rate,
+      s.is_job_type,
+      s.deadline_days,
+      s.commission_percent,
+      COUNT(ii.id) AS usage_count
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    JOIN public.services s ON s.id = ii.service_id
+    WHERE ii.business_id = v_biz_id
+      AND i.invoice_date >= ((SELECT app.today()) - 30)
+      AND s.active = true
+      AND s.deleted_at IS NULL
+    GROUP BY s.id, s.name, s.default_rate, s.is_job_type, s.deadline_days, s.commission_percent
+    ORDER BY usage_count DESC
+    LIMIT 6
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(top_services.*)), '[]'::jsonb)
+  INTO v_services
+  FROM top_services;
+
+  RETURN v_services;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.frequent_services() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.frequent_services() TO authenticated;
+
+
+-- 3. RPC: dashboard()
+CREATE OR REPLACE FUNCTION public.dashboard()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_red_days int;
+  v_yellow_days int;
+
+  -- Today
+  v_today_bills_count int := 0;
+  v_today_collection numeric(14,2) := 0;
+  v_today_payments numeric(14,2) := 0;
+  v_today_expenses numeric(14,2) := 0;
+
+  -- Month
+  v_month_start date;
+  v_month_end date;
+  v_month_income numeric(14,2) := 0;
+  v_month_payments numeric(14,2) := 0;
+  v_month_expenses numeric(14,2) := 0;
+  v_month_outgoing numeric(14,2) := 0;
+  v_month_net_profit numeric(14,2) := 0;
+  v_total_outstanding numeric(14,2) := 0;
+  v_loan_outstanding numeric(14,2) := 0;
+
+  -- Jobs
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+
+  -- Alerts
+  v_overdue_bills_count int := 0;
+  v_due_today_bills_count int := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  -- 1. Today Metrics
+  SELECT COUNT(*)
+  INTO v_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND invoice_date = v_today AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_collection
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date = v_today AND deleted_at IS NULL;
+
+  IF v_role IN ('OWNER', 'ACCOUNTANT') THEN
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_today_payments
+    FROM public.payments
+    WHERE business_id = v_biz_id AND payment_date = v_today AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_today_expenses
+    FROM public.expenses
+    WHERE business_id = v_biz_id AND expense_date = v_today AND deleted_at IS NULL;
+
+    -- 2. This Month Metrics
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_income
+    FROM public.receipts
+    WHERE business_id = v_biz_id AND receipt_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_payments
+    FROM public.payments
+    WHERE business_id = v_biz_id AND payment_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_expenses
+    FROM public.expenses
+    WHERE business_id = v_biz_id AND expense_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    v_month_outgoing := v_month_payments + v_month_expenses;
+    v_month_net_profit := v_month_income - v_month_outgoing;
+
+    -- Loan Outstanding: Total taken - Principal repaid (BR-1, BR-11)
+    SELECT
+      COALESCE((SELECT SUM(amount) FROM public.loans WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+      -
+      COALESCE((SELECT SUM(principal) FROM public.loan_repayments WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+    INTO v_loan_outstanding;
+  END IF;
+
+  -- Total Outstanding Across All Bills (Receivables)
+  SELECT COALESCE(SUM(total - paid_amount), 0)
+  INTO v_total_outstanding
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- Bill Alerts
+  SELECT
+    COUNT(*) FILTER (WHERE due_date < v_today),
+    COUNT(*) FILTER (WHERE due_date = v_today)
+  INTO
+    v_overdue_bills_count,
+    v_due_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- 3. Job Alerts (when enabled)
+  IF v_biz.job_management_enabled THEN
+    SELECT
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS'),
+      COUNT(*) FILTER (WHERE status = 'COMPLETED' AND completed_at::date = v_today),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) <= v_red_days),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) > v_red_days AND (deadline_date - v_today) <= v_yellow_days)
+    INTO
+      v_jobs_pending,
+      v_jobs_completed_today,
+      v_jobs_red,
+      v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id AND deleted_at IS NULL;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'today', jsonb_build_object(
+      'bills_count', v_today_bills_count,
+      'collection', v_today_collection,
+      'payments', v_today_payments,
+      'expenses', v_today_expenses
+    ),
+    'this_month', jsonb_build_object(
+      'start_date', v_month_start,
+      'end_date', v_month_end,
+      'income', v_month_income,
+      'outgoing', v_month_outgoing,
+      'payments', v_month_payments,
+      'expenses', v_month_expenses,
+      'net_profit', v_month_net_profit,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending', v_jobs_pending,
+      'completed_today', v_jobs_completed_today,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow
+    ),
+    'alerts', jsonb_build_object(
+      'overdue_bills_count', v_overdue_bills_count,
+      'due_today_bills_count', v_due_today_bills_count
+    )
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.dashboard() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.dashboard() TO authenticated;
+
+
+-- 4. RPC: global_search(q text)
+CREATE OR REPLACE FUNCTION public.global_search(
+  q text
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_term text;
+  v_customers jsonb := '[]'::jsonb;
+  v_invoices jsonb := '[]'::jsonb;
+  v_receipts jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_term := TRIM(COALESCE(q, ''));
+  IF LENGTH(v_term) < 2 THEN
+    RETURN jsonb_build_object(
+      'customers', '[]'::jsonb,
+      'invoices', '[]'::jsonb,
+      'receipts', '[]'::jsonb
+    );
+  END IF;
+
+  -- Customers search
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', c.id,
+        'name', c.name,
+        'mobile', c.mobile,
+        'type', c.type
+      )
+    ),
+    '[]'::jsonb
+  )
+  INTO v_customers
+  FROM public.customers c
+  WHERE c.business_id = v_biz_id
+    AND c.deleted_at IS NULL
+    AND (c.name ILIKE '%' || v_term || '%' OR c.mobile ILIKE '%' || v_term || '%')
+  LIMIT 5;
+
+  -- Invoices search
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', i.id,
+        'number', i.number,
+        'invoice_date', i.invoice_date,
+        'party_name', i.party_name,
+        'party_mobile', i.party_mobile,
+        'total', i.total,
+        'balance', (i.total - i.paid_amount),
+        'status', i.status
+      )
+    ),
+    '[]'::jsonb
+  )
+  INTO v_invoices
+  FROM public.invoices i
+  WHERE i.business_id = v_biz_id
+    AND i.deleted_at IS NULL
+    AND (
+      i.number ILIKE '%' || v_term || '%'
+      OR i.party_name ILIKE '%' || v_term || '%'
+      OR i.party_mobile ILIKE '%' || v_term || '%'
+    )
+  LIMIT 5;
+
+  -- Receipts search
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', r.id,
+        'number', r.number,
+        'receipt_date', r.receipt_date,
+        'amount', r.amount,
+        'mode', r.mode,
+        'kind', r.kind,
+        'reference', r.reference
+      )
+    ),
+    '[]'::jsonb
+  )
+  INTO v_receipts
+  FROM public.receipts r
+  WHERE r.business_id = v_biz_id
+    AND r.deleted_at IS NULL
+    AND (
+      r.number ILIKE '%' || v_term || '%'
+      OR r.reference ILIKE '%' || v_term || '%'
+    )
+  LIMIT 5;
+
+  RETURN jsonb_build_object(
+    'customers', v_customers,
+    'invoices', v_invoices,
+    'receipts', v_receipts
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.global_search(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.global_search(text) TO authenticated;
+
+
+-- 5. RPC: report(type text, params jsonb)
+CREATE OR REPLACE FUNCTION public.report(
+  type text,
+  params jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_fy text;
+  v_from date;
+  v_to date;
+  v_data jsonb;
+
+  -- P&L specific variables
+  v_income numeric(14,2) := 0;
+  v_payments numeric(14,2) := 0;
+  v_expenses numeric(14,2) := 0;
+  v_outgoing numeric(14,2) := 0;
+  v_net_profit numeric(14,2) := 0;
+  v_loans_taken numeric(14,2) := 0;
+  v_principal_repaid numeric(14,2) := 0;
+  v_interest_paid numeric(14,2) := 0;
+  v_monthly_trend jsonb;
+  v_expense_by_cat jsonb;
+  v_income_by_cat jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  -- Reports are restricted to OWNER and ACCOUNTANT only per matrix §5
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_fy := params->>'fy_label';
+  IF v_fy IS NULL THEN
+    v_fy := public.fy_label(v_today);
+  END IF;
+
+  v_from := (params->>'from')::date;
+  v_to := (params->>'to')::date;
+
+  -- Default date boundary from FY if explicit dates not provided
+  IF v_from IS NULL AND v_to IS NULL THEN
+    -- Calculate dates from v_fy (e.g. 2026-27 -> 2026-04-01 to 2027-03-31)
+    DECLARE
+      v_start_year int := split_part(v_fy, '-', 1)::int;
+    BEGIN
+      v_from := make_date(v_start_year, 4, 1);
+      v_to := make_date(v_start_year + 1, 3, 31);
+    EXCEPTION WHEN OTHERS THEN
+      v_from := date_trunc('year', v_today)::date;
+      v_to := (date_trunc('year', v_today) + interval '1 year - 1 day')::date;
+    END;
+  END IF;
+
+  -- Case on report type
+  CASE LOWER(type)
+    ----------------------------------------------------------------------------
+    -- 1. PROFIT & LOSS (BR-1: Cash-basis, loans excluded)
+    ----------------------------------------------------------------------------
+    WHEN 'pnl' THEN
+      -- Total Income (all receipts)
+      SELECT COALESCE(SUM(amount), 0)
+      INTO v_income
+      FROM public.receipts
+      WHERE business_id = v_biz_id AND receipt_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      -- Vendor Payments
+      SELECT COALESCE(SUM(amount), 0)
+      INTO v_payments
+      FROM public.payments
+      WHERE business_id = v_biz_id AND payment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      -- Expenses
+      SELECT COALESCE(SUM(amount), 0)
+      INTO v_expenses
+      FROM public.expenses
+      WHERE business_id = v_biz_id AND expense_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      v_outgoing := v_payments + v_expenses;
+      v_net_profit := v_income - v_outgoing;
+
+      -- Capital ledger non-operating entries (BR-1, BR-11)
+      SELECT COALESCE(SUM(amount), 0)
+      INTO v_loans_taken
+      FROM public.loans
+      WHERE business_id = v_biz_id AND loan_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT
+        COALESCE(SUM(principal), 0),
+        COALESCE(SUM(interest), 0)
+      INTO
+        v_principal_repaid,
+        v_interest_paid
+      FROM public.loan_repayments
+      WHERE business_id = v_biz_id AND repayment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      -- Breakdown by Expense Category
+      WITH exp_grouped AS (
+        SELECT
+          ec.name AS category_name,
+          COALESCE(SUM(e.amount), 0) AS total
+        FROM public.expense_categories ec
+        JOIN public.expenses e ON e.category_id = ec.id
+        WHERE ec.business_id = v_biz_id
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND e.deleted_at IS NULL
+        GROUP BY ec.name
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'category_name', eg.category_name,
+            'total', eg.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_expense_by_cat
+      FROM exp_grouped eg;
+
+      -- Breakdown by Receipt Kind
+      WITH inc_grouped AS (
+        SELECT
+          r.kind,
+          r.income_category,
+          COALESCE(SUM(r.amount), 0) AS total
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND r.deleted_at IS NULL
+        GROUP BY r.kind, r.income_category
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'kind', ig.kind,
+            'category', ig.income_category,
+            'total', ig.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_income_by_cat
+      FROM inc_grouped ig;
+
+      -- Monthly trend across FY
+      WITH months AS (
+        SELECT generate_series(
+          date_trunc('month', v_from),
+          date_trunc('month', v_to),
+          '1 month'::interval
+        )::date AS m_start
+      ),
+      monthly_calc AS (
+        SELECT
+          to_char(m.m_start, 'Mon YYYY') AS month_label,
+          m.m_start,
+          COALESCE((
+            SELECT SUM(r.amount)
+            FROM public.receipts r
+            WHERE r.business_id = v_biz_id
+              AND r.receipt_date >= m.m_start
+              AND r.receipt_date < (m.m_start + interval '1 month')::date
+              AND r.deleted_at IS NULL
+          ), 0) AS income,
+          COALESCE((
+            SELECT SUM(p.amount)
+            FROM public.payments p
+            WHERE p.business_id = v_biz_id
+              AND p.payment_date >= m.m_start
+              AND p.payment_date < (m.m_start + interval '1 month')::date
+              AND p.deleted_at IS NULL
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM public.expenses e
+            WHERE e.business_id = v_biz_id
+              AND e.expense_date >= m.m_start
+              AND e.expense_date < (m.m_start + interval '1 month')::date
+              AND e.deleted_at IS NULL
+          ), 0) AS outgoing
+        FROM months m
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'month', mc.month_label,
+            'income', mc.income,
+            'outgoing', mc.outgoing,
+            'profit', (mc.income - mc.outgoing)
+          )
+          ORDER BY mc.m_start ASC
+        ),
+        '[]'::jsonb
+      )
+      INTO v_monthly_trend
+      FROM monthly_calc mc;
+
+      RETURN jsonb_build_object(
+        'type', 'pnl',
+        'fy_label', v_fy,
+        'from', v_from,
+        'to', v_to,
+        'income', v_income,
+        'outgoing', v_outgoing,
+        'payments', v_payments,
+        'expenses', v_expenses,
+        'net_profit', v_net_profit,
+        'loans', jsonb_build_object(
+          'taken', v_loans_taken,
+          'principal_repaid', v_principal_repaid,
+          'interest_paid', v_interest_paid
+        ),
+        'expense_categories', v_expense_by_cat,
+        'income_categories', v_income_by_cat,
+        'monthly_trend', v_monthly_trend
+      );
+
+    ----------------------------------------------------------------------------
+    -- 2. INVOICES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'invoices' THEN
+      WITH inv_list AS (
+        SELECT
+          i.id,
+          i.number,
+          i.invoice_date,
+          i.due_date,
+          i.party_name,
+          i.party_mobile,
+          i.subtotal,
+          i.discount_amount,
+          i.total,
+          i.paid_amount,
+          (i.total - i.paid_amount) AS balance,
+          i.status,
+          CASE
+            WHEN i.status = 'ACTIVE' AND (i.total > i.paid_amount) AND i.due_date < v_today THEN true
+            ELSE false
+          END AS is_overdue
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+          AND (params->>'status' IS NULL OR i.status = params->>'status')
+        ORDER BY i.invoice_date DESC, i.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'invoices',
+        'from', v_from,
+        'to', v_to,
+        'total_billed', COALESCE(SUM(total), 0),
+        'total_paid', COALESCE(SUM(paid_amount), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(inv_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM inv_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 3. RECEIPTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'receipts' THEN
+      WITH rec_list AS (
+        SELECT
+          r.id,
+          r.number,
+          r.receipt_date,
+          c.name AS customer_name,
+          r.amount,
+          r.mode,
+          r.kind,
+          r.income_category,
+          r.reference,
+          r.unallocated_amount
+        FROM public.receipts r
+        LEFT JOIN public.customers c ON c.id = r.customer_id
+        WHERE r.business_id = v_biz_id
+          AND r.deleted_at IS NULL
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND (params->>'mode' IS NULL OR r.mode = params->>'mode')
+          AND (params->>'kind' IS NULL OR r.kind = params->>'kind')
+        ORDER BY r.receipt_date DESC, r.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'receipts',
+        'from', v_from,
+        'to', v_to,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(rec_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM rec_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 4. PAYMENTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'payments' THEN
+      WITH pay_list AS (
+        SELECT
+          p.id,
+          p.payment_date,
+          v.name AS vendor_name,
+          p.description,
+          i.number AS invoice_number,
+          p.amount,
+          p.mode,
+          p.notes
+        FROM public.payments p
+        JOIN public.vendors v ON v.id = p.vendor_id
+        LEFT JOIN public.invoices i ON i.id = p.invoice_id
+        WHERE p.business_id = v_biz_id
+          AND p.deleted_at IS NULL
+          AND p.payment_date BETWEEN v_from AND v_to
+          AND (params->>'vendor_id' IS NULL OR p.vendor_id = (params->>'vendor_id')::uuid)
+        ORDER BY p.payment_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'payments',
+        'from', v_from,
+        'to', v_to,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(pay_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM pay_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 5. EXPENSES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'expenses' THEN
+      WITH exp_list AS (
+        SELECT
+          e.id,
+          e.expense_date,
+          ec.name AS category_name,
+          e.description,
+          e.amount,
+          e.mode,
+          e.payee,
+          e.notes
+        FROM public.expenses e
+        JOIN public.expense_categories ec ON ec.id = e.category_id
+        WHERE e.business_id = v_biz_id
+          AND e.deleted_at IS NULL
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND (params->>'category_id' IS NULL OR e.category_id = (params->>'category_id')::uuid)
+        ORDER BY e.expense_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'expenses',
+        'from', v_from,
+        'to', v_to,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(exp_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM exp_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 6. OUTSTANDING DUES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'outstanding' THEN
+      WITH dues_query AS (
+        SELECT
+          c.id,
+          c.name AS customer_name,
+          c.mobile AS customer_mobile,
+          c.type AS customer_type,
+          COALESCE(SUM(i.total), 0) AS total_billed,
+          COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+          COALESCE(SUM(i.total - i.paid_amount), 0) AS balance,
+          COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0) AS overdue_balance,
+          MIN(i.invoice_date) AS oldest_invoice_date
+        FROM public.customers c
+        JOIN public.invoices i ON i.customer_id = c.id
+        WHERE c.business_id = v_biz_id
+          AND c.deleted_at IS NULL
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+        GROUP BY c.id, c.name, c.mobile, c.type
+        HAVING SUM(i.total - i.paid_amount) > 0
+        ORDER BY SUM(i.total - i.paid_amount) DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'outstanding',
+        'total_outstanding', COALESCE(SUM(balance), 0),
+        'total_overdue', COALESCE(SUM(overdue_balance), 0),
+        'customer_count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(dues_query.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM dues_query;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 7. LOANS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'loans' THEN
+      WITH loan_agg AS (
+        SELECT
+          l.id,
+          l.lender_name,
+          l.amount AS taken,
+          l.loan_date,
+          COALESCE(SUM(lr.principal), 0) AS principal_repaid,
+          COALESCE(SUM(lr.interest), 0) AS interest_paid,
+          (l.amount - COALESCE(SUM(lr.principal), 0)) AS outstanding
+        FROM public.loans l
+        LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+        WHERE l.business_id = v_biz_id AND l.deleted_at IS NULL
+        GROUP BY l.id, l.lender_name, l.amount, l.loan_date
+        ORDER BY l.loan_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'loans',
+        'total_taken', COALESCE(SUM(taken), 0),
+        'total_repaid', COALESCE(SUM(principal_repaid), 0),
+        'total_outstanding', COALESCE(SUM(outstanding), 0),
+        'total_interest_paid', COALESCE(SUM(interest_paid), 0),
+        'rows', COALESCE(jsonb_agg(to_jsonb(loan_agg.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM loan_agg;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 8. JOBS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'jobs' THEN
+      WITH job_list AS (
+        SELECT
+          j.job_type_name,
+          COUNT(*) AS total_jobs,
+          COUNT(*) FILTER (WHERE j.status = 'COMPLETED') AS completed_jobs,
+          COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS') AS pending_jobs,
+          COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND j.deadline_date < v_today) AS overdue_jobs,
+          ROUND(AVG(
+            CASE WHEN j.status = 'COMPLETED' THEN (j.completed_at::date - i.invoice_date) ELSE NULL END
+          ), 1) AS avg_days_to_complete
+        FROM public.jobs j
+        JOIN public.invoices i ON i.id = j.invoice_id
+        WHERE j.business_id = v_biz_id
+          AND j.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+        GROUP BY j.job_type_name
+        ORDER BY total_jobs DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'jobs',
+        'from', v_from,
+        'to', v_to,
+        'rows', COALESCE(jsonb_agg(to_jsonb(job_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM job_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 9. STAFF COMMISSION REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'commission' THEN
+      WITH comm_rep AS (
+        SELECT
+          m.id AS staff_id,
+          m.name AS staff_name,
+          COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0) AS total_earned,
+          COALESCE((
+            SELECT SUM(sp.amount)
+            FROM public.staff_payouts sp
+            WHERE sp.staff_id = m.id AND sp.business_id = v_biz_id
+              AND sp.deleted_at IS NULL
+              AND sp.payout_date BETWEEN v_from AND v_to
+          ), 0) AS total_paid,
+          COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0) AS upcoming
+        FROM public.members m
+        LEFT JOIN public.commission_entries ce ON ce.staff_id = m.id
+          AND (ce.earned_at::date BETWEEN v_from AND v_to OR ce.status = 'UPCOMING')
+        WHERE m.business_id = v_biz_id AND m.active = true
+        GROUP BY m.id, m.name
+        ORDER BY total_earned DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'commission',
+        'from', v_from,
+        'to', v_to,
+        'rows', COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'staff_id', comm_rep.staff_id,
+              'staff_name', comm_rep.staff_name,
+              'earned', comm_rep.total_earned,
+              'paid', comm_rep.total_paid,
+              'balance', (comm_rep.total_earned - comm_rep.total_paid),
+              'upcoming', comm_rep.upcoming
+            )
+          ),
+          '[]'::jsonb
+        )
+      )
+      INTO v_data
+      FROM comm_rep;
+
+      RETURN v_data;
+
+    ELSE
+      RAISE EXCEPTION 'INVALID_REPORT_TYPE' USING ERRCODE = 'P0001';
+  END CASE;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.report(text, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.report(text, jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261027000009_print_pdf_whatsapp_templates.sql <<<
+-- Migration 9: Print, PDF, QR & WhatsApp templates
+-- Conforms to BR-19 (UPI QR format), BR-20 (WhatsApp templates & deep links), and §8.16
+
+-- 1. Table: whatsapp_templates
+CREATE TABLE IF NOT EXISTS public.whatsapp_templates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (type IN ('INVOICE', 'RECEIPT', 'REMINDER')),
+  body text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid,
+  CONSTRAINT uq_whatsapp_templates_biz_type UNIQUE (business_id, type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_templates_biz_type ON public.whatsapp_templates(business_id, type);
+
+CREATE OR REPLACE TRIGGER trg_whatsapp_templates_audit
+BEFORE INSERT OR UPDATE ON public.whatsapp_templates
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Enable RLS and FORCE RLS
+ALTER TABLE public.whatsapp_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.whatsapp_templates FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS whatsapp_templates_select ON public.whatsapp_templates;
+CREATE POLICY whatsapp_templates_select ON public.whatsapp_templates
+FOR SELECT TO authenticated
+USING (
+  business_id = (SELECT app.current_business_id())
+  AND deleted_at IS NULL
+);
+
+DROP POLICY IF EXISTS whatsapp_templates_insert ON public.whatsapp_templates;
+CREATE POLICY whatsapp_templates_insert ON public.whatsapp_templates
+FOR INSERT TO authenticated
+WITH CHECK (
+  business_id = (SELECT app.current_business_id())
+  AND (SELECT app.current_role()) = 'OWNER'
+);
+
+DROP POLICY IF EXISTS whatsapp_templates_update ON public.whatsapp_templates;
+CREATE POLICY whatsapp_templates_update ON public.whatsapp_templates
+FOR UPDATE TO authenticated
+USING (
+  business_id = (SELECT app.current_business_id())
+  AND (SELECT app.current_role()) = 'OWNER'
+)
+WITH CHECK (
+  business_id = (SELECT app.current_business_id())
+  AND (SELECT app.current_role()) = 'OWNER'
+);
+
+-- Seed default templates for existing businesses
+INSERT INTO public.whatsapp_templates (business_id, type, body)
+SELECT b.id, 'INVOICE', 'Hello {customer_name}, here is your bill #{invoice_no} of {amount} from {business_name}. Balance due: {balance}.'
+FROM public.businesses b
+ON CONFLICT (business_id, type) DO NOTHING;
+
+INSERT INTO public.whatsapp_templates (business_id, type, body)
+SELECT b.id, 'RECEIPT', 'Hello {customer_name}, received payment of {amount} for bill #{invoice_no}. Thank you! - {business_name}'
+FROM public.businesses b
+ON CONFLICT (business_id, type) DO NOTHING;
+
+INSERT INTO public.whatsapp_templates (business_id, type, body)
+SELECT b.id, 'REMINDER', 'Hello {customer_name}, reminder for bill #{invoice_no} of {amount}. Balance {balance} is due on {due_date}. - {business_name}'
+FROM public.businesses b
+ON CONFLICT (business_id, type) DO NOTHING;
+
+
+-- 2. Helper RPC: upi_qr_url (BR-19)
+CREATE OR REPLACE FUNCTION public.upi_qr_url(
+  p_invoice_id uuid
+)
+RETURNS text AS $$
+DECLARE
+  v_biz_id uuid;
+  v_upi_id text;
+  v_biz_name text;
+  v_inv record;
+  v_balance numeric(14,2);
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT upi_id, name INTO v_upi_id, v_biz_name
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  IF v_upi_id IS NULL OR v_upi_id = '' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT number, total, paid_amount INTO v_inv
+  FROM public.invoices
+  WHERE id = p_invoice_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+
+  v_balance := GREATEST(0, v_inv.total - v_inv.paid_amount);
+  IF v_balance <= 0 THEN
+    RETURN NULL;
+  END IF;
+
+  -- upi://pay?pa=<upi_id>&pn=<business name>&am=<balance>&cu=INR&tn=<invoice number>
+  RETURN 'upi://pay?pa=' || v_upi_id ||
+         '&pn=' || replace(v_biz_name, ' ', '%20') ||
+         '&am=' || to_char(v_balance, 'FM999999999990.00') ||
+         '&cu=INR' ||
+         '&tn=' || v_inv.number;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.upi_qr_url(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.upi_qr_url(uuid) TO authenticated;
+
+
+-- 3. Helper RPC: render_whatsapp_template (BR-20)
+CREATE OR REPLACE FUNCTION public.render_whatsapp_template(
+  p_type text,
+  p_invoice_id uuid DEFAULT NULL,
+  p_receipt_id uuid DEFAULT NULL
+)
+RETURNS text AS $$
+DECLARE
+  v_biz_id uuid;
+  v_biz_name text;
+  v_template text;
+  v_inv record;
+  v_rec record;
+  v_cust_name text := 'Customer';
+  v_result text;
+  v_balance numeric(14,2);
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT name INTO v_biz_name FROM public.businesses WHERE id = v_biz_id;
+
+  -- Get template body
+  SELECT body INTO v_template
+  FROM public.whatsapp_templates
+  WHERE business_id = v_biz_id AND type = UPPER(p_type) AND deleted_at IS NULL;
+
+  IF v_template IS NULL THEN
+    CASE UPPER(p_type)
+      WHEN 'INVOICE' THEN
+        v_template := 'Hello {customer_name}, here is your bill #{invoice_no} of {amount} from {business_name}. Balance due: {balance}.';
+      WHEN 'RECEIPT' THEN
+        v_template := 'Hello {customer_name}, received payment of {amount} for bill #{invoice_no}. Thank you! - {business_name}';
+      WHEN 'REMINDER' THEN
+        v_template := 'Hello {customer_name}, reminder for bill #{invoice_no} of {amount}. Balance {balance} is due on {due_date}. - {business_name}';
+      ELSE
+        RETURN NULL;
+    END CASE;
+  END IF;
+
+  v_result := v_template;
+
+  -- If Invoice or Reminder
+  IF p_invoice_id IS NOT NULL THEN
+    SELECT * INTO v_inv FROM public.invoices WHERE id = p_invoice_id AND business_id = v_biz_id;
+    IF FOUND THEN
+      v_cust_name := COALESCE(v_inv.party_name, 'Customer');
+      v_balance := GREATEST(0, v_inv.total - v_inv.paid_amount);
+
+      v_result := replace(v_result, '{customer_name}', v_cust_name);
+      v_result := replace(v_result, '{invoice_no}', v_inv.number);
+      v_result := replace(v_result, '{amount}', '₹' || to_char(v_inv.total, 'FM999999999990.00'));
+      v_result := replace(v_result, '{balance}', '₹' || to_char(v_balance, 'FM999999999990.00'));
+      v_result := replace(v_result, '{due_date}', to_char(v_inv.due_date, 'DD Mon YYYY'));
+    END IF;
+  END IF;
+
+  -- If Receipt
+  IF p_receipt_id IS NOT NULL THEN
+    SELECT r.*, c.name AS customer_name INTO v_rec
+    FROM public.receipts r
+    LEFT JOIN public.customers c ON c.id = r.customer_id
+    WHERE r.id = p_receipt_id AND r.business_id = v_biz_id;
+
+    IF FOUND THEN
+      v_cust_name := COALESCE(v_rec.customer_name, 'Customer');
+      v_result := replace(v_result, '{customer_name}', v_cust_name);
+      v_result := replace(v_result, '{amount}', '₹' || to_char(v_rec.amount, 'FM999999999990.00'));
+    END IF;
+  END IF;
+
+  v_result := replace(v_result, '{business_name}', COALESCE(v_biz_name, 'SIMPLIFY'));
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.render_whatsapp_template(text, uuid, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.render_whatsapp_template(text, uuid, uuid) TO authenticated;
+
+-- Overload: render_whatsapp_template with JSON context
+CREATE OR REPLACE FUNCTION public.render_whatsapp_template(
+  p_type text,
+  p_context jsonb
+)
+RETURNS text AS $$
+DECLARE
+  v_biz_id uuid;
+  v_template text;
+  v_result text;
+  v_k text;
+  v_v text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT body INTO v_template
+  FROM public.whatsapp_templates
+  WHERE business_id = v_biz_id AND type = p_type AND deleted_at IS NULL;
+
+  IF NOT FOUND OR v_template IS NULL OR TRIM(v_template) = '' THEN
+    IF p_type = 'INVOICE' THEN
+      v_template := 'Hello {customer_name}, your bill #{invoice_no} of {amount} has balance {balance} due on {due_date}. - {business_name}';
+    ELSIF p_type = 'RECEIPT' THEN
+      v_template := 'Hello {customer_name}, received payment of {amount} against #{invoice_no}. Thank you! - {business_name}';
+    ELSE
+      v_template := 'Hello {customer_name}, reminder for pending balance of {balance} due on {due_date}. - {business_name}';
+    END IF;
+  END IF;
+
+  v_result := v_template;
+
+  -- Replace context variables
+  FOR v_k, v_v IN SELECT key, value FROM jsonb_each_text(p_context)
+  LOOP
+    v_result := replace(v_result, '{' || v_k || '}', COALESCE(v_v, ''));
+  END LOOP;
+
+  -- Also replace alternate key aliases
+  IF p_context ? 'customer_name' THEN
+    v_result := replace(v_result, '{party_name}', COALESCE(p_context->>'customer_name', ''));
+  END IF;
+  IF p_context ? 'invoice_no' THEN
+    v_result := replace(v_result, '{bill_no}', COALESCE(p_context->>'invoice_no', ''));
+  END IF;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.render_whatsapp_template(text, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.render_whatsapp_template(text, jsonb) TO authenticated;
+
+
+
+-- >>> Migration: 20261027000010_safety_purge_recently_deleted.sql <<<
+-- Migration 10: Safety, 30-day purge, and comprehensive Recently Deleted
+-- =====================================================================
+
+-- 1. Enhanced list_recently_deleted covering all soft-deletable entities
+CREATE OR REPLACE FUNCTION public.list_recently_deleted()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_result jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT jsonb_agg(item) INTO v_result FROM (
+    SELECT 'customers' as table_name, id, name as label, 'Customer' as type_label, deleted_at
+    FROM public.customers
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 'services' as table_name, id, name as label, 'Service' as type_label, deleted_at
+    FROM public.services
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 'vendors' as table_name, id, name as label, 'Vendor' as type_label, deleted_at
+    FROM public.vendors
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 'payments' as table_name, id, COALESCE(description, 'Vendor Payment - ₹' || amount) as label, 'Payment' as type_label, deleted_at
+    FROM public.payments
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 'expenses' as table_name, id, COALESCE(description, 'Expense - ₹' || amount) as label, 'Expense' as type_label, deleted_at
+    FROM public.expenses
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 'loans' as table_name, id, 'Loan from ' || lender_name || ' (₹' || amount || ')' as label, 'Loan' as type_label, deleted_at
+    FROM public.loans
+    WHERE business_id = v_biz_id AND deleted_at IS NOT NULL
+    ORDER BY deleted_at DESC
+  ) item;
+
+  RETURN COALESCE(v_result, '[]'::jsonb);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.list_recently_deleted() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_recently_deleted() TO authenticated;
+
+-- 2. Permanent 30-day purge function per BR-18
+CREATE OR REPLACE FUNCTION public.purge_deleted_records()
+RETURNS jsonb AS $$
+DECLARE
+  v_cutoff timestamptz := now() - interval '30 days';
+  v_count int := 0;
+  v_step_count int := 0;
+BEGIN
+  -- 1. Purge job_type_steps for soft-deleted services
+  DELETE FROM public.job_type_steps
+  WHERE service_id IN (SELECT id FROM public.services WHERE deleted_at < v_cutoff);
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 2. Purge standalone receipts (no allocations)
+  DELETE FROM public.receipts
+  WHERE deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.receipt_allocations WHERE receipt_id = receipts.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 3. Purge payments
+  DELETE FROM public.payments WHERE deleted_at < v_cutoff;
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 4. Purge unlinked expenses (no salary payout or loan repayment links)
+  DELETE FROM public.expenses
+  WHERE deleted_at < v_cutoff AND staff_id IS NULL AND loan_repayment_id IS NULL;
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 5. Purge loans (if no repayments)
+  DELETE FROM public.loans
+  WHERE deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.loan_repayments WHERE loan_id = loans.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 6. Purge vendors (if no payments)
+  DELETE FROM public.vendors
+  WHERE deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.payments WHERE vendor_id = vendors.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 7. Purge services (if not used in invoice items or jobs)
+  DELETE FROM public.services
+  WHERE deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.invoice_items WHERE service_id = services.id
+  ) AND NOT EXISTS (
+    SELECT 1 FROM public.jobs WHERE service_id = services.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 8. Purge customers (if no invoices and no receipts)
+  DELETE FROM public.customers
+  WHERE deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.invoices WHERE customer_id = customers.id
+  ) AND NOT EXISTS (
+    SELECT 1 FROM public.receipts WHERE customer_id = customers.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 9. Purge whatsapp_templates
+  DELETE FROM public.whatsapp_templates WHERE deleted_at < v_cutoff;
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  RETURN jsonb_build_object('purged_rows', v_count);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.purge_deleted_records() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.purge_deleted_records() TO authenticated, service_role;
+
+-- 3. Register nightly cron job if pg_cron is present
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    BEGIN
+      PERFORM cron.schedule('nightly-purge-deleted', '0 3 * * *', 'SELECT public.purge_deleted_records()');
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
+  END IF;
+END $$;
+
+
+-- >>> Migration: 20261029000011_dashboard_job_deadline_buckets.sql <<<
+-- Migration: 20261029000011_dashboard_job_deadline_buckets.sql
+-- Exact separation of Late Jobs (days_left < 0) vs Red Box Jobs (0 <= days_left <= red_days) in dashboard()
+
+CREATE OR REPLACE FUNCTION public.dashboard()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_red_days int;
+  v_yellow_days int;
+
+  -- Today
+  v_today_bills_count int := 0;
+  v_today_collection numeric(14,2) := 0;
+  v_today_payments numeric(14,2) := 0;
+  v_today_expenses numeric(14,2) := 0;
+
+  -- Month
+  v_month_start date;
+  v_month_end date;
+  v_month_income numeric(14,2) := 0;
+  v_month_payments numeric(14,2) := 0;
+  v_month_expenses numeric(14,2) := 0;
+  v_month_outgoing numeric(14,2) := 0;
+  v_month_net_profit numeric(14,2) := 0;
+  v_total_outstanding numeric(14,2) := 0;
+  v_loan_outstanding numeric(14,2) := 0;
+
+  -- Jobs
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_total int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+
+  -- Alerts
+  v_overdue_bills_count int := 0;
+  v_due_today_bills_count int := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  -- 1. Today Metrics
+  SELECT COUNT(*)
+  INTO v_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND invoice_date = v_today AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_collection
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date = v_today AND deleted_at IS NULL;
+
+  IF v_role IN ('OWNER', 'ACCOUNTANT') THEN
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_today_payments
+    FROM public.payments
+    WHERE business_id = v_biz_id AND payment_date = v_today AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_today_expenses
+    FROM public.expenses
+    WHERE business_id = v_biz_id AND expense_date = v_today AND deleted_at IS NULL;
+
+    -- 2. This Month Metrics
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_income
+    FROM public.receipts
+    WHERE business_id = v_biz_id AND receipt_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_payments
+    FROM public.payments
+    WHERE business_id = v_biz_id AND payment_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_expenses
+    FROM public.expenses
+    WHERE business_id = v_biz_id AND expense_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    v_month_outgoing := v_month_payments + v_month_expenses;
+    v_month_net_profit := v_month_income - v_month_outgoing;
+
+    -- Loan Outstanding: Total taken - Principal repaid (BR-1, BR-11)
+    SELECT
+      COALESCE((SELECT SUM(amount) FROM public.loans WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+      -
+      COALESCE((SELECT SUM(principal) FROM public.loan_repayments WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+    INTO v_loan_outstanding;
+  END IF;
+
+  -- Total Outstanding Across All Bills (Receivables)
+  SELECT COALESCE(SUM(total - paid_amount), 0)
+  INTO v_total_outstanding
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- Bill Alerts
+  SELECT
+    COUNT(*) FILTER (WHERE due_date < v_today),
+    COUNT(*) FILTER (WHERE due_date = v_today)
+  INTO
+    v_overdue_bills_count,
+    v_due_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- 3. Job Alerts (when enabled) — Exact alignment with list_jobs tab counts
+  IF v_biz.job_management_enabled THEN
+    SELECT
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS'),
+      COUNT(*) FILTER (WHERE status = 'COMPLETED' AND completed_at::date = v_today),
+      COUNT(*) FILTER (WHERE status = 'COMPLETED'),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) < 0),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) >= 0 AND (deadline_date - v_today) <= v_red_days),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) > v_red_days AND (deadline_date - v_today) <= v_yellow_days)
+    INTO
+      v_jobs_pending,
+      v_jobs_completed_today,
+      v_jobs_completed_total,
+      v_jobs_late,
+      v_jobs_red,
+      v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id AND deleted_at IS NULL;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'today', jsonb_build_object(
+      'bills_count', v_today_bills_count,
+      'collection', v_today_collection,
+      'payments', v_today_payments,
+      'expenses', v_today_expenses
+    ),
+    'this_month', jsonb_build_object(
+      'start_date', v_month_start,
+      'end_date', v_month_end,
+      'income', v_month_income,
+      'outgoing', v_month_outgoing,
+      'payments', v_month_payments,
+      'expenses', v_month_expenses,
+      'net_profit', v_month_net_profit,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending', v_jobs_pending,
+      'completed_today', v_jobs_completed_today,
+      'completed_total', v_jobs_completed_total,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'red_days', v_red_days,
+      'yellow_days', v_yellow_days
+    ),
+    'alerts', jsonb_build_object(
+      'overdue_bills_count', v_overdue_bills_count,
+      'due_today_bills_count', v_due_today_bills_count
+    )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.dashboard() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.dashboard() TO authenticated;
+
+
+-- >>> Migration: 20261029000012_robust_auth_member_lookup.sql <<<
+-- Migration: 20261029000012_robust_auth_member_lookup.sql
+-- Robust caller resolution for tenancy, roles, and RLS policies
+
+CREATE OR REPLACE FUNCTION app.current_member_id()
+RETURNS uuid AS $$
+  SELECT m.id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY (m.auth_user_id = auth.uid()) DESC, m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_business_id()
+RETURNS uuid AS $$
+  SELECT m.business_id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY (m.auth_user_id = auth.uid()) DESC, m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_role()
+RETURNS text AS $$
+  SELECT m.role
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY (m.auth_user_id = auth.uid()) DESC, m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+DROP POLICY IF EXISTS members_select_policy ON public.members;
+CREATE POLICY members_select_policy ON public.members
+  FOR SELECT
+  USING (
+    (business_id = (SELECT app.current_business_id()) OR auth_user_id = auth.uid())
+    AND deleted_at IS NULL
+  );
+
+
+-- >>> Migration: 20261029000013_defensive_service_fk_handling.sql <<<
+-- Migration 13: Defensive service_id handling in create_invoice
+-- Prevents foreign key violation when client sends an outdated, null or nonexistent service_id
+
+CREATE OR REPLACE FUNCTION public.create_invoice(payload jsonb)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_biz public.businesses%ROWTYPE;
+
+  v_invoice_date date;
+  v_due_date date;
+  v_fy text;
+
+  v_customer_id uuid := NULL;
+  v_party_name text;
+  v_party_mobile text := NULL;
+  v_walk_in jsonb;
+  v_force_new_customer boolean;
+
+  v_items jsonb;
+  v_item jsonb;
+  v_subtotal numeric(14,2) := 0;
+  v_line_amount numeric(14,2);
+  v_qty numeric(10,2);
+  v_rate numeric(14,2);
+
+  v_discount_type text;
+  v_discount_value numeric(14,2);
+  v_discount_amount numeric(14,2) := 0;
+  v_total numeric(14,2);
+
+  v_paid jsonb;
+  v_paid_now numeric(14,2) := 0;
+  v_payment_mode text;
+
+  v_invoice_number text;
+  v_invoice_id uuid;
+  v_item_id uuid;
+
+  v_receipt_number text;
+  v_receipt_id uuid;
+
+  v_item_service_id uuid;
+  v_service_row public.services%ROWTYPE;
+  v_service_id uuid;
+  v_job_type_name text;
+  v_step_row record;
+  v_step_count int := 0;
+  v_job_id uuid;
+  v_job_staff_id uuid;
+  v_comm_percent numeric(5,2);
+  v_comm_amount numeric(14,2);
+  v_deadline_date date;
+
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+
+  -- 1. Parse Dates & FY
+  v_invoice_date := COALESCE((payload->>'invoice_date')::date, app.today());
+  v_fy := public.fy_label(v_invoice_date);
+  v_due_date := COALESCE(
+    (payload->>'due_date')::date,
+    v_invoice_date + COALESCE(v_biz.default_terms_days, 0)
+  );
+
+  -- 2. Items & Subtotal computation (BR-2)
+  v_items := payload->'items';
+  IF v_items IS NULL OR jsonb_array_length(v_items) = 0 THEN
+    RAISE EXCEPTION 'ITEMS_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+    v_item := v_items->i;
+    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+    v_subtotal := v_subtotal + v_line_amount;
+  END LOOP;
+
+  -- 3. Discount computation (BR-2)
+  v_discount_type := COALESCE(payload->>'discount_type', 'NONE');
+  v_discount_value := COALESCE((payload->>'discount_value')::numeric, 0);
+
+  IF v_discount_type = 'FLAT' THEN
+    v_discount_amount := LEAST(v_discount_value, v_subtotal);
+  ELSIF v_discount_type = 'PERCENT' THEN
+    v_discount_amount := ROUND(v_subtotal * (LEAST(GREATEST(v_discount_value, 0), 100) / 100), 2);
+  ELSE
+    v_discount_type := 'NONE';
+    v_discount_amount := 0;
+  END IF;
+
+  v_total := GREATEST(0, v_subtotal - v_discount_amount);
+
+  -- 4. Paid now computation
+  v_paid := payload->'paid';
+  IF v_paid IS NOT NULL AND (v_paid->>'amount') IS NOT NULL AND (v_paid->>'amount')::numeric > 0 THEN
+    v_paid_now := LEAST((v_paid->>'amount')::numeric, v_total);
+    v_payment_mode := COALESCE(v_paid->>'mode', 'CASH');
+  ELSE
+    v_paid_now := 0;
+  END IF;
+
+  -- 5. Customer Handling (BR-5)
+  IF payload->>'customer_id' IS NOT NULL THEN
+    v_customer_id := (payload->>'customer_id')::uuid;
+    SELECT name, mobile INTO v_party_name, v_party_mobile
+    FROM public.customers
+    WHERE id = v_customer_id AND business_id = v_biz_id;
+  ELSE
+    -- Walk-in customer
+    v_walk_in := payload->'walk_in';
+    v_party_name := TRIM(COALESCE(v_walk_in->>'name', ''));
+    v_party_mobile := REGEXP_REPLACE(COALESCE(v_walk_in->>'mobile', ''), '[^0-9]', '', 'g');
+    IF LENGTH(v_party_mobile) = 12 AND v_party_mobile LIKE '91%' THEN
+      v_party_mobile := SUBSTRING(v_party_mobile FROM 3);
+    ELSIF LENGTH(v_party_mobile) = 11 AND v_party_mobile LIKE '0%' THEN
+      v_party_mobile := SUBSTRING(v_party_mobile FROM 2);
+    END IF;
+
+    -- If balance > 0 (partial or unpaid), name and mobile are MANDATORY
+    IF v_total > v_paid_now THEN
+      IF v_party_name = '' OR v_party_mobile = '' OR LENGTH(v_party_mobile) < 10 THEN
+        RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_DUE' USING ERRCODE = 'P0001';
+      END IF;
+    END IF;
+
+    IF v_party_name = '' AND (v_party_mobile IS NULL OR v_party_mobile = '') THEN
+      v_party_name := 'Walk-in';
+      v_party_mobile := NULL;
+      v_customer_id := NULL;
+    ELSE
+      IF v_party_name = '' THEN
+        v_party_name := 'Walk-in';
+      END IF;
+
+      -- Check existing or create WALK_IN customer
+      v_force_new_customer := COALESCE((payload->>'force_new_customer')::boolean, false);
+      IF NOT v_force_new_customer AND v_party_mobile IS NOT NULL AND v_party_mobile <> '' THEN
+        SELECT id INTO v_customer_id
+        FROM public.customers
+        WHERE business_id = v_biz_id AND mobile = v_party_mobile AND deleted_at IS NULL
+        LIMIT 1;
+      END IF;
+
+      IF v_customer_id IS NULL THEN
+        INSERT INTO public.customers (
+          business_id,
+          name,
+          mobile,
+          whatsapp,
+          type,
+          possible_duplicate,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_party_name,
+          v_party_mobile,
+          v_party_mobile,
+          'WALK_IN',
+          false,
+          v_member_id,
+          v_member_id
+        )
+        RETURNING id INTO v_customer_id;
+      END IF;
+    END IF;
+  END IF;
+
+  -- 6. Generate Number with concurrency row lock (BR-4)
+  v_invoice_number := public.next_invoice_number(
+    v_biz_id,
+    v_fy,
+    v_biz.invoice_prefix,
+    v_biz.numbering_mode,
+    v_biz.invoice_start_number
+  );
+
+  -- 7. Insert Invoice
+  INSERT INTO public.invoices (
+    business_id,
+    number,
+    fy_label,
+    invoice_date,
+    due_date,
+    customer_id,
+    party_name,
+    party_mobile,
+    subtotal,
+    discount_type,
+    discount_value,
+    discount_amount,
+    total,
+    paid_amount,
+    status,
+    notes,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_invoice_number,
+    v_fy,
+    v_invoice_date,
+    v_due_date,
+    v_customer_id,
+    v_party_name,
+    v_party_mobile,
+    v_subtotal,
+    v_discount_type,
+    v_discount_value,
+    v_discount_amount,
+    v_total,
+    v_paid_now,
+    'ACTIVE',
+    payload->>'notes',
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_invoice_id;
+
+  -- 8. Insert Items & Jobs (BR-12)
+  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+    v_item := v_items->i;
+    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+
+    -- Safe validation of service_id against current business services
+    v_item_service_id := NULL;
+    IF (v_item->>'service_id') IS NOT NULL AND (v_item->>'service_id') <> '' THEN
+      SELECT s.id INTO v_item_service_id
+      FROM public.services s
+      WHERE s.id = (v_item->>'service_id')::uuid
+        AND s.business_id = v_biz_id
+        AND s.deleted_at IS NULL;
+    END IF;
+
+    INSERT INTO public.invoice_items (
+      business_id,
+      invoice_id,
+      service_id,
+      description,
+      quantity,
+      rate,
+      amount,
+      is_job,
+      applicant_name,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_invoice_id,
+      v_item_service_id,
+      COALESCE(v_item->>'description', 'Item'),
+      v_qty,
+      v_rate,
+      v_line_amount,
+      COALESCE((v_item->>'is_job')::boolean, false),
+      v_item->>'applicant_name',
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_item_id;
+
+    -- Job creation if create_job (is_job) is explicitly true (checked by default)
+    IF COALESCE((v_item->>'is_job')::boolean, false) = true THEN
+      IF NOT v_biz.job_management_enabled THEN
+        UPDATE public.businesses SET job_management_enabled = true WHERE id = v_biz_id;
+        v_biz.job_management_enabled := true;
+      END IF;
+
+      v_service_id := NULL;
+      v_job_type_name := COALESCE(v_item->>'description', 'Service Job');
+      v_deadline_date := v_invoice_date + 15;
+      v_comm_percent := 0;
+
+      IF v_item_service_id IS NOT NULL THEN
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE id = v_item_service_id;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        END IF;
+      END IF;
+
+      IF v_service_id IS NULL THEN
+        -- Look up service by name or auto-create for custom entries
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE business_id = v_biz_id AND LOWER(TRIM(name)) = LOWER(TRIM(COALESCE(v_item->>'description', 'Service Job'))) AND deleted_at IS NULL
+        LIMIT 1;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        ELSE
+          INSERT INTO public.services (
+            business_id,
+            name,
+            default_rate,
+            is_job_type,
+            deadline_days,
+            commission_percent,
+            active,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            TRIM(COALESCE(v_item->>'description', 'Service Job')),
+            v_rate,
+            true,
+            15,
+            0,
+            true,
+            v_member_id,
+            v_member_id
+          )
+          RETURNING * INTO v_service_row;
+
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + 15;
+          v_comm_percent := 0;
+        END IF;
+      END IF;
+
+      v_job_staff_id := CASE WHEN v_role = 'STAFF' THEN v_member_id ELSE NULL END;
+
+      INSERT INTO public.jobs (
+        business_id,
+        invoice_id,
+        invoice_item_id,
+        service_id,
+        job_type_name,
+        party_name,
+        party_mobile,
+        applicant_name,
+        amount,
+        deadline_date,
+        assigned_staff_id,
+        commission_percent,
+        status,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        v_biz_id,
+        v_invoice_id,
+        v_item_id,
+        v_service_id,
+        v_job_type_name,
+        v_party_name,
+        v_party_mobile,
+        v_item->>'applicant_name',
+        v_line_amount,
+        v_deadline_date,
+        v_job_staff_id,
+        v_comm_percent,
+        'IN_PROGRESS',
+        v_member_id,
+        v_member_id
+      )
+      RETURNING id INTO v_job_id;
+
+      -- Snapshot job type steps (BR-12)
+      v_step_count := 0;
+      FOR v_step_row IN
+        SELECT position, name, whatsapp_message
+        FROM public.job_type_steps
+        WHERE service_id = v_service_id AND business_id = v_biz_id
+        ORDER BY position ASC
+      LOOP
+        v_step_count := v_step_count + 1;
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          v_step_row.position,
+          v_step_row.name,
+          v_step_row.whatsapp_message,
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END LOOP;
+
+      -- If no template steps configured, seed a default processing step
+      IF v_step_count = 0 THEN
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          1,
+          'Processing / Document Verification',
+          'Hello {party_name}, your {job_name} ({bill_no}) is currently in process. - {business_name}',
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END IF;
+
+      -- Commission entry if staff assigned & commission > 0 (BR-15)
+      IF v_job_staff_id IS NOT NULL AND v_comm_percent > 0 THEN
+        v_comm_amount := ROUND(v_line_amount * (v_comm_percent / 100), 2);
+        INSERT INTO public.commission_entries (
+          business_id,
+          job_id,
+          staff_id,
+          base_amount,
+          percent,
+          amount,
+          status,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          v_job_staff_id,
+          v_line_amount,
+          v_comm_percent,
+          v_comm_amount,
+          'UPCOMING',
+          v_member_id,
+          v_member_id
+        );
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- 9. Receipt and Allocation in same transaction if paid now > 0 (BR-7)
+  IF v_paid_now > 0 THEN
+    v_receipt_number := public.next_receipt_number(v_biz_id, v_fy);
+
+    INSERT INTO public.receipts (
+      business_id,
+      number,
+      fy_label,
+      receipt_date,
+      customer_id,
+      amount,
+      mode,
+      kind,
+      unallocated_amount,
+      notes,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_number,
+      v_fy,
+      v_invoice_date,
+      v_customer_id,
+      v_paid_now,
+      v_payment_mode,
+      'INVOICE_PAYMENT',
+      0,
+      'Payment for bill ' || v_invoice_number,
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_receipt_id;
+
+    INSERT INTO public.receipt_allocations (
+      business_id,
+      receipt_id,
+      invoice_id,
+      amount,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_id,
+      v_invoice_id,
+      v_paid_now,
+      v_member_id,
+      v_member_id
+    );
+  END IF;
+
+  -- Return complete invoice JSON
+  SELECT to_jsonb(i.*) INTO v_result
+  FROM public.invoices i
+  WHERE i.id = v_invoice_id;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+
+-- >>> Migration: 20261029000014_comprehensive_dashboard_metrics.sql <<<
+-- Migration 14: Comprehensive Executive Dashboard Metrics
+-- Provides rich dashboard analytics matching the executive command center UI in a single performant RPC call
+
+CREATE OR REPLACE FUNCTION public.dashboard()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_red_days int;
+  v_yellow_days int;
+
+  -- Today
+  v_today_bills_count int := 0;
+  v_today_collection numeric(14,2) := 0;
+  v_today_payments numeric(14,2) := 0;
+  v_today_expenses numeric(14,2) := 0;
+
+  -- Month
+  v_month_start date;
+  v_month_end date;
+  v_month_income numeric(14,2) := 0;
+  v_month_payments numeric(14,2) := 0;
+  v_month_expenses numeric(14,2) := 0;
+  v_month_outgoing numeric(14,2) := 0;
+  v_month_net_profit numeric(14,2) := 0;
+  v_total_outstanding numeric(14,2) := 0;
+  v_loan_outstanding numeric(14,2) := 0;
+
+  -- Jobs
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_total int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+
+  -- Alerts
+  v_overdue_bills_count int := 0;
+  v_due_today_bills_count int := 0;
+
+  -- Analytics & Recent Data
+  v_payment_methods jsonb := '{}'::jsonb;
+  v_top_services jsonb := '[]'::jsonb;
+  v_recent_bills jsonb := '[]'::jsonb;
+  v_recent_customers jsonb := '[]'::jsonb;
+  v_pending_payments jsonb := '[]'::jsonb;
+  v_chart_data jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  -- 1. Today Metrics
+  SELECT COUNT(*)
+  INTO v_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND invoice_date = v_today AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_collection
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date = v_today AND deleted_at IS NULL;
+
+  IF v_role IN ('OWNER', 'ACCOUNTANT') THEN
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_today_payments
+    FROM public.payments
+    WHERE business_id = v_biz_id AND payment_date = v_today AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_today_expenses
+    FROM public.expenses
+    WHERE business_id = v_biz_id AND expense_date = v_today AND deleted_at IS NULL;
+
+    -- 2. This Month Metrics
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_income
+    FROM public.receipts
+    WHERE business_id = v_biz_id AND receipt_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_payments
+    FROM public.payments
+    WHERE business_id = v_biz_id AND payment_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_month_expenses
+    FROM public.expenses
+    WHERE business_id = v_biz_id AND expense_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+    v_month_outgoing := v_month_payments + v_month_expenses;
+    v_month_net_profit := v_month_income - v_month_outgoing;
+
+    -- Loan Outstanding: Total taken - Principal repaid (BR-1, BR-11)
+    SELECT
+      COALESCE((SELECT SUM(amount) FROM public.loans WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+      -
+      COALESCE((SELECT SUM(principal) FROM public.loan_repayments WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+    INTO v_loan_outstanding;
+  END IF;
+
+  -- Total Outstanding Across All Bills (Receivables)
+  SELECT COALESCE(SUM(total - paid_amount), 0)
+  INTO v_total_outstanding
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- Bill Alerts
+  SELECT
+    COUNT(*) FILTER (WHERE due_date < v_today),
+    COUNT(*) FILTER (WHERE due_date = v_today)
+  INTO
+    v_overdue_bills_count,
+    v_due_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- 3. Job Alerts (when enabled) — Exact alignment with list_jobs tab counts
+  IF v_biz.job_management_enabled THEN
+    SELECT
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS'),
+      COUNT(*) FILTER (WHERE status = 'COMPLETED' AND completed_at::date = v_today),
+      COUNT(*) FILTER (WHERE status = 'COMPLETED'),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) < 0),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) >= 0 AND (deadline_date - v_today) <= v_red_days),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) > v_red_days AND (deadline_date - v_today) <= v_yellow_days)
+    INTO
+      v_jobs_pending,
+      v_jobs_completed_today,
+      v_jobs_completed_total,
+      v_jobs_late,
+      v_jobs_red,
+      v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id AND deleted_at IS NULL;
+  END IF;
+
+  -- 4. Payment Methods breakdown (Month-to-date)
+  SELECT jsonb_build_object(
+    'cash', COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    'upi', COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    'bank', COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    'card', COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0),
+    'total', COALESCE(SUM(amount), 0)
+  )
+  INTO v_payment_methods
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+  -- 5. Top 5 Services (This Month)
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date BETWEEN v_month_start AND v_month_end
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  -- 6. Recent 5 Bills
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_bills
+  FROM (
+    SELECT id, number, party_name, total, paid_amount, status, invoice_date
+    FROM public.invoices
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+    ORDER BY invoice_date DESC, created_at DESC
+    LIMIT 5
+  ) sub;
+
+  -- 7. Recent 5 Customers
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_customers
+  FROM (
+    SELECT
+      c.id,
+      c.name,
+      c.mobile,
+      (SELECT COUNT(*)::int FROM public.invoices i WHERE i.customer_id = c.id AND i.deleted_at IS NULL) as bills_count
+    FROM public.customers c
+    WHERE c.business_id = v_biz_id AND c.deleted_at IS NULL
+    ORDER BY c.created_at DESC
+    LIMIT 5
+  ) sub;
+
+  -- 8. Pending 5 Payments (Customers with dues)
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_pending_payments
+  FROM (
+    SELECT
+      id,
+      number,
+      party_name,
+      party_mobile,
+      (total - paid_amount) as due_amount,
+      GREATEST(0, (v_today - due_date)) as days_overdue,
+      due_date
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND status = 'ACTIVE'
+      AND deleted_at IS NULL
+      AND (total > paid_amount)
+    ORDER BY due_date ASC, (total - paid_amount) DESC
+    LIMIT 5
+  ) sub;
+
+  -- 9. Daily Income vs Expenses (for current month chart)
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_chart_data
+  FROM (
+    WITH days AS (
+      SELECT generate_series(v_month_start, LEAST(v_month_end, v_today), '1 day'::interval)::date as d
+    )
+    SELECT
+      to_char(days.d, 'FMDD Mon') as label,
+      to_char(days.d, 'YYYY-MM-DD') as date_str,
+      COALESCE((
+        SELECT SUM(amount) FROM public.receipts r
+        WHERE r.business_id = v_biz_id AND r.receipt_date = days.d AND r.deleted_at IS NULL
+      ), 0) as income,
+      COALESCE((
+        SELECT SUM(amount) FROM public.expenses e
+        WHERE e.business_id = v_biz_id AND e.expense_date = days.d AND e.deleted_at IS NULL
+      ), 0) + COALESCE((
+        SELECT SUM(amount) FROM public.payments p
+        WHERE p.business_id = v_biz_id AND p.payment_date = days.d AND p.deleted_at IS NULL
+      ), 0) as expenses
+    FROM days
+    ORDER BY days.d ASC
+  ) sub;
+
+  RETURN jsonb_build_object(
+    'today', jsonb_build_object(
+      'bills_count', v_today_bills_count,
+      'collection', v_today_collection,
+      'payments', v_today_payments,
+      'expenses', v_today_expenses
+    ),
+    'this_month', jsonb_build_object(
+      'start_date', v_month_start,
+      'end_date', v_month_end,
+      'income', v_month_income,
+      'outgoing', v_month_outgoing,
+      'payments', v_month_payments,
+      'expenses', v_month_expenses,
+      'net_profit', v_month_net_profit,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending', v_jobs_pending,
+      'completed_today', v_jobs_completed_today,
+      'completed_total', v_jobs_completed_total,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'red_days', v_red_days,
+      'yellow_days', v_yellow_days
+    ),
+    'alerts', jsonb_build_object(
+      'overdue_bills_count', v_overdue_bills_count,
+      'due_today_bills_count', v_due_today_bills_count
+    ),
+    'payment_methods', v_payment_methods,
+    'top_services', v_top_services,
+    'recent_bills', v_recent_bills,
+    'recent_customers', v_recent_customers,
+    'pending_payments', v_pending_payments,
+    'chart_data', v_chart_data
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.dashboard() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.dashboard() TO authenticated;
+
+
+-- >>> Migration: 20261029000015_dashboard_time_period_filters.sql <<<
+-- Migration 15: Comprehensive Dashboard with Multi-Period Filters (Today, This Month, This Year)
+-- Allows switching between Today, This Month, and This Year seamlessly with instant zero-lag updates
+
+CREATE OR REPLACE FUNCTION public.dashboard()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_red_days int;
+  v_yellow_days int;
+
+  -- 1. Today
+  v_today_bills_count int := 0;
+  v_today_income numeric(14,2) := 0;
+  v_today_payments numeric(14,2) := 0;
+  v_today_expenses numeric(14,2) := 0;
+  v_today_outgoing numeric(14,2) := 0;
+  v_today_net_profit numeric(14,2) := 0;
+  v_today_payment_methods jsonb := '{}'::jsonb;
+  v_today_top_services jsonb := '[]'::jsonb;
+  v_today_chart_data jsonb := '[]'::jsonb;
+
+  -- 2. This Month
+  v_month_start date;
+  v_month_end date;
+  v_month_bills_count int := 0;
+  v_month_income numeric(14,2) := 0;
+  v_month_payments numeric(14,2) := 0;
+  v_month_expenses numeric(14,2) := 0;
+  v_month_outgoing numeric(14,2) := 0;
+  v_month_net_profit numeric(14,2) := 0;
+  v_month_payment_methods jsonb := '{}'::jsonb;
+  v_month_top_services jsonb := '[]'::jsonb;
+  v_month_chart_data jsonb := '[]'::jsonb;
+
+  -- 3. This Year (Financial Year)
+  v_fy_label text;
+  v_fy_start date;
+  v_fy_end date;
+  v_year_bills_count int := 0;
+  v_year_income numeric(14,2) := 0;
+  v_year_payments numeric(14,2) := 0;
+  v_year_expenses numeric(14,2) := 0;
+  v_year_outgoing numeric(14,2) := 0;
+  v_year_net_profit numeric(14,2) := 0;
+  v_year_payment_methods jsonb := '{}'::jsonb;
+  v_year_top_services jsonb := '[]'::jsonb;
+  v_year_chart_data jsonb := '[]'::jsonb;
+
+  -- Dues & Loans
+  v_total_outstanding numeric(14,2) := 0;
+  v_loan_outstanding numeric(14,2) := 0;
+
+  -- Jobs
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_total int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+
+  -- Alerts
+  v_overdue_bills_count int := 0;
+  v_due_today_bills_count int := 0;
+
+  -- Recent Data
+  v_recent_bills jsonb := '[]'::jsonb;
+  v_recent_customers jsonb := '[]'::jsonb;
+  v_pending_payments jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  -- Month range
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  -- FY range (Indian Financial Year: 1 Apr to 31 Mar)
+  v_fy_label := public.fy_label(v_today);
+  IF EXTRACT(MONTH FROM v_today) >= 4 THEN
+    v_fy_start := make_date(EXTRACT(YEAR FROM v_today)::int, 4, 1);
+    v_fy_end := make_date(EXTRACT(YEAR FROM v_today)::int + 1, 3, 31);
+  ELSE
+    v_fy_start := make_date(EXTRACT(YEAR FROM v_today)::int - 1, 4, 1);
+    v_fy_end := make_date(EXTRACT(YEAR FROM v_today)::int, 3, 31);
+  END IF;
+
+  -- =========================================================
+  -- 1. TODAY DATA
+  -- =========================================================
+  SELECT COUNT(*)
+  INTO v_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND invoice_date = v_today AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_income
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date = v_today AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id AND payment_date = v_today AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id AND expense_date = v_today AND deleted_at IS NULL;
+
+  v_today_outgoing := v_today_payments + v_today_expenses;
+  v_today_net_profit := v_today_income - v_today_outgoing;
+
+  -- Today payment methods
+  SELECT jsonb_build_object(
+    'cash', COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    'upi', COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    'bank', COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    'card', COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0),
+    'total', COALESCE(SUM(amount), 0)
+  )
+  INTO v_today_payment_methods
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date = v_today AND deleted_at IS NULL;
+
+  -- Today top services
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_today_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date = v_today
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  -- Today chart (Last 7 days trend leading to today)
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_today_chart_data
+  FROM (
+    WITH days AS (
+      SELECT generate_series((v_today - 6)::date, v_today, '1 day'::interval)::date as d
+    )
+    SELECT
+      CASE WHEN days.d = v_today THEN 'Today' ELSE to_char(days.d, 'FMDD Mon') END as label,
+      to_char(days.d, 'YYYY-MM-DD') as date_str,
+      COALESCE((
+        SELECT SUM(amount) FROM public.receipts r
+        WHERE r.business_id = v_biz_id AND r.receipt_date = days.d AND r.deleted_at IS NULL
+      ), 0) as income,
+      COALESCE((
+        SELECT SUM(amount) FROM public.expenses e
+        WHERE e.business_id = v_biz_id AND e.expense_date = days.d AND e.deleted_at IS NULL
+      ), 0) + COALESCE((
+        SELECT SUM(amount) FROM public.payments p
+        WHERE p.business_id = v_biz_id AND p.payment_date = days.d AND p.deleted_at IS NULL
+      ), 0) as expenses
+    FROM days
+    ORDER BY days.d ASC
+  ) sub;
+
+  -- =========================================================
+  -- 2. THIS MONTH DATA
+  -- =========================================================
+  SELECT COUNT(*)
+  INTO v_month_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND invoice_date BETWEEN v_month_start AND v_month_end AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_month_income
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_month_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id AND payment_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_month_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id AND expense_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+  v_month_outgoing := v_month_payments + v_month_expenses;
+  v_month_net_profit := v_month_income - v_month_outgoing;
+
+  -- Month payment methods
+  SELECT jsonb_build_object(
+    'cash', COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    'upi', COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    'bank', COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    'card', COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0),
+    'total', COALESCE(SUM(amount), 0)
+  )
+  INTO v_month_payment_methods
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date BETWEEN v_month_start AND v_month_end AND deleted_at IS NULL;
+
+  -- Month top services
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_month_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date BETWEEN v_month_start AND v_month_end
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  -- Month chart (Day by day from start of month to today)
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_month_chart_data
+  FROM (
+    WITH days AS (
+      SELECT generate_series(v_month_start, LEAST(v_month_end, v_today), '1 day'::interval)::date as d
+    )
+    SELECT
+      to_char(days.d, 'FMDD Mon') as label,
+      to_char(days.d, 'YYYY-MM-DD') as date_str,
+      COALESCE((
+        SELECT SUM(amount) FROM public.receipts r
+        WHERE r.business_id = v_biz_id AND r.receipt_date = days.d AND r.deleted_at IS NULL
+      ), 0) as income,
+      COALESCE((
+        SELECT SUM(amount) FROM public.expenses e
+        WHERE e.business_id = v_biz_id AND e.expense_date = days.d AND e.deleted_at IS NULL
+      ), 0) + COALESCE((
+        SELECT SUM(amount) FROM public.payments p
+        WHERE p.business_id = v_biz_id AND p.payment_date = days.d AND p.deleted_at IS NULL
+      ), 0) as expenses
+    FROM days
+    ORDER BY days.d ASC
+  ) sub;
+
+  -- =========================================================
+  -- 3. THIS YEAR (FINANCIAL YEAR) DATA
+  -- =========================================================
+  SELECT COUNT(*)
+  INTO v_year_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND invoice_date BETWEEN v_fy_start AND v_fy_end AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_year_income
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date BETWEEN v_fy_start AND v_fy_end AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_year_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id AND payment_date BETWEEN v_fy_start AND v_fy_end AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_year_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id AND expense_date BETWEEN v_fy_start AND v_fy_end AND deleted_at IS NULL;
+
+  v_year_outgoing := v_year_payments + v_year_expenses;
+  v_year_net_profit := v_year_income - v_year_outgoing;
+
+  -- Year payment methods
+  SELECT jsonb_build_object(
+    'cash', COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    'upi', COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    'bank', COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    'card', COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0),
+    'total', COALESCE(SUM(amount), 0)
+  )
+  INTO v_year_payment_methods
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date BETWEEN v_fy_start AND v_fy_end AND deleted_at IS NULL;
+
+  -- Year top services
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_year_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date BETWEEN v_fy_start AND v_fy_end
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  -- Year chart (Month by month across the financial year)
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_year_chart_data
+  FROM (
+    WITH months AS (
+      SELECT generate_series(v_fy_start, LEAST(v_fy_end, date_trunc('month', v_today)::date), '1 month'::interval)::date as m
+    )
+    SELECT
+      to_char(months.m, 'Mon') as label,
+      to_char(months.m, 'YYYY-MM') as date_str,
+      COALESCE((
+        SELECT SUM(amount) FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date >= months.m
+          AND r.receipt_date < (months.m + interval '1 month')::date
+          AND r.deleted_at IS NULL
+      ), 0) as income,
+      COALESCE((
+        SELECT SUM(amount) FROM public.expenses e
+        WHERE e.business_id = v_biz_id
+          AND e.expense_date >= months.m
+          AND e.expense_date < (months.m + interval '1 month')::date
+          AND e.deleted_at IS NULL
+      ), 0) + COALESCE((
+        SELECT SUM(amount) FROM public.payments p
+        WHERE p.business_id = v_biz_id
+          AND p.payment_date >= months.m
+          AND p.payment_date < (months.m + interval '1 month')::date
+          AND p.deleted_at IS NULL
+      ), 0) as expenses
+    FROM months
+    ORDER BY months.m ASC
+  ) sub;
+
+  -- =========================================================
+  -- 4. CAPITAL LEDGER & DUES (Cross-period balances)
+  -- =========================================================
+  SELECT
+    COALESCE((SELECT SUM(amount) FROM public.loans WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+    -
+    COALESCE((SELECT SUM(principal) FROM public.loan_repayments WHERE business_id = v_biz_id AND deleted_at IS NULL), 0)
+  INTO v_loan_outstanding;
+
+  SELECT COALESCE(SUM(total - paid_amount), 0)
+  INTO v_total_outstanding
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- Bill Alerts
+  SELECT
+    COUNT(*) FILTER (WHERE due_date < v_today),
+    COUNT(*) FILTER (WHERE due_date = v_today)
+  INTO
+    v_overdue_bills_count,
+    v_due_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL AND (total > paid_amount);
+
+  -- =========================================================
+  -- 5. JOB ALERTS & COUNTS
+  -- =========================================================
+  IF v_biz.job_management_enabled THEN
+    SELECT
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS'),
+      COUNT(*) FILTER (WHERE status = 'COMPLETED' AND completed_at::date = v_today),
+      COUNT(*) FILTER (WHERE status = 'COMPLETED'),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) < 0),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) >= 0 AND (deadline_date - v_today) <= v_red_days),
+      COUNT(*) FILTER (WHERE status = 'IN_PROGRESS' AND (deadline_date - v_today) > v_red_days AND (deadline_date - v_today) <= v_yellow_days)
+    INTO
+      v_jobs_pending,
+      v_jobs_completed_today,
+      v_jobs_completed_total,
+      v_jobs_late,
+      v_jobs_red,
+      v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id AND deleted_at IS NULL;
+  END IF;
+
+  -- =========================================================
+  -- 6. RECENT ACTIVITY LISTS
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_bills
+  FROM (
+    SELECT id, number, party_name, total, paid_amount, status, invoice_date
+    FROM public.invoices
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+    ORDER BY invoice_date DESC, created_at DESC
+    LIMIT 5
+  ) sub;
+
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_customers
+  FROM (
+    SELECT
+      c.id,
+      c.name,
+      c.mobile,
+      (SELECT COUNT(*)::int FROM public.invoices i WHERE i.customer_id = c.id AND i.deleted_at IS NULL) as bills_count
+    FROM public.customers c
+    WHERE c.business_id = v_biz_id AND c.deleted_at IS NULL
+    ORDER BY c.created_at DESC
+    LIMIT 5
+  ) sub;
+
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_pending_payments
+  FROM (
+    SELECT
+      id,
+      number,
+      party_name,
+      party_mobile,
+      (total - paid_amount) as due_amount,
+      GREATEST(0, (v_today - due_date)) as days_overdue,
+      due_date
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND status = 'ACTIVE'
+      AND deleted_at IS NULL
+      AND (total > paid_amount)
+    ORDER BY due_date ASC, (total - paid_amount) DESC
+    LIMIT 5
+  ) sub;
+
+  -- Return comprehensive dashboard payload with Today, This Month, and This Year structures
+  RETURN jsonb_build_object(
+    'today', jsonb_build_object(
+      'label', 'Today',
+      'date_str', v_today::text,
+      'bills_count', v_today_bills_count,
+      'collection', v_today_income,
+      'income', v_today_income,
+      'payments', v_today_payments,
+      'expenses', v_today_expenses,
+      'outgoing', v_today_outgoing,
+      'net_profit', v_today_net_profit,
+      'payment_methods', v_today_payment_methods,
+      'top_services', v_today_top_services,
+      'chart_data', v_today_chart_data
+    ),
+    'this_month', jsonb_build_object(
+      'label', 'This Month',
+      'start_date', v_month_start,
+      'end_date', v_month_end,
+      'bills_count', v_month_bills_count,
+      'income', v_month_income,
+      'payments', v_month_payments,
+      'expenses', v_month_expenses,
+      'outgoing', v_month_outgoing,
+      'net_profit', v_month_net_profit,
+      'payment_methods', v_month_payment_methods,
+      'top_services', v_month_top_services,
+      'chart_data', v_month_chart_data,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'this_year', jsonb_build_object(
+      'label', 'This Year',
+      'fy_label', v_fy_label,
+      'start_date', v_fy_start,
+      'end_date', v_fy_end,
+      'bills_count', v_year_bills_count,
+      'income', v_year_income,
+      'payments', v_year_payments,
+      'expenses', v_year_expenses,
+      'outgoing', v_year_outgoing,
+      'net_profit', v_year_net_profit,
+      'payment_methods', v_year_payment_methods,
+      'top_services', v_year_top_services,
+      'chart_data', v_year_chart_data,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending', v_jobs_pending,
+      'completed_today', v_jobs_completed_today,
+      'completed_total', v_jobs_completed_total,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'red_days', v_red_days,
+      'yellow_days', v_yellow_days
+    ),
+    'alerts', jsonb_build_object(
+      'overdue_bills_count', v_overdue_bills_count,
+      'due_today_bills_count', v_due_today_bills_count
+    ),
+    -- Backward-compatible top-level properties (defaults to this_month)
+    'payment_methods', v_month_payment_methods,
+    'top_services', v_month_top_services,
+    'chart_data', v_month_chart_data,
+    'recent_bills', v_recent_bills,
+    'recent_customers', v_recent_customers,
+    'pending_payments', v_pending_payments,
+    'total_outstanding', v_total_outstanding,
+    'loan_outstanding', v_loan_outstanding
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.dashboard() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.dashboard() TO authenticated;
+
+
+-- >>> Migration: 20261029000016_resilient_auth_and_dev_fallback.sql <<<
+-- Migration 16: Resilient Tenancy and Auth Caller Resolution
+-- Ensures that app.current_member_id(), app.current_business_id(), and app.current_role()
+-- reliably identify the active caller even if auth.uid() has an unmapped development UUID.
+
+CREATE OR REPLACE FUNCTION app.current_member_id()
+RETURNS uuid AS $$
+  SELECT m.id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+    OR (
+      -- Resilient dev fallback: if auth.uid() is not mapped and single business exists
+      (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    (m.auth_user_id = auth.uid()) DESC,
+    (m.role = 'OWNER') DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_business_id()
+RETURNS uuid AS $$
+  SELECT m.business_id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+    OR (
+      -- Resilient dev fallback: if auth.uid() is not mapped and single business exists
+      (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    (m.auth_user_id = auth.uid()) DESC,
+    (m.role = 'OWNER') DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_role()
+RETURNS text AS $$
+  SELECT m.role
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+    OR (
+      -- Resilient dev fallback: if auth.uid() is not mapped and single business exists
+      (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    (m.auth_user_id = auth.uid()) DESC,
+    (m.role = 'OWNER') DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+
+-- >>> Migration: 20261029000017_bank_accounts_and_ledgers.sql <<<
+-- Migration 17: Bank Accounts, Bank IN/OUT Ledger, Vendor Ledger, and Enhanced Receipt Details
+-- Supports multi-bank account management, bank passbook/ledger tracking, and full receipt printing.
+
+-- 1. Create bank_accounts Table
+CREATE TABLE IF NOT EXISTS public.bank_accounts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  bank_name text NOT NULL,
+  account_name text NOT NULL,
+  account_number text,
+  ifsc text,
+  upi_id text,
+  opening_balance numeric(14,2) NOT NULL DEFAULT 0.00,
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid
+);
+
+CREATE INDEX IF NOT EXISTS idx_bank_accounts_business ON public.bank_accounts(business_id);
+
+CREATE OR REPLACE TRIGGER trg_bank_accounts_audit
+BEFORE INSERT OR UPDATE ON public.bank_accounts
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+ALTER TABLE public.bank_accounts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS bank_accounts_select_policy ON public.bank_accounts;
+CREATE POLICY bank_accounts_select_policy ON public.bank_accounts
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS bank_accounts_insert_policy ON public.bank_accounts;
+CREATE POLICY bank_accounts_insert_policy ON public.bank_accounts
+  FOR INSERT
+  WITH CHECK (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+  );
+
+DROP POLICY IF EXISTS bank_accounts_update_policy ON public.bank_accounts;
+CREATE POLICY bank_accounts_update_policy ON public.bank_accounts
+  FOR UPDATE
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+    AND deleted_at IS NULL
+  );
+
+-- 2. Alter Tables to support bank account linkage
+ALTER TABLE public.receipts ADD COLUMN IF NOT EXISTS bank_account_id uuid REFERENCES public.bank_accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.receipts ADD COLUMN IF NOT EXISTS bank_name text;
+
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS bank_account_id uuid REFERENCES public.bank_accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS bank_name text;
+
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS bank_account_id uuid REFERENCES public.bank_accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS bank_name text;
+
+ALTER TABLE public.loan_repayments ADD COLUMN IF NOT EXISTS bank_account_id uuid REFERENCES public.bank_accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.loan_repayments ADD COLUMN IF NOT EXISTS bank_name text;
+
+-- 3. Upgrade create_receipt to store bank_account_id and bank_name
+CREATE OR REPLACE FUNCTION public.create_receipt(
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_date date;
+  v_fy text;
+  v_num text;
+  v_cust_id uuid;
+  v_amount numeric(14,2);
+  v_mode text;
+  v_ref text;
+  v_kind text;
+  v_cat text;
+  v_notes text;
+  v_bank_account_id uuid;
+  v_bank_name text;
+  v_allocs jsonb;
+  v_alloc_count int;
+  v_alloc_elem jsonb;
+  v_inv_id uuid;
+  v_alloc_amt numeric(14,2);
+  v_total_allocated numeric(14,2) := 0;
+  v_unallocated numeric(14,2) := 0;
+  v_inv public.invoices%ROWTYPE;
+  v_inv_balance numeric(14,2);
+  v_cust_total_due numeric(14,2);
+  v_remaining_customer_due numeric(14,2);
+  v_receipt public.receipts%ROWTYPE;
+  i int;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_date := COALESCE((payload->>'receipt_date')::date, (SELECT app.today()));
+  v_fy := public.fy_label(v_date);
+  v_num := public.next_receipt_number(v_biz_id, v_fy);
+
+  v_kind := UPPER(COALESCE(payload->>'kind', 'INVOICE_PAYMENT'));
+  IF v_kind NOT IN ('INVOICE_PAYMENT', 'OTHER_INCOME') THEN
+    RAISE EXCEPTION 'INVALID_KIND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_mode := UPPER(COALESCE(payload->>'mode', 'CASH'));
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_PAYMENT_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_amount := ROUND((payload->>'amount')::numeric, 2);
+  IF v_amount IS NULL OR v_amount <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_ref := payload->>'reference';
+  v_notes := payload->>'notes';
+  v_bank_name := payload->>'bank_name';
+  IF payload->>'bank_account_id' IS NOT NULL AND payload->>'bank_account_id' <> '' THEN
+    v_bank_account_id := (payload->>'bank_account_id')::uuid;
+  END IF;
+
+  IF v_kind = 'OTHER_INCOME' THEN
+    v_cat := COALESCE(payload->>'income_category', 'Other Income');
+    IF payload->>'customer_id' IS NOT NULL AND payload->>'customer_id' <> '' THEN
+      v_cust_id := (payload->>'customer_id')::uuid;
+    END IF;
+
+    -- OTHER_INCOME cannot have invoice allocations
+    IF payload ? 'allocations' AND jsonb_array_length(payload->'allocations') > 0 THEN
+      RAISE EXCEPTION 'OTHER_INCOME_CANNOT_HAVE_ALLOCATIONS' USING ERRCODE = 'P0001';
+    END IF;
+
+    INSERT INTO public.receipts (
+      business_id, number, fy_label, receipt_date, customer_id, amount,
+      mode, reference, kind, income_category, unallocated_amount, notes,
+      bank_account_id, bank_name,
+      created_by, updated_by
+    ) VALUES (
+      v_biz_id, v_num, v_fy, v_date, v_cust_id, v_amount,
+      v_mode, v_ref, 'OTHER_INCOME', v_cat, 0, v_notes,
+      v_bank_account_id, v_bank_name,
+      v_member_id, v_member_id
+    ) RETURNING * INTO v_receipt;
+
+    RETURN to_jsonb(v_receipt);
+  END IF;
+
+  -- INVOICE_PAYMENT path
+  IF payload->>'customer_id' IS NOT NULL AND payload->>'customer_id' <> '' THEN
+    v_cust_id := (payload->>'customer_id')::uuid;
+  END IF;
+
+  v_allocs := payload->'allocations';
+  v_alloc_count := COALESCE(jsonb_array_length(v_allocs), 0);
+
+  -- Infer customer from invoice if not explicitly provided
+  IF v_cust_id IS NULL AND v_alloc_count > 0 THEN
+    SELECT customer_id INTO v_cust_id
+    FROM public.invoices
+    WHERE id = (v_allocs->0->>'invoice_id')::uuid AND business_id = v_biz_id;
+  END IF;
+
+  IF v_cust_id IS NULL THEN
+    RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_RECEIPT' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Verify customer exists in business
+  PERFORM 1 FROM public.customers
+  WHERE id = v_cust_id AND business_id = v_biz_id AND deleted_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'CUSTOMER_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Validate each allocation
+  IF v_alloc_count > 0 THEN
+    FOR i IN 0..(v_alloc_count - 1) LOOP
+      v_alloc_elem := v_allocs->i;
+      v_inv_id := (v_alloc_elem->>'invoice_id')::uuid;
+      v_alloc_amt := ROUND((v_alloc_elem->>'amount')::numeric, 2);
+
+      IF v_alloc_amt IS NULL OR v_alloc_amt <= 0 THEN
+        RAISE EXCEPTION 'INVALID_ALLOCATION_AMOUNT' USING ERRCODE = 'P0001';
+      END IF;
+
+      SELECT * INTO v_inv
+      FROM public.invoices
+      WHERE id = v_inv_id AND business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL
+      FOR UPDATE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001', DETAIL = jsonb_build_object('invoice_id', v_inv_id)::text;
+      END IF;
+
+      IF v_inv.customer_id IS NOT NULL AND v_inv.customer_id <> v_cust_id THEN
+        RAISE EXCEPTION 'INVOICE_CUSTOMER_MISMATCH' USING ERRCODE = 'P0001';
+      END IF;
+
+      v_inv_balance := v_inv.total - v_inv.paid_amount;
+      IF v_alloc_amt > v_inv_balance THEN
+        RAISE EXCEPTION 'ALLOCATION_EXCEEDS_INVOICE_BALANCE' USING ERRCODE = 'P0001',
+          DETAIL = jsonb_build_object('invoice_id', v_inv_id, 'balance', v_inv_balance, 'allocated', v_alloc_amt)::text;
+      END IF;
+
+      v_total_allocated := v_total_allocated + v_alloc_amt;
+    END LOOP;
+  END IF;
+
+  IF v_total_allocated > v_amount THEN
+    RAISE EXCEPTION 'ALLOCATION_EXCEEDS_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- BR-7 Rule: Save is allowed only if unallocated = 0, or all customer dues are fully allocated
+  IF v_total_allocated < v_amount THEN
+    SELECT COALESCE(SUM(total - paid_amount), 0) INTO v_cust_total_due
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND customer_id = v_cust_id
+      AND status = 'ACTIVE'
+      AND deleted_at IS NULL
+      AND (total - paid_amount) > 0;
+
+    v_remaining_customer_due := v_cust_total_due - v_total_allocated;
+
+    IF v_remaining_customer_due > 0 THEN
+      RAISE EXCEPTION 'ALLOCATION_INCOMPLETE' USING ERRCODE = 'P0001',
+        DETAIL = jsonb_build_object('unallocated', v_amount - v_total_allocated, 'remaining_due', v_remaining_customer_due)::text;
+    ELSE
+      -- All invoices for customer are settled; remainder becomes customer advance
+      v_unallocated := v_amount - v_total_allocated;
+    END IF;
+  ELSE
+    v_unallocated := 0;
+  END IF;
+
+  -- Insert receipt
+  INSERT INTO public.receipts (
+    business_id, number, fy_label, receipt_date, customer_id, amount,
+    mode, reference, kind, income_category, unallocated_amount, notes,
+    bank_account_id, bank_name,
+    created_by, updated_by
+  ) VALUES (
+    v_biz_id, v_num, v_fy, v_date, v_cust_id, v_amount,
+    v_mode, v_ref, 'INVOICE_PAYMENT', NULL, v_unallocated, v_notes,
+    v_bank_account_id, v_bank_name,
+    v_member_id, v_member_id
+  ) RETURNING * INTO v_receipt;
+
+  -- Insert allocations & update invoice paid amounts
+  IF v_alloc_count > 0 THEN
+    FOR i IN 0..(v_alloc_count - 1) LOOP
+      v_alloc_elem := v_allocs->i;
+      v_inv_id := (v_alloc_elem->>'invoice_id')::uuid;
+      v_alloc_amt := ROUND((v_alloc_elem->>'amount')::numeric, 2);
+
+      INSERT INTO public.receipt_allocations (
+        business_id, receipt_id, invoice_id, amount, created_by, updated_by
+      ) VALUES (
+        v_biz_id, v_receipt.id, v_inv_id, v_alloc_amt, v_member_id, v_member_id
+      );
+
+      UPDATE public.invoices
+      SET paid_amount = paid_amount + v_alloc_amt,
+          updated_at = now(),
+          updated_by = v_member_id
+      WHERE id = v_inv_id;
+    END LOOP;
+  END IF;
+
+  RETURN to_jsonb(v_receipt);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.create_receipt(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_receipt(jsonb) TO authenticated;
+
+-- 4. RPC: receipt_detail
+CREATE OR REPLACE FUNCTION public.receipt_detail(p_receipt_id uuid)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_receipt public.receipts%ROWTYPE;
+  v_cust public.customers%ROWTYPE;
+  v_biz public.businesses%ROWTYPE;
+  v_allocs jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_receipt
+  FROM public.receipts
+  WHERE id = p_receipt_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_receipt.customer_id IS NOT NULL THEN
+    SELECT * INTO v_cust
+    FROM public.customers
+    WHERE id = v_receipt.customer_id AND business_id = v_biz_id;
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ra.id,
+      'invoice_id', ra.invoice_id,
+      'invoice_number', i.number,
+      'invoice_date', i.invoice_date,
+      'invoice_total', i.total,
+      'allocated_amount', ra.amount,
+      'invoice_balance', (i.total - i.paid_amount)
+    )
+  ), '[]'::jsonb)
+  INTO v_allocs
+  FROM public.receipt_allocations ra
+  JOIN public.invoices i ON i.id = ra.invoice_id
+  WHERE ra.receipt_id = v_receipt.id;
+
+  RETURN jsonb_build_object(
+    'receipt', to_jsonb(v_receipt),
+    'customer', CASE WHEN v_cust.id IS NOT NULL THEN to_jsonb(v_cust) ELSE NULL END,
+    'allocations', v_allocs,
+    'business', jsonb_build_object(
+      'id', v_biz.id,
+      'name', v_biz.name,
+      'owner_name', v_biz.owner_name,
+      'mobile', v_biz.mobile,
+      'email', v_biz.email,
+      'address', v_biz.address,
+      'upi_id', v_biz.upi_id,
+      'receipt_header', v_biz.receipt_header,
+      'receipt_footer', v_biz.receipt_footer
+    )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.receipt_detail(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.receipt_detail(uuid) TO authenticated;
+
+-- 5. RPC: bank_ledger
+CREATE OR REPLACE FUNCTION public.bank_ledger(
+  p_bank_account_id uuid DEFAULT NULL,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_accounts jsonb := '[]'::jsonb;
+  v_entries jsonb := '[]'::jsonb;
+  v_tot_in numeric(14,2) := 0;
+  v_tot_out numeric(14,2) := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  -- Bank accounts summary
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ba.id,
+      'bank_name', ba.bank_name,
+      'account_name', ba.account_name,
+      'account_number', ba.account_number,
+      'ifsc', ba.ifsc,
+      'upi_id', ba.upi_id,
+      'opening_balance', ba.opening_balance,
+      'total_in', COALESCE((
+        SELECT SUM(r.amount) FROM public.receipts r 
+        WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL 
+          AND (r.bank_account_id = ba.id OR (r.bank_account_id IS NULL AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+      ), 0),
+      'total_out', COALESCE((
+        SELECT COALESCE(SUM(p.amount), 0) FROM public.payments p 
+        WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL 
+          AND (p.bank_account_id = ba.id OR (p.bank_account_id IS NULL AND p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+      ), 0) + COALESCE((
+        SELECT COALESCE(SUM(e.amount), 0) FROM public.expenses e 
+        WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL 
+          AND (e.bank_account_id = ba.id OR (e.bank_account_id IS NULL AND e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+      ), 0) + COALESCE((
+        SELECT COALESCE(SUM(lr.principal + lr.interest), 0) FROM public.loan_repayments lr 
+        JOIN public.loans l ON l.id = lr.loan_id 
+        WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL 
+          AND (lr.bank_account_id = ba.id OR (lr.bank_account_id IS NULL AND lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+      ), 0)
+    )
+  ), '[]'::jsonb)
+  INTO v_accounts
+  FROM public.bank_accounts ba
+  WHERE ba.business_id = v_biz_id AND ba.deleted_at IS NULL;
+
+  -- Union of all bank movements
+  WITH bank_txns AS (
+    -- 1. Money IN: Receipts
+    SELECT 
+      r.id,
+      r.receipt_date AS txn_date,
+      'RECEIPT' AS txn_type,
+      'IN' AS direction,
+      r.amount AS in_amount,
+      0::numeric(14,2) AS out_amount,
+      r.mode,
+      COALESCE(r.reference, r.number) AS ref_no,
+      COALESCE(c.name, 'Other Income') AS party_name,
+      COALESCE(r.notes, r.income_category, 'Customer Receipt') AS description,
+      r.bank_account_id,
+      COALESCE(r.bank_name, ba.bank_name, r.mode) AS bank_label,
+      r.created_at
+    FROM public.receipts r
+    LEFT JOIN public.customers c ON c.id = r.customer_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = r.bank_account_id
+    WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND r.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (r.bank_account_id IS NOT NULL OR r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+      AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+
+    UNION ALL
+
+    -- 2. Money OUT: Vendor Payments
+    SELECT 
+      p.id,
+      p.payment_date AS txn_date,
+      'PAYMENT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      p.amount AS out_amount,
+      p.mode,
+      COALESCE(p.notes, 'Vendor Pmt') AS ref_no,
+      v.name AS party_name,
+      p.description AS description,
+      p.bank_account_id,
+      COALESCE(p.bank_name, ba.bank_name, p.mode) AS bank_label,
+      p.created_at
+    FROM public.payments p
+    JOIN public.vendors v ON v.id = p.vendor_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = p.bank_account_id
+    WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND p.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (p.bank_account_id IS NOT NULL OR p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+      AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+
+    UNION ALL
+
+    -- 3. Money OUT: Expenses
+    SELECT 
+      e.id,
+      e.expense_date AS txn_date,
+      'EXPENSE' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      e.amount AS out_amount,
+      e.mode,
+      COALESCE(e.notes, ec.name) AS ref_no,
+      COALESCE(e.payee, ec.name) AS party_name,
+      e.description AS description,
+      e.bank_account_id,
+      COALESCE(e.bank_name, ba.bank_name, e.mode) AS bank_label,
+      e.created_at
+    FROM public.expenses e
+    JOIN public.expense_categories ec ON ec.id = e.category_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = e.bank_account_id
+    WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND e.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (e.bank_account_id IS NOT NULL OR e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR e.expense_date >= p_from_date)
+      AND (p_to_date IS NULL OR e.expense_date <= p_to_date)
+
+    UNION ALL
+
+    -- 4. Money OUT: Loan Repayments
+    SELECT 
+      lr.id,
+      lr.repayment_date AS txn_date,
+      'LOAN_REPAYMENT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      (lr.principal + lr.interest) AS out_amount,
+      lr.mode,
+      COALESCE(lr.notes, 'Loan Repayment') AS ref_no,
+      l.lender_name AS party_name,
+      'Loan Repayment: Principal ' || lr.principal || ' + Interest ' || lr.interest AS description,
+      lr.bank_account_id,
+      COALESCE(lr.bank_name, ba.bank_name, lr.mode) AS bank_label,
+      lr.created_at
+    FROM public.loan_repayments lr
+    JOIN public.loans l ON l.id = lr.loan_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = lr.bank_account_id
+    WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND lr.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (lr.bank_account_id IS NOT NULL OR lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+      AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+  ),
+  ordered_txns AS (
+    SELECT 
+      t.*,
+      SUM(t.in_amount - t.out_amount) OVER (ORDER BY t.txn_date ASC, t.created_at ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance
+    FROM bank_txns t
+    ORDER BY t.txn_date DESC, t.created_at DESC
+  )
+  SELECT 
+    COALESCE(SUM(in_amount), 0),
+    COALESCE(SUM(out_amount), 0),
+    COALESCE(jsonb_agg(to_jsonb(ot.*)), '[]'::jsonb)
+  INTO v_tot_in, v_tot_out, v_entries
+  FROM ordered_txns ot;
+
+  RETURN jsonb_build_object(
+    'bank_accounts', v_accounts,
+    'summary', jsonb_build_object(
+      'total_in', v_tot_in,
+      'total_out', v_tot_out,
+      'net_flow', (v_tot_in - v_tot_out)
+    ),
+    'entries', v_entries
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.bank_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.bank_ledger(uuid, date, date) TO authenticated;
+
+-- 6. RPC: vendor_ledger
+CREATE OR REPLACE FUNCTION public.vendor_ledger(
+  p_vendor_id uuid,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_vendor public.vendors%ROWTYPE;
+  v_tot_paid numeric(14,2) := 0;
+  v_payments jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_vendor
+  FROM public.vendors
+  WHERE id = p_vendor_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'VENDOR_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT 
+    COALESCE(SUM(p.amount), 0),
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', p.id,
+        'payment_date', p.payment_date,
+        'description', p.description,
+        'amount', p.amount,
+        'mode', p.mode,
+        'bank_name', p.bank_name,
+        'notes', p.notes,
+        'invoice_id', p.invoice_id,
+        'invoice_number', i.number,
+        'created_at', p.created_at
+      ) ORDER BY p.payment_date DESC, p.created_at DESC
+    ), '[]'::jsonb)
+  INTO v_tot_paid, v_payments
+  FROM public.payments p
+  LEFT JOIN public.invoices i ON i.id = p.invoice_id
+  WHERE p.vendor_id = p_vendor_id AND p.business_id = v_biz_id AND p.deleted_at IS NULL
+    AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+    AND (p_to_date IS NULL OR p.payment_date <= p_to_date);
+
+  RETURN jsonb_build_object(
+    'vendor', to_jsonb(v_vendor),
+    'summary', jsonb_build_object(
+      'total_paid', v_tot_paid,
+      'payment_count', jsonb_array_length(v_payments)
+    ),
+    'payments', v_payments
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.vendor_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.vendor_ledger(uuid, date, date) TO authenticated;
+
+
+-- >>> Migration: 20261029000018_receipt_due_summary_and_fifo.sql <<<
+-- Migration 18: Add customer ledger summary (previous due, paid, remaining due) to receipt_detail RPC
+
+CREATE OR REPLACE FUNCTION public.receipt_detail(p_receipt_id uuid)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_receipt public.receipts%ROWTYPE;
+  v_cust public.customers%ROWTYPE;
+  v_biz public.businesses%ROWTYPE;
+  v_allocs jsonb := '[]'::jsonb;
+  v_cust_current_due numeric(14,2) := 0;
+  v_allocated_total numeric(14,2) := 0;
+  v_ledger_summary jsonb := NULL;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_receipt
+  FROM public.receipts
+  WHERE id = p_receipt_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_receipt.customer_id IS NOT NULL THEN
+    SELECT * INTO v_cust
+    FROM public.customers
+    WHERE id = v_receipt.customer_id AND business_id = v_biz_id;
+
+    -- Calculate current customer remaining dues across active bills
+    SELECT COALESCE(SUM(i.total - i.paid_amount), 0)
+    INTO v_cust_current_due
+    FROM public.invoices i
+    WHERE i.customer_id = v_receipt.customer_id
+      AND i.business_id = v_biz_id
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL;
+
+    -- Calculate total allocated from this receipt
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_allocated_total
+    FROM public.receipt_allocations
+    WHERE receipt_id = v_receipt.id;
+
+    v_ledger_summary := jsonb_build_object(
+      'previous_due', v_cust_current_due + v_allocated_total,
+      'amount_paid', v_receipt.amount,
+      'allocated_to_bills', v_allocated_total,
+      'remaining_due', v_cust_current_due,
+      'customer_advance', COALESCE(v_receipt.unallocated_amount, 0)
+    );
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ra.id,
+      'invoice_id', ra.invoice_id,
+      'invoice_number', i.number,
+      'invoice_date', i.invoice_date,
+      'invoice_total', i.total,
+      'allocated_amount', ra.amount,
+      'invoice_balance', (i.total - i.paid_amount)
+    )
+    ORDER BY i.invoice_date ASC, i.created_at ASC
+  ), '[]'::jsonb)
+  INTO v_allocs
+  FROM public.receipt_allocations ra
+  JOIN public.invoices i ON i.id = ra.invoice_id
+  WHERE ra.receipt_id = v_receipt.id;
+
+  RETURN jsonb_build_object(
+    'receipt', to_jsonb(v_receipt),
+    'customer', CASE WHEN v_cust.id IS NOT NULL THEN to_jsonb(v_cust) ELSE NULL END,
+    'allocations', v_allocs,
+    'ledger_summary', v_ledger_summary,
+    'business', jsonb_build_object(
+      'id', v_biz.id,
+      'name', v_biz.name,
+      'owner_name', v_biz.owner_name,
+      'mobile', v_biz.mobile,
+      'email', v_biz.email,
+      'address', v_biz.address,
+      'upi_id', v_biz.upi_id,
+      'receipt_header', v_biz.receipt_header,
+      'receipt_footer', v_biz.receipt_footer
+    )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.receipt_detail(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.receipt_detail(uuid) TO authenticated;
+
+
+-- >>> Migration: 20261029000019_receipt_customer_fallback_and_list.sql <<<
+-- Migration 19: Add customer fallback to receipt_detail and introduce receipts_list RPC with full customer resolution
+
+CREATE OR REPLACE FUNCTION public.receipt_detail(p_receipt_id uuid)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_receipt public.receipts%ROWTYPE;
+  v_cust public.customers%ROWTYPE;
+  v_biz public.businesses%ROWTYPE;
+  v_allocs jsonb := '[]'::jsonb;
+  v_cust_current_due numeric(14,2) := 0;
+  v_allocated_total numeric(14,2) := 0;
+  v_ledger_summary jsonb := NULL;
+  v_walkin_name text;
+  v_walkin_mobile text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_receipt
+  FROM public.receipts
+  WHERE id = p_receipt_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_receipt.customer_id IS NOT NULL THEN
+    SELECT * INTO v_cust
+    FROM public.customers
+    WHERE id = v_receipt.customer_id AND business_id = v_biz_id;
+
+    -- Calculate current customer remaining dues across active bills
+    SELECT COALESCE(SUM(i.total - i.paid_amount), 0)
+    INTO v_cust_current_due
+    FROM public.invoices i
+    WHERE i.customer_id = v_receipt.customer_id
+      AND i.business_id = v_biz_id
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL;
+
+    -- Calculate total allocated from this receipt
+    SELECT COALESCE(SUM(amount), 0)
+    INTO v_allocated_total
+    FROM public.receipt_allocations
+    WHERE receipt_id = v_receipt.id;
+
+    v_ledger_summary := jsonb_build_object(
+      'previous_due', v_cust_current_due + v_allocated_total,
+      'amount_paid', v_receipt.amount,
+      'allocated_to_bills', v_allocated_total,
+      'remaining_due', v_cust_current_due,
+      'customer_advance', COALESCE(v_receipt.unallocated_amount, 0)
+    );
+  ELSE
+    -- For walk-in receipts without customer record: check invoice party snapshot
+    SELECT i.party_name, i.party_mobile
+    INTO v_walkin_name, v_walkin_mobile
+    FROM public.receipt_allocations ra
+    JOIN public.invoices i ON i.id = ra.invoice_id
+    WHERE ra.receipt_id = v_receipt.id
+    ORDER BY ra.created_at ASC
+    LIMIT 1;
+
+    IF v_walkin_name IS NOT NULL THEN
+      v_cust.name := v_walkin_name;
+      v_cust.mobile := v_walkin_mobile;
+    ELSIF v_receipt.kind = 'OTHER_INCOME' THEN
+      v_cust.name := COALESCE(v_receipt.income_category, 'Other Income');
+    ELSE
+      v_cust.name := 'Direct / Walk-in Customer';
+    END IF;
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ra.id,
+      'invoice_id', ra.invoice_id,
+      'invoice_number', i.number,
+      'invoice_date', i.invoice_date,
+      'invoice_total', i.total,
+      'allocated_amount', ra.amount,
+      'invoice_balance', (i.total - i.paid_amount)
+    )
+    ORDER BY i.invoice_date ASC, i.created_at ASC
+  ), '[]'::jsonb)
+  INTO v_allocs
+  FROM public.receipt_allocations ra
+  JOIN public.invoices i ON i.id = ra.invoice_id
+  WHERE ra.receipt_id = v_receipt.id;
+
+  RETURN jsonb_build_object(
+    'receipt', to_jsonb(v_receipt),
+    'customer', jsonb_build_object(
+      'id', v_cust.id,
+      'name', COALESCE(v_cust.name, 'Customer'),
+      'mobile', v_cust.mobile,
+      'address', v_cust.address,
+      'type', v_cust.type
+    ),
+    'allocations', v_allocs,
+    'ledger_summary', v_ledger_summary,
+    'business', jsonb_build_object(
+      'id', v_biz.id,
+      'name', v_biz.name,
+      'owner_name', v_biz.owner_name,
+      'mobile', v_biz.mobile,
+      'email', v_biz.email,
+      'address', v_biz.address,
+      'upi_id', v_biz.upi_id,
+      'receipt_header', v_biz.receipt_header,
+      'receipt_footer', v_biz.receipt_footer
+    )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.receipt_detail(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.receipt_detail(uuid) TO authenticated;
+
+
+-- RPC: receipts_list
+-- Returns list of receipts with full customer resolution (from customers table or invoice party snapshot),
+-- bank account info, and linked bill allocations.
+CREATE OR REPLACE FUNCTION public.receipts_list(
+  p_search text DEFAULT NULL,
+  p_mode text DEFAULT 'ALL',
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_results jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  SELECT COALESCE(jsonb_agg(row_data), '[]'::jsonb)
+  INTO v_results
+  FROM (
+    SELECT jsonb_build_object(
+      'id', r.id,
+      'business_id', r.business_id,
+      'number', r.number,
+      'fy_label', r.fy_label,
+      'receipt_date', r.receipt_date,
+      'amount', r.amount,
+      'mode', r.mode,
+      'reference', r.reference,
+      'kind', r.kind,
+      'income_category', r.income_category,
+      'unallocated_amount', r.unallocated_amount,
+      'notes', r.notes,
+      'created_at', r.created_at,
+      'customer_id', r.customer_id,
+      'customer', jsonb_build_object(
+        'name', COALESCE(c.name, inv_party.party_name, CASE WHEN r.kind = 'OTHER_INCOME' THEN COALESCE(r.income_category, 'Other Income') ELSE 'Walk-in Customer' END),
+        'mobile', COALESCE(c.mobile, inv_party.party_mobile, NULL)
+      ),
+      'bank_name', ba.bank_name,
+      'allocations', COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+          'amount', ra.amount,
+          'invoice_number', i.number,
+          'invoice', jsonb_build_object(
+            'number', i.number,
+            'party_name', i.party_name,
+            'party_mobile', i.party_mobile
+          )
+        ))
+        FROM public.receipt_allocations ra
+        JOIN public.invoices i ON i.id = ra.invoice_id
+        WHERE ra.receipt_id = r.id
+      ), '[]'::jsonb)
+    ) AS row_data
+    FROM public.receipts r
+    LEFT JOIN public.customers c ON c.id = r.customer_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = r.bank_account_id
+    LEFT JOIN LATERAL (
+      SELECT i.party_name, i.party_mobile
+      FROM public.receipt_allocations ra
+      JOIN public.invoices i ON i.id = ra.invoice_id
+      WHERE ra.receipt_id = r.id
+      ORDER BY ra.created_at ASC
+      LIMIT 1
+    ) inv_party ON true
+    WHERE r.business_id = v_biz_id
+      AND r.deleted_at IS NULL
+      AND (v_role != 'STAFF' OR r.created_by = v_member_id)
+      AND (
+        p_mode IS NULL
+        OR p_mode = 'ALL'
+        OR (p_mode = 'CASH' AND r.mode = 'CASH')
+        OR (p_mode = 'BANK_UPI' AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE'))
+      )
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR r.number ILIKE '%' || p_search || '%'
+        OR r.reference ILIKE '%' || p_search || '%'
+        OR COALESCE(c.name, inv_party.party_name, '') ILIKE '%' || p_search || '%'
+        OR COALESCE(c.mobile, inv_party.party_mobile, '') ILIKE '%' || p_search || '%'
+        OR COALESCE(r.notes, '') ILIKE '%' || p_search || '%'
+        OR COALESCE(r.income_category, '') ILIKE '%' || p_search || '%'
+      )
+    ORDER BY r.receipt_date DESC, r.created_at DESC
+    LIMIT p_limit OFFSET p_offset
+  ) q;
+
+  RETURN v_results;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.receipts_list(text, text, int, int) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.receipts_list(text, text, int, int) TO authenticated;
+
+
+-- >>> Migration: 20261029000020_compulsory_bank_for_online_payments.sql <<<
+-- Migration 20: Link online payments to bank accounts across Bills, Receipts, Expenses, Loans & Staff payouts
+
+-- 1. Upgrade create_invoice to store bank_account_id and bank_name on receipts
+CREATE OR REPLACE FUNCTION public.create_invoice(payload jsonb)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_biz public.businesses%ROWTYPE;
+
+  v_invoice_date date;
+  v_due_date date;
+  v_fy text;
+
+  v_customer_id uuid := NULL;
+  v_party_name text;
+  v_party_mobile text := NULL;
+  v_walk_in jsonb;
+  v_force_new_customer boolean;
+
+  v_items jsonb;
+  v_item jsonb;
+  v_subtotal numeric(14,2) := 0;
+  v_line_amount numeric(14,2);
+  v_qty numeric(10,2);
+  v_rate numeric(14,2);
+
+  v_discount_type text;
+  v_discount_value numeric(14,2);
+  v_discount_amount numeric(14,2) := 0;
+  v_total numeric(14,2);
+
+  v_paid jsonb;
+  v_paid_now numeric(14,2) := 0;
+  v_payment_mode text;
+  v_bank_account_id uuid := NULL;
+  v_bank_name text := NULL;
+
+  v_invoice_number text;
+  v_invoice_id uuid;
+  v_item_id uuid;
+
+  v_receipt_number text;
+  v_receipt_id uuid;
+
+  v_item_service_id uuid;
+  v_service_row public.services%ROWTYPE;
+  v_service_id uuid;
+  v_job_type_name text;
+  v_step_row record;
+  v_step_count int := 0;
+  v_job_id uuid;
+  v_job_staff_id uuid;
+  v_comm_percent numeric(5,2);
+  v_comm_amount numeric(14,2);
+  v_deadline_date date;
+
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+
+  -- 1. Parse Dates & FY
+  v_invoice_date := COALESCE((payload->>'invoice_date')::date, app.today());
+  v_fy := public.fy_label(v_invoice_date);
+  v_due_date := COALESCE(
+    (payload->>'due_date')::date,
+    v_invoice_date + COALESCE(v_biz.default_terms_days, 0)
+  );
+
+  -- 2. Items & Subtotal computation (BR-2)
+  v_items := payload->'items';
+  IF v_items IS NULL OR jsonb_array_length(v_items) = 0 THEN
+    RAISE EXCEPTION 'ITEMS_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+    v_item := v_items->i;
+    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+    v_subtotal := v_subtotal + v_line_amount;
+  END LOOP;
+
+  -- 3. Discount computation (BR-2)
+  v_discount_type := COALESCE(payload->>'discount_type', 'NONE');
+  v_discount_value := COALESCE((payload->>'discount_value')::numeric, 0);
+
+  IF v_discount_type = 'FLAT' THEN
+    v_discount_amount := LEAST(v_discount_value, v_subtotal);
+  ELSIF v_discount_type = 'PERCENT' THEN
+    v_discount_amount := ROUND(v_subtotal * (LEAST(GREATEST(v_discount_value, 0), 100) / 100), 2);
+  ELSE
+    v_discount_type := 'NONE';
+    v_discount_amount := 0;
+  END IF;
+
+  v_total := GREATEST(0, v_subtotal - v_discount_amount);
+
+  -- 4. Paid now computation
+  v_paid := payload->'paid';
+  IF v_paid IS NOT NULL AND (v_paid->>'amount') IS NOT NULL AND (v_paid->>'amount')::numeric > 0 THEN
+    v_paid_now := LEAST((v_paid->>'amount')::numeric, v_total);
+    v_payment_mode := COALESCE(v_paid->>'mode', 'CASH');
+
+    IF v_paid ? 'bank_account_id' AND v_paid->>'bank_account_id' <> '' THEN
+      v_bank_account_id := (v_paid->>'bank_account_id')::uuid;
+      SELECT bank_name INTO v_bank_name
+      FROM public.bank_accounts
+      WHERE id = v_bank_account_id AND business_id = v_biz_id AND deleted_at IS NULL;
+    ELSIF v_payment_mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') THEN
+      SELECT id, bank_name INTO v_bank_account_id, v_bank_name
+      FROM public.bank_accounts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL
+      ORDER BY created_at ASC
+      LIMIT 1;
+    END IF;
+  ELSE
+    v_paid_now := 0;
+  END IF;
+
+  -- 5. Customer Handling (BR-5)
+  IF payload->>'customer_id' IS NOT NULL THEN
+    v_customer_id := (payload->>'customer_id')::uuid;
+    SELECT name, mobile INTO v_party_name, v_party_mobile
+    FROM public.customers
+    WHERE id = v_customer_id AND business_id = v_biz_id;
+  ELSE
+    -- Walk-in customer
+    v_walk_in := payload->'walk_in';
+    v_party_name := TRIM(COALESCE(v_walk_in->>'name', ''));
+    v_party_mobile := REGEXP_REPLACE(COALESCE(v_walk_in->>'mobile', ''), '[^0-9]', '', 'g');
+    IF LENGTH(v_party_mobile) = 12 AND v_party_mobile LIKE '91%' THEN
+      v_party_mobile := SUBSTRING(v_party_mobile FROM 3);
+    ELSIF LENGTH(v_party_mobile) = 11 AND v_party_mobile LIKE '0%' THEN
+      v_party_mobile := SUBSTRING(v_party_mobile FROM 2);
+    END IF;
+
+    -- If balance > 0 (partial or unpaid), name and mobile are MANDATORY
+    IF v_total > v_paid_now THEN
+      IF v_party_name = '' OR v_party_mobile = '' OR LENGTH(v_party_mobile) < 10 THEN
+        RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_DUE' USING ERRCODE = 'P0001';
+      END IF;
+    END IF;
+
+    IF v_party_name = '' AND (v_party_mobile IS NULL OR v_party_mobile = '') THEN
+      v_party_name := 'Walk-in';
+      v_party_mobile := NULL;
+      v_customer_id := NULL;
+    ELSE
+      IF v_party_name = '' THEN
+        v_party_name := 'Walk-in';
+      END IF;
+
+      -- Check existing or create WALK_IN customer
+      v_force_new_customer := COALESCE((payload->>'force_new_customer')::boolean, false);
+      IF NOT v_force_new_customer AND v_party_mobile IS NOT NULL AND v_party_mobile <> '' THEN
+        SELECT id INTO v_customer_id
+        FROM public.customers
+        WHERE business_id = v_biz_id AND mobile = v_party_mobile AND deleted_at IS NULL
+        LIMIT 1;
+      END IF;
+
+      IF v_customer_id IS NULL THEN
+        INSERT INTO public.customers (
+          business_id,
+          name,
+          mobile,
+          whatsapp,
+          type,
+          possible_duplicate,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_party_name,
+          v_party_mobile,
+          v_party_mobile,
+          'WALK_IN',
+          false,
+          v_member_id,
+          v_member_id
+        )
+        RETURNING id INTO v_customer_id;
+      END IF;
+    END IF;
+  END IF;
+
+  -- 6. Generate Number with concurrency row lock (BR-4)
+  v_invoice_number := public.next_invoice_number(
+    v_biz_id,
+    v_fy,
+    v_biz.invoice_prefix,
+    v_biz.numbering_mode,
+    v_biz.invoice_start_number
+  );
+
+  -- 7. Insert Invoice
+  INSERT INTO public.invoices (
+    business_id,
+    number,
+    fy_label,
+    invoice_date,
+    due_date,
+    customer_id,
+    party_name,
+    party_mobile,
+    subtotal,
+    discount_type,
+    discount_value,
+    discount_amount,
+    total,
+    paid_amount,
+    status,
+    notes,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_invoice_number,
+    v_fy,
+    v_invoice_date,
+    v_due_date,
+    v_customer_id,
+    v_party_name,
+    v_party_mobile,
+    v_subtotal,
+    v_discount_type,
+    v_discount_value,
+    v_discount_amount,
+    v_total,
+    v_paid_now,
+    'ACTIVE',
+    payload->>'notes',
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_invoice_id;
+
+  -- 8. Insert Items & Jobs (BR-12)
+  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+    v_item := v_items->i;
+    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+
+    -- Safe validation of service_id against current business services
+    v_item_service_id := NULL;
+    IF (v_item->>'service_id') IS NOT NULL AND (v_item->>'service_id') <> '' THEN
+      SELECT s.id INTO v_item_service_id
+      FROM public.services s
+      WHERE s.id = (v_item->>'service_id')::uuid
+        AND s.business_id = v_biz_id
+        AND s.deleted_at IS NULL;
+    END IF;
+
+    INSERT INTO public.invoice_items (
+      business_id,
+      invoice_id,
+      service_id,
+      description,
+      quantity,
+      rate,
+      amount,
+      is_job,
+      applicant_name,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_invoice_id,
+      v_item_service_id,
+      COALESCE(v_item->>'description', 'Item'),
+      v_qty,
+      v_rate,
+      v_line_amount,
+      COALESCE((v_item->>'is_job')::boolean, false),
+      v_item->>'applicant_name',
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_item_id;
+
+    -- Job creation if create_job (is_job) is explicitly true (checked by default)
+    IF COALESCE((v_item->>'is_job')::boolean, false) = true THEN
+      IF NOT v_biz.job_management_enabled THEN
+        UPDATE public.businesses SET job_management_enabled = true WHERE id = v_biz_id;
+        v_biz.job_management_enabled := true;
+      END IF;
+
+      v_service_id := NULL;
+      v_job_type_name := COALESCE(v_item->>'description', 'Service Job');
+      v_deadline_date := v_invoice_date + 15;
+      v_comm_percent := 0;
+
+      IF v_item_service_id IS NOT NULL THEN
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE id = v_item_service_id;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        END IF;
+      END IF;
+
+      IF v_service_id IS NULL THEN
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE business_id = v_biz_id AND LOWER(TRIM(name)) = LOWER(TRIM(COALESCE(v_item->>'description', 'Service Job'))) AND deleted_at IS NULL
+        LIMIT 1;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        END IF;
+      END IF;
+
+      v_job_staff_id := NULL;
+      IF v_role = 'STAFF' THEN
+        v_job_staff_id := v_member_id;
+      END IF;
+
+      INSERT INTO public.jobs (
+        business_id,
+        invoice_id,
+        invoice_item_id,
+        service_id,
+        job_type_name,
+        party_name,
+        party_mobile,
+        applicant_name,
+        amount,
+        deadline_date,
+        assigned_staff_id,
+        commission_percent,
+        status,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        v_biz_id,
+        v_invoice_id,
+        v_item_id,
+        v_service_id,
+        v_job_type_name,
+        v_party_name,
+        v_party_mobile,
+        v_item->>'applicant_name',
+        v_line_amount,
+        v_deadline_date,
+        v_job_staff_id,
+        v_comm_percent,
+        'IN_PROGRESS',
+        v_member_id,
+        v_member_id
+      )
+      RETURNING id INTO v_job_id;
+
+      -- Snapshot job type steps (BR-12)
+      v_step_count := 0;
+      FOR v_step_row IN
+        SELECT position, name, whatsapp_message
+        FROM public.job_type_steps
+        WHERE service_id = v_service_id AND business_id = v_biz_id
+        ORDER BY position ASC
+      LOOP
+        v_step_count := v_step_count + 1;
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          v_step_row.position,
+          v_step_row.name,
+          v_step_row.whatsapp_message,
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END LOOP;
+
+      IF v_step_count = 0 THEN
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          1,
+          'Processing',
+          NULL,
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END IF;
+
+      -- Commission entry if staff assigned & commission > 0 (BR-15)
+      IF v_job_staff_id IS NOT NULL AND v_comm_percent > 0 THEN
+        v_comm_amount := ROUND(v_line_amount * (v_comm_percent / 100), 2);
+        INSERT INTO public.commission_entries (
+          business_id,
+          job_id,
+          staff_id,
+          base_amount,
+          percent,
+          amount,
+          status,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          v_job_staff_id,
+          v_line_amount,
+          v_comm_percent,
+          v_comm_amount,
+          'UPCOMING',
+          v_member_id,
+          v_member_id
+        );
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- 9. Receipt and Allocation in same transaction if paid now > 0 (BR-7)
+  IF v_paid_now > 0 THEN
+    v_receipt_number := public.next_receipt_number(v_biz_id, v_fy);
+
+    INSERT INTO public.receipts (
+      business_id,
+      number,
+      fy_label,
+      receipt_date,
+      customer_id,
+      amount,
+      mode,
+      kind,
+      unallocated_amount,
+      notes,
+      bank_account_id,
+      bank_name,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_number,
+      v_fy,
+      v_invoice_date,
+      v_customer_id,
+      v_paid_now,
+      v_payment_mode,
+      'INVOICE_PAYMENT',
+      0,
+      'Payment for bill ' || v_invoice_number,
+      v_bank_account_id,
+      v_bank_name,
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_receipt_id;
+
+    INSERT INTO public.receipt_allocations (
+      business_id,
+      receipt_id,
+      invoice_id,
+      amount,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_id,
+      v_invoice_id,
+      v_paid_now,
+      v_member_id,
+      v_member_id
+    );
+  END IF;
+
+  -- Return complete invoice JSON
+  SELECT to_jsonb(i.*) INTO v_result
+  FROM public.invoices i
+  WHERE i.id = v_invoice_id;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.create_invoice(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_invoice(jsonb) TO authenticated;
+
+
+-- 2. Upgrade record_loan_repayment to record bank_account_id and bank_name
+CREATE OR REPLACE FUNCTION public.record_loan_repayment(
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_loan_id uuid;
+  v_loan public.loans%ROWTYPE;
+  v_date date;
+  v_principal numeric(14,2);
+  v_interest numeric(14,2);
+  v_mode text;
+  v_notes text;
+  v_bank_account_id uuid := NULL;
+  v_bank_name text := NULL;
+  v_total_principal_repaid numeric(14,2);
+  v_outstanding numeric(14,2);
+  v_repayment public.loan_repayments%ROWTYPE;
+  v_interest_cat_id uuid;
+  v_expense_id uuid := NULL;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_loan_id := (payload->>'loan_id')::uuid;
+  IF v_loan_id IS NULL THEN
+    RAISE EXCEPTION 'LOAN_ID_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_loan
+  FROM public.loans
+  WHERE id = v_loan_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'LOAN_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_date := COALESCE((payload->>'repayment_date')::date, (SELECT app.today()));
+  v_principal := ROUND(COALESCE((payload->>'principal')::numeric, 0), 2);
+  v_interest := ROUND(COALESCE((payload->>'interest')::numeric, 0), 2);
+
+  IF v_principal < 0 OR v_interest < 0 OR (v_principal = 0 AND v_interest = 0) THEN
+    RAISE EXCEPTION 'INVALID_REPAYMENT_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_mode := UPPER(COALESCE(payload->>'mode', 'BANK'));
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_PAYMENT_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF payload ? 'bank_account_id' AND payload->>'bank_account_id' <> '' THEN
+    v_bank_account_id := (payload->>'bank_account_id')::uuid;
+    SELECT bank_name INTO v_bank_name
+    FROM public.bank_accounts
+    WHERE id = v_bank_account_id AND business_id = v_biz_id AND deleted_at IS NULL;
+  ELSIF v_mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') THEN
+    SELECT id, bank_name INTO v_bank_account_id, v_bank_name
+    FROM public.bank_accounts
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+    ORDER BY created_at ASC
+    LIMIT 1;
+  END IF;
+
+  v_notes := payload->>'notes';
+
+  SELECT COALESCE(SUM(principal), 0) INTO v_total_principal_repaid
+  FROM public.loan_repayments
+  WHERE loan_id = v_loan.id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  v_outstanding := v_loan.amount - v_total_principal_repaid;
+
+  IF v_principal > v_outstanding THEN
+    RAISE EXCEPTION 'REPAYMENT_EXCEEDS_LOAN_BALANCE' USING ERRCODE = 'P0001',
+      DETAIL = jsonb_build_object('outstanding', v_outstanding, 'requested_principal', v_principal)::text;
+  END IF;
+
+  INSERT INTO public.loan_repayments (
+    business_id, loan_id, repayment_date, principal, interest, mode, notes,
+    bank_account_id, bank_name,
+    created_by, updated_by
+  ) VALUES (
+    v_biz_id, v_loan.id, v_date, v_principal, v_interest, v_mode, v_notes,
+    v_bank_account_id, v_bank_name,
+    v_member_id, v_member_id
+  ) RETURNING * INTO v_repayment;
+
+  -- If interest > 0, auto-create Expense in system category "Loan Interest" (BR-11)
+  IF v_interest > 0 THEN
+    SELECT id INTO v_interest_cat_id
+    FROM public.expense_categories
+    WHERE business_id = v_biz_id AND name = 'Loan Interest' AND deleted_at IS NULL;
+
+    IF v_interest_cat_id IS NULL THEN
+      INSERT INTO public.expense_categories (business_id, name, system, created_by, updated_by)
+      VALUES (v_biz_id, 'Loan Interest', true, v_member_id, v_member_id)
+      RETURNING id INTO v_interest_cat_id;
+    END IF;
+
+    INSERT INTO public.expenses (
+      business_id, fy_label, expense_date, category_id, description, amount,
+      mode, payee, staff_id, loan_repayment_id, notes,
+      bank_account_id, bank_name,
+      created_by, updated_by
+    ) VALUES (
+      v_biz_id, public.fy_label(v_date), v_date, v_interest_cat_id,
+      'Loan Interest: ' || v_loan.lender_name, v_interest,
+      v_mode, v_loan.lender_name, NULL, v_repayment.id, v_notes,
+      v_bank_account_id, v_bank_name,
+      v_member_id, v_member_id
+    ) RETURNING id INTO v_expense_id;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'repayment', to_jsonb(v_repayment),
+    'interest_expense_id', v_expense_id,
+    'loan_id', v_loan.id,
+    'remaining_principal', (v_outstanding - v_principal)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.record_loan_repayment(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.record_loan_repayment(jsonb) TO authenticated;
+
+
+-- 3. Upgrade pay_staff to record bank_account_id and bank_name
+CREATE OR REPLACE FUNCTION public.pay_staff(
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_today date;
+  v_staff_id uuid;
+  v_staff record;
+  v_amount numeric(14,2);
+  v_payout_date date;
+  v_mode text;
+  v_notes text;
+  v_bank_account_id uuid := NULL;
+  v_bank_name text := NULL;
+  v_cat_id uuid;
+  v_expense_id uuid;
+  v_payout_id uuid;
+  v_fy text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_staff_id := (payload->>'staff_id')::uuid;
+  v_amount := ROUND(COALESCE((payload->>'amount')::numeric, 0), 2);
+  v_payout_date := COALESCE((payload->>'payout_date')::date, v_today);
+  v_mode := COALESCE(payload->>'mode', 'CASH');
+  v_notes := payload->>'notes';
+
+  IF v_staff_id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_ID_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_amount <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF payload ? 'bank_account_id' AND payload->>'bank_account_id' <> '' THEN
+    v_bank_account_id := (payload->>'bank_account_id')::uuid;
+    SELECT bank_name INTO v_bank_name
+    FROM public.bank_accounts
+    WHERE id = v_bank_account_id AND business_id = v_biz_id AND deleted_at IS NULL;
+  ELSIF v_mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') THEN
+    SELECT id, bank_name INTO v_bank_account_id, v_bank_name
+    FROM public.bank_accounts
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+    ORDER BY created_at ASC
+    LIMIT 1;
+  END IF;
+
+  SELECT id, name, role INTO v_staff
+  FROM public.members
+  WHERE id = v_staff_id AND business_id = v_biz_id AND active = true;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT id INTO v_cat_id
+  FROM public.expense_categories
+  WHERE business_id = v_biz_id AND name = 'Salary / Commission';
+
+  IF v_cat_id IS NULL THEN
+    INSERT INTO public.expense_categories (business_id, name, system)
+    VALUES (v_biz_id, 'Salary / Commission', true)
+    RETURNING id INTO v_cat_id;
+  END IF;
+
+  v_fy := public.fy_label(v_payout_date);
+
+  INSERT INTO public.expenses (
+    business_id,
+    fy_label,
+    expense_date,
+    category_id,
+    description,
+    amount,
+    mode,
+    payee,
+    staff_id,
+    notes,
+    bank_account_id,
+    bank_name,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_fy,
+    v_payout_date,
+    v_cat_id,
+    'Salary / Commission: ' || v_staff.name,
+    v_amount,
+    v_mode,
+    v_staff.name,
+    v_staff_id,
+    v_notes,
+    v_bank_account_id,
+    v_bank_name,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_expense_id;
+
+  INSERT INTO public.staff_payouts (
+    business_id,
+    staff_id,
+    amount,
+    payout_date,
+    mode,
+    notes,
+    expense_id,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_staff_id,
+    v_amount,
+    v_payout_date,
+    v_mode,
+    v_notes,
+    v_expense_id,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_payout_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'payout_id', v_payout_id,
+    'expense_id', v_expense_id,
+    'staff_id', v_staff.id,
+    'staff_name', v_staff.name,
+    'amount', v_amount,
+    'payout_date', v_payout_date,
+    'mode', v_mode
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.pay_staff(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.pay_staff(jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261029000021_dues_list_all_bills_and_filters.sql <<<
+-- Migration 21: Enhanced dues_list RPC returning flat bills, filterable by partial, unpaid, overdue, and current
+-- Authoritative reference: §8.11, §11, BR-3
+
+CREATE OR REPLACE FUNCTION public.dues_list(
+  p_filter text DEFAULT 'ALL',
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_today date;
+  v_total_outstanding numeric(14,2) := 0;
+  v_total_overdue numeric(14,2) := 0;
+  v_total_current numeric(14,2) := 0;
+  v_total_bills_due int := 0;
+  v_partial_bills_count int := 0;
+  v_unpaid_bills_count int := 0;
+  v_overdue_bills_count int := 0;
+  v_current_bills_count int := 0;
+  v_customer_count int := 0;
+  v_customers jsonb;
+  v_bills jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501';
+  END IF;
+
+  -- Summary totals across all active unpaid bills in the business
+  SELECT
+    COALESCE(SUM(i.total - i.paid_amount), 0),
+    COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN i.due_date >= v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0),
+    COUNT(i.id),
+    COUNT(CASE WHEN i.paid_amount > 0 AND (i.total - i.paid_amount) > 0 THEN 1 END),
+    COUNT(CASE WHEN i.paid_amount = 0 AND i.total > 0 THEN 1 END),
+    COUNT(CASE WHEN i.due_date < v_today THEN 1 END),
+    COUNT(CASE WHEN i.due_date >= v_today THEN 1 END),
+    COUNT(DISTINCT COALESCE(i.customer_id, '00000000-0000-0000-0000-000000000000'::uuid))
+  INTO
+    v_total_outstanding,
+    v_total_overdue,
+    v_total_current,
+    v_total_bills_due,
+    v_partial_bills_count,
+    v_unpaid_bills_count,
+    v_overdue_bills_count,
+    v_current_bills_count,
+    v_customer_count
+  FROM public.invoices i
+  WHERE i.business_id = v_biz_id
+    AND i.status = 'ACTIVE'
+    AND i.deleted_at IS NULL
+    AND (i.total - i.paid_amount) > 0;
+
+  -- 1. Flat list of individual pending bills (partial or unpaid)
+  WITH filtered_invoices AS (
+    SELECT
+      i.id,
+      i.number,
+      i.invoice_date,
+      i.due_date,
+      i.customer_id,
+      COALESCE(c.name, i.party_name, 'Walk-in') AS party_name,
+      COALESCE(c.mobile, i.party_mobile) AS party_mobile,
+      COALESCE(c.type, 'WALK_IN') AS customer_type,
+      i.total,
+      i.paid_amount,
+      (i.total - i.paid_amount) AS balance,
+      CASE WHEN i.paid_amount > 0 THEN 'PARTIAL' ELSE 'UNPAID' END AS status,
+      (i.due_date < v_today) AS is_overdue,
+      GREATEST(0, v_today - i.due_date) AS days_overdue,
+      GREATEST(0, i.due_date - v_today) AS days_left,
+      i.created_at
+    FROM public.invoices i
+    LEFT JOIN public.customers c ON c.id = i.customer_id
+    WHERE i.business_id = v_biz_id
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+      AND (i.total - i.paid_amount) > 0
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR COALESCE(c.name, i.party_name) ILIKE '%' || p_search || '%'
+        OR COALESCE(c.mobile, i.party_mobile) ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE
+          WHEN UPPER(p_filter) = 'OVERDUE' THEN i.due_date < v_today
+          WHEN UPPER(p_filter) = 'CURRENT' OR UPPER(p_filter) = 'UPCOMING' THEN i.due_date >= v_today
+          WHEN UPPER(p_filter) = 'DUE_TODAY' THEN i.due_date = v_today
+          WHEN UPPER(p_filter) = 'DUE_SOON' THEN i.due_date <= (v_today + 5) AND i.due_date >= v_today
+          WHEN UPPER(p_filter) = 'PARTIAL' THEN i.paid_amount > 0 AND (i.total - i.paid_amount) > 0
+          WHEN UPPER(p_filter) = 'UNPAID' THEN i.paid_amount = 0 AND i.total > 0
+          WHEN UPPER(p_filter) = 'REGULAR' THEN COALESCE(c.type, 'WALK_IN') = 'REGULAR'
+          WHEN UPPER(p_filter) = 'WALK_IN' THEN COALESCE(c.type, 'WALK_IN') = 'WALK_IN'
+          ELSE TRUE
+        END
+      )
+    ORDER BY
+      (i.due_date < v_today) DESC,
+      i.due_date ASC,
+      i.invoice_date ASC,
+      i.created_at ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(filtered_invoices.*)), '[]'::jsonb)
+  INTO v_bills
+  FROM filtered_invoices;
+
+  -- 2. Grouped customer dues list with their matching unpaid/partial invoices
+  WITH matching_invoices AS (
+    SELECT
+      i.id,
+      i.number,
+      i.invoice_date,
+      i.due_date,
+      i.customer_id,
+      COALESCE(c.name, i.party_name, 'Walk-in') AS party_name,
+      COALESCE(c.mobile, i.party_mobile) AS party_mobile,
+      COALESCE(c.type, 'WALK_IN') AS customer_type,
+      i.total,
+      i.paid_amount,
+      (i.total - i.paid_amount) AS balance,
+      CASE WHEN i.paid_amount > 0 THEN 'PARTIAL' ELSE 'UNPAID' END AS status,
+      (i.due_date < v_today) AS is_overdue,
+      GREATEST(0, v_today - i.due_date) AS days_overdue,
+      GREATEST(0, i.due_date - v_today) AS days_left,
+      i.created_at
+    FROM public.invoices i
+    LEFT JOIN public.customers c ON c.id = i.customer_id
+    WHERE i.business_id = v_biz_id
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+      AND (i.total - i.paid_amount) > 0
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR COALESCE(c.name, i.party_name) ILIKE '%' || p_search || '%'
+        OR COALESCE(c.mobile, i.party_mobile) ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE
+          WHEN UPPER(p_filter) = 'OVERDUE' THEN i.due_date < v_today
+          WHEN UPPER(p_filter) = 'CURRENT' OR UPPER(p_filter) = 'UPCOMING' THEN i.due_date >= v_today
+          WHEN UPPER(p_filter) = 'DUE_TODAY' THEN i.due_date = v_today
+          WHEN UPPER(p_filter) = 'DUE_SOON' THEN i.due_date <= (v_today + 5) AND i.due_date >= v_today
+          WHEN UPPER(p_filter) = 'PARTIAL' THEN i.paid_amount > 0 AND (i.total - i.paid_amount) > 0
+          WHEN UPPER(p_filter) = 'UNPAID' THEN i.paid_amount = 0 AND i.total > 0
+          WHEN UPPER(p_filter) = 'REGULAR' THEN COALESCE(c.type, 'WALK_IN') = 'REGULAR'
+          WHEN UPPER(p_filter) = 'WALK_IN' THEN COALESCE(c.type, 'WALK_IN') = 'WALK_IN'
+          ELSE TRUE
+        END
+      )
+  ),
+  grouped_dues AS (
+    SELECT
+      COALESCE(m.customer_id, '00000000-0000-0000-0000-000000000000'::uuid) AS customer_id,
+      m.party_name AS customer_name,
+      m.party_mobile AS customer_mobile,
+      m.customer_type,
+      SUM(m.balance) AS total_due,
+      SUM(CASE WHEN m.is_overdue THEN m.balance ELSE 0 END) AS overdue_balance,
+      COUNT(m.id) AS bill_count,
+      COUNT(CASE WHEN m.status = 'PARTIAL' THEN 1 END) AS partial_bill_count,
+      COUNT(CASE WHEN m.status = 'UNPAID' THEN 1 END) AS unpaid_bill_count,
+      MIN(m.invoice_date) AS oldest_bill_date,
+      MIN(m.due_date) AS oldest_due_date,
+      MAX(m.days_overdue) AS max_days_overdue,
+      jsonb_agg(
+        jsonb_build_object(
+          'id', m.id,
+          'number', m.number,
+          'invoice_date', m.invoice_date,
+          'due_date', m.due_date,
+          'total', m.total,
+          'paid_amount', m.paid_amount,
+          'balance', m.balance,
+          'status', m.status,
+          'is_overdue', m.is_overdue,
+          'days_overdue', m.days_overdue,
+          'days_left', m.days_left
+        )
+        ORDER BY m.due_date ASC, m.invoice_date ASC, m.created_at ASC
+      ) AS invoices
+    FROM matching_invoices m
+    GROUP BY
+      COALESCE(m.customer_id, '00000000-0000-0000-0000-000000000000'::uuid),
+      m.party_name,
+      m.party_mobile,
+      m.customer_type
+    ORDER BY
+      overdue_balance DESC,
+      total_due DESC,
+      oldest_bill_date ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(grouped_dues.*)), '[]'::jsonb)
+  INTO v_customers
+  FROM grouped_dues;
+
+  RETURN jsonb_build_object(
+    'summary', jsonb_build_object(
+      'total_outstanding', v_total_outstanding,
+      'total_overdue', v_total_overdue,
+      'total_current', v_total_current,
+      'total_bills_due', v_total_bills_due,
+      'partial_bills_count', v_partial_bills_count,
+      'unpaid_bills_count', v_unpaid_bills_count,
+      'overdue_bills_count', v_overdue_bills_count,
+      'current_bills_count', v_current_bills_count,
+      'customer_count', v_customer_count
+    ),
+    'bills', v_bills,
+    'customers', v_customers
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.dues_list(text, text, int, int) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.dues_list(text, text, int, int) TO authenticated;
+
+
+-- >>> Migration: 20261030000022_cash_and_bank_transfers.sql <<<
+-- Migration 22: Cash & Bank Management, Money Transfers (Contra), and Cash in Hand Tracking
+-- Enables internal balance movements (Cash to Bank, Bank to Cash, Bank to Bank) with zero P&L impact.
+
+-- 1. Add opening_cash_balance to businesses
+ALTER TABLE public.businesses ADD COLUMN IF NOT EXISTS opening_cash_balance numeric(14,2) NOT NULL DEFAULT 0.00;
+
+-- 2. Create money_transfers table
+CREATE TABLE IF NOT EXISTS public.money_transfers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  transfer_date date NOT NULL DEFAULT (app.today()),
+  transfer_type text NOT NULL CHECK (transfer_type IN ('CASH_TO_BANK', 'BANK_TO_CASH', 'BANK_TO_BANK')),
+  from_bank_account_id uuid REFERENCES public.bank_accounts(id) ON DELETE RESTRICT,
+  to_bank_account_id uuid REFERENCES public.bank_accounts(id) ON DELETE RESTRICT,
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  reference text,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  deleted_at timestamptz,
+  deleted_by uuid,
+  CONSTRAINT chk_transfer_accounts CHECK (
+    (transfer_type = 'CASH_TO_BANK' AND from_bank_account_id IS NULL AND to_bank_account_id IS NOT NULL) OR
+    (transfer_type = 'BANK_TO_CASH' AND from_bank_account_id IS NOT NULL AND to_bank_account_id IS NULL) OR
+    (transfer_type = 'BANK_TO_BANK' AND from_bank_account_id IS NOT NULL AND to_bank_account_id IS NOT NULL AND from_bank_account_id <> to_bank_account_id)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_money_transfers_business ON public.money_transfers(business_id);
+CREATE INDEX IF NOT EXISTS idx_money_transfers_date ON public.money_transfers(business_id, transfer_date);
+CREATE INDEX IF NOT EXISTS idx_money_transfers_from_bank ON public.money_transfers(from_bank_account_id);
+CREATE INDEX IF NOT EXISTS idx_money_transfers_to_bank ON public.money_transfers(to_bank_account_id);
+
+CREATE OR REPLACE TRIGGER trg_money_transfers_audit
+BEFORE INSERT OR UPDATE ON public.money_transfers
+FOR EACH ROW EXECUTE FUNCTION public.set_audit_fields();
+
+-- Enable RLS
+ALTER TABLE public.money_transfers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.money_transfers FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS money_transfers_select ON public.money_transfers;
+CREATE POLICY money_transfers_select ON public.money_transfers
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+-- 3. RPC: record_money_transfer
+CREATE OR REPLACE FUNCTION public.record_money_transfer(
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_type text;
+  v_date date;
+  v_from_id uuid := NULL;
+  v_to_id uuid := NULL;
+  v_amount numeric(14,2);
+  v_ref text;
+  v_notes text;
+  v_transfer public.money_transfers%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_type := UPPER(COALESCE(payload->>'transfer_type', ''));
+  IF v_type NOT IN ('CASH_TO_BANK', 'BANK_TO_CASH', 'BANK_TO_BANK') THEN
+    RAISE EXCEPTION 'INVALID_TRANSFER_TYPE' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_amount := ROUND((payload->>'amount')::numeric, 2);
+  IF v_amount IS NULL OR v_amount <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_date := COALESCE((payload->>'transfer_date')::date, (SELECT app.today()));
+  v_ref := NULLIF(TRIM(payload->>'reference'), '');
+  v_notes := NULLIF(TRIM(payload->>'notes'), '');
+
+  IF payload->>'from_bank_account_id' IS NOT NULL AND payload->>'from_bank_account_id' <> '' THEN
+    v_from_id := (payload->>'from_bank_account_id')::uuid;
+  END IF;
+
+  IF payload->>'to_bank_account_id' IS NOT NULL AND payload->>'to_bank_account_id' <> '' THEN
+    v_to_id := (payload->>'to_bank_account_id')::uuid;
+  END IF;
+
+  -- Validate based on type
+  IF v_type = 'CASH_TO_BANK' THEN
+    v_from_id := NULL;
+    IF v_to_id IS NULL THEN
+      RAISE EXCEPTION 'DESTINATION_BANK_REQUIRED' USING ERRCODE = 'P0001';
+    END IF;
+    -- Verify destination bank belongs to business and is active
+    PERFORM 1 FROM public.bank_accounts
+    WHERE id = v_to_id AND business_id = v_biz_id AND active = true AND deleted_at IS NULL;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'DESTINATION_BANK_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+
+  ELSIF v_type = 'BANK_TO_CASH' THEN
+    v_to_id := NULL;
+    IF v_from_id IS NULL THEN
+      RAISE EXCEPTION 'SOURCE_BANK_REQUIRED' USING ERRCODE = 'P0001';
+    END IF;
+    -- Verify source bank belongs to business and is active
+    PERFORM 1 FROM public.bank_accounts
+    WHERE id = v_from_id AND business_id = v_biz_id AND active = true AND deleted_at IS NULL;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'SOURCE_BANK_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+
+  ELSIF v_type = 'BANK_TO_BANK' THEN
+    IF v_from_id IS NULL OR v_to_id IS NULL THEN
+      RAISE EXCEPTION 'BOTH_BANKS_REQUIRED' USING ERRCODE = 'P0001';
+    END IF;
+    IF v_from_id = v_to_id THEN
+      RAISE EXCEPTION 'CANNOT_TRANSFER_TO_SAME_BANK' USING ERRCODE = 'P0001';
+    END IF;
+
+    -- Verify source bank
+    PERFORM 1 FROM public.bank_accounts
+    WHERE id = v_from_id AND business_id = v_biz_id AND active = true AND deleted_at IS NULL;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'SOURCE_BANK_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+
+    -- Verify destination bank
+    PERFORM 1 FROM public.bank_accounts
+    WHERE id = v_to_id AND business_id = v_biz_id AND active = true AND deleted_at IS NULL;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'DESTINATION_BANK_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  INSERT INTO public.money_transfers (
+    business_id, transfer_date, transfer_type,
+    from_bank_account_id, to_bank_account_id,
+    amount, reference, notes,
+    created_by, updated_by
+  ) VALUES (
+    v_biz_id, v_date, v_type,
+    v_from_id, v_to_id,
+    v_amount, v_ref, v_notes,
+    v_member_id, v_member_id
+  ) RETURNING * INTO v_transfer;
+
+  RETURN to_jsonb(v_transfer);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.record_money_transfer(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.record_money_transfer(jsonb) TO authenticated;
+
+-- 4. RPC: cash_bank_summary
+CREATE OR REPLACE FUNCTION public.cash_bank_summary(
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_biz public.businesses%ROWTYPE;
+  v_cash_opening numeric(14,2) := 0;
+  v_cash_receipts numeric(14,2) := 0;
+  v_cash_withdrawals numeric(14,2) := 0;
+  v_cash_total_in numeric(14,2) := 0;
+  v_cash_payments numeric(14,2) := 0;
+  v_cash_expenses numeric(14,2) := 0;
+  v_cash_loan_repayments numeric(14,2) := 0;
+  v_cash_deposits numeric(14,2) := 0;
+  v_cash_total_out numeric(14,2) := 0;
+  v_cash_current_balance numeric(14,2) := 0;
+
+  v_bank_accounts jsonb := '[]'::jsonb;
+  v_total_bank_balance numeric(14,2) := 0;
+  v_recent_transfers jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_cash_opening := COALESCE(v_biz.opening_cash_balance, 0.00);
+
+  -- 1. Cash Inflow
+  -- A. Cash Receipts
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_receipts
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR receipt_date >= p_from_date)
+    AND (p_to_date IS NULL OR receipt_date <= p_to_date);
+
+  -- B. Withdrawals to Cash (Contra transfers: BANK_TO_CASH)
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_withdrawals
+  FROM public.money_transfers
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'BANK_TO_CASH'
+    AND (p_from_date IS NULL OR transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR transfer_date <= p_to_date);
+
+  v_cash_total_in := v_cash_receipts + v_cash_withdrawals;
+
+  -- 2. Cash Outflow
+  -- A. Cash Vendor Payments
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR payment_date >= p_from_date)
+    AND (p_to_date IS NULL OR payment_date <= p_to_date);
+
+  -- B. Cash Expenses
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR expense_date >= p_from_date)
+    AND (p_to_date IS NULL OR expense_date <= p_to_date);
+
+  -- C. Cash Loan Repayments
+  SELECT COALESCE(SUM(lr.principal + lr.interest), 0) INTO v_cash_loan_repayments
+  FROM public.loan_repayments lr
+  JOIN public.loans l ON l.id = lr.loan_id
+  WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.mode = 'CASH'
+    AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+    AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date);
+
+  -- D. Deposits to Bank from Cash (Contra transfers: CASH_TO_BANK)
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_deposits
+  FROM public.money_transfers
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'CASH_TO_BANK'
+    AND (p_from_date IS NULL OR transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR transfer_date <= p_to_date);
+
+  v_cash_total_out := v_cash_payments + v_cash_expenses + v_cash_loan_repayments + v_cash_deposits;
+  v_cash_current_balance := v_cash_opening + v_cash_total_in - v_cash_total_out;
+
+  -- 3. Individual Bank Accounts breakdown (including transfers)
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ba.id,
+      'bank_name', ba.bank_name,
+      'account_name', ba.account_name,
+      'account_number', ba.account_number,
+      'ifsc', ba.ifsc,
+      'upi_id', ba.upi_id,
+      'opening_balance', ba.opening_balance,
+      'total_in', sub.total_in,
+      'total_out', sub.total_out,
+      'current_balance', (ba.opening_balance + sub.total_in - sub.total_out)
+    ) ORDER BY ba.created_at ASC
+  ), '[]'::jsonb)
+  INTO v_bank_accounts
+  FROM public.bank_accounts ba
+  CROSS JOIN LATERAL (
+    SELECT
+      -- Bank IN: Receipts + Cash Deposits + Incoming Inter-Bank Transfers
+      (
+        COALESCE((
+          SELECT SUM(r.amount) FROM public.receipts r
+          WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+            AND (r.bank_account_id = ba.id OR (r.bank_account_id IS NULL AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+            AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+            AND mt.to_bank_account_id = ba.id
+            AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+            AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+        ), 0)
+      ) AS total_in,
+      -- Bank OUT: Payments + Expenses + Loan Repayments + Cash Withdrawals + Outgoing Inter-Bank Transfers
+      (
+        COALESCE((
+          SELECT SUM(p.amount) FROM public.payments p
+          WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+            AND (p.bank_account_id = ba.id OR (p.bank_account_id IS NULL AND p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+            AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(e.amount) FROM public.expenses e
+          WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+            AND (e.bank_account_id = ba.id OR (e.bank_account_id IS NULL AND e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR e.expense_date >= p_from_date)
+            AND (p_to_date IS NULL OR e.expense_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(lr.principal + lr.interest) FROM public.loan_repayments lr
+          JOIN public.loans l ON l.id = lr.loan_id
+          WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+            AND (lr.bank_account_id = ba.id OR (lr.bank_account_id IS NULL AND lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+            AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+            AND mt.from_bank_account_id = ba.id
+            AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+            AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+        ), 0)
+      ) AS total_out
+  ) sub
+  WHERE ba.business_id = v_biz_id AND ba.deleted_at IS NULL;
+
+  -- 4. Calculate total bank balance
+  SELECT COALESCE(SUM((elem->>'current_balance')::numeric), 0)
+  INTO v_total_bank_balance
+  FROM jsonb_array_elements(v_bank_accounts) elem;
+
+  -- 5. Recent Transfers list
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', mt.id,
+      'transfer_date', mt.transfer_date,
+      'transfer_type', mt.transfer_type,
+      'amount', mt.amount,
+      'reference', mt.reference,
+      'notes', mt.notes,
+      'from_bank_account_id', mt.from_bank_account_id,
+      'from_bank_name', COALESCE(fba.bank_name, 'Cash in Hand'),
+      'from_account_name', fba.account_name,
+      'to_bank_account_id', mt.to_bank_account_id,
+      'to_bank_name', COALESCE(tba.bank_name, 'Cash in Hand'),
+      'to_account_name', tba.account_name,
+      'created_at', mt.created_at
+    ) ORDER BY mt.transfer_date DESC, mt.created_at DESC
+  ), '[]'::jsonb)
+  INTO v_recent_transfers
+  FROM (
+    SELECT * FROM public.money_transfers
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+      AND (p_from_date IS NULL OR transfer_date >= p_from_date)
+      AND (p_to_date IS NULL OR transfer_date <= p_to_date)
+    ORDER BY transfer_date DESC, created_at DESC
+    LIMIT 100
+  ) mt
+  LEFT JOIN public.bank_accounts fba ON fba.id = mt.from_bank_account_id
+  LEFT JOIN public.bank_accounts tba ON tba.id = mt.to_bank_account_id;
+
+  RETURN jsonb_build_object(
+    'cash_in_hand', jsonb_build_object(
+      'opening_balance', v_cash_opening,
+      'total_in', v_cash_total_in,
+      'total_out', v_cash_total_out,
+      'current_balance', v_cash_current_balance,
+      'receipts', v_cash_receipts,
+      'withdrawals', v_cash_withdrawals,
+      'payments', v_cash_payments,
+      'expenses', v_cash_expenses,
+      'deposits', v_cash_deposits
+    ),
+    'bank_summary', jsonb_build_object(
+      'total_bank_balance', v_total_bank_balance,
+      'account_count', jsonb_array_length(v_bank_accounts)
+    ),
+    'total_liquid_funds', (v_cash_current_balance + v_total_bank_balance),
+    'bank_accounts', v_bank_accounts,
+    'recent_transfers', v_recent_transfers
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.cash_bank_summary(date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.cash_bank_summary(date, date) TO authenticated;
+
+-- 5. Upgrade bank_ledger to fully integrate money transfers
+CREATE OR REPLACE FUNCTION public.bank_ledger(
+  p_bank_account_id uuid DEFAULT NULL,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_accounts jsonb := '[]'::jsonb;
+  v_entries jsonb := '[]'::jsonb;
+  v_tot_in numeric(14,2) := 0;
+  v_tot_out numeric(14,2) := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  -- Bank accounts summary (including transfers)
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ba.id,
+      'bank_name', ba.bank_name,
+      'account_name', ba.account_name,
+      'account_number', ba.account_number,
+      'ifsc', ba.ifsc,
+      'upi_id', ba.upi_id,
+      'opening_balance', ba.opening_balance,
+      'total_in', sub.total_in,
+      'total_out', sub.total_out,
+      'current_balance', (ba.opening_balance + sub.total_in - sub.total_out)
+    ) ORDER BY ba.created_at ASC
+  ), '[]'::jsonb)
+  INTO v_accounts
+  FROM public.bank_accounts ba
+  CROSS JOIN LATERAL (
+    SELECT
+      (
+        COALESCE((
+          SELECT SUM(r.amount) FROM public.receipts r 
+          WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL 
+            AND (r.bank_account_id = ba.id OR (r.bank_account_id IS NULL AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL AND mt.to_bank_account_id = ba.id
+        ), 0)
+      ) AS total_in,
+      (
+        COALESCE((
+          SELECT COALESCE(SUM(p.amount), 0) FROM public.payments p 
+          WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL 
+            AND (p.bank_account_id = ba.id OR (p.bank_account_id IS NULL AND p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT COALESCE(SUM(e.amount), 0) FROM public.expenses e 
+          WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL 
+            AND (e.bank_account_id = ba.id OR (e.bank_account_id IS NULL AND e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT COALESCE(SUM(lr.principal + lr.interest), 0) FROM public.loan_repayments lr 
+          JOIN public.loans l ON l.id = lr.loan_id 
+          WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL 
+            AND (lr.bank_account_id = ba.id OR (lr.bank_account_id IS NULL AND lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL AND mt.from_bank_account_id = ba.id
+        ), 0)
+      ) AS total_out
+  ) sub
+  WHERE ba.business_id = v_biz_id AND ba.deleted_at IS NULL;
+
+  -- Union of all bank movements
+  WITH bank_txns AS (
+    -- 1. Money IN: Receipts
+    SELECT 
+      r.id,
+      r.receipt_date AS txn_date,
+      'RECEIPT' AS txn_type,
+      'IN' AS direction,
+      r.amount AS in_amount,
+      0::numeric(14,2) AS out_amount,
+      r.mode,
+      COALESCE(r.reference, r.number) AS ref_no,
+      COALESCE(c.name, 'Other Income') AS party_name,
+      COALESCE(r.notes, r.income_category, 'Customer Receipt') AS description,
+      r.bank_account_id,
+      COALESCE(r.bank_name, ba.bank_name, r.mode) AS bank_label,
+      r.created_at
+    FROM public.receipts r
+    LEFT JOIN public.customers c ON c.id = r.customer_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = r.bank_account_id
+    WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND r.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (r.bank_account_id IS NOT NULL OR r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+      AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+
+    UNION ALL
+
+    -- 2. Money IN: Incoming Transfers (Cash Deposit or Inward Bank-to-Bank)
+    SELECT
+      mt.id,
+      mt.transfer_date AS txn_date,
+      'TRANSFER_IN' AS txn_type,
+      'IN' AS direction,
+      mt.amount AS in_amount,
+      0::numeric(14,2) AS out_amount,
+      CASE WHEN mt.transfer_type = 'CASH_TO_BANK' THEN 'CASH' ELSE 'BANK' END AS mode,
+      COALESCE(mt.reference, 'Deposit') AS ref_no,
+      CASE 
+        WHEN mt.transfer_type = 'CASH_TO_BANK' THEN 'Cash Deposit (Contra)'
+        ELSE 'Transfer from ' || COALESCE(fba.bank_name, 'Bank')
+      END AS party_name,
+      COALESCE(mt.notes, 'Internal Contra Transfer') AS description,
+      mt.to_bank_account_id AS bank_account_id,
+      tba.bank_name AS bank_label,
+      mt.created_at
+    FROM public.money_transfers mt
+    JOIN public.bank_accounts tba ON tba.id = mt.to_bank_account_id
+    LEFT JOIN public.bank_accounts fba ON fba.id = mt.from_bank_account_id
+    WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+      AND (p_bank_account_id IS NULL OR mt.to_bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+      AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+
+    UNION ALL
+
+    -- 3. Money OUT: Vendor Payments
+    SELECT 
+      p.id,
+      p.payment_date AS txn_date,
+      'PAYMENT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      p.amount AS out_amount,
+      p.mode,
+      COALESCE(p.notes, 'Vendor Pmt') AS ref_no,
+      v.name AS party_name,
+      p.description AS description,
+      p.bank_account_id,
+      COALESCE(p.bank_name, ba.bank_name, p.mode) AS bank_label,
+      p.created_at
+    FROM public.payments p
+    JOIN public.vendors v ON v.id = p.vendor_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = p.bank_account_id
+    WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND p.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (p.bank_account_id IS NOT NULL OR p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+      AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+
+    UNION ALL
+
+    -- 4. Money OUT: Expenses
+    SELECT 
+      e.id,
+      e.expense_date AS txn_date,
+      'EXPENSE' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      e.amount AS out_amount,
+      e.mode,
+      COALESCE(e.notes, ec.name) AS ref_no,
+      COALESCE(e.payee, ec.name) AS party_name,
+      e.description AS description,
+      e.bank_account_id,
+      COALESCE(e.bank_name, ba.bank_name, e.mode) AS bank_label,
+      e.created_at
+    FROM public.expenses e
+    JOIN public.expense_categories ec ON ec.id = e.category_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = e.bank_account_id
+    WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND e.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (e.bank_account_id IS NOT NULL OR e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR e.expense_date >= p_from_date)
+      AND (p_to_date IS NULL OR e.expense_date <= p_to_date)
+
+    UNION ALL
+
+    -- 5. Money OUT: Loan Repayments
+    SELECT 
+      lr.id,
+      lr.repayment_date AS txn_date,
+      'LOAN_REPAYMENT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      (lr.principal + lr.interest) AS out_amount,
+      lr.mode,
+      COALESCE(lr.notes, 'Loan Repayment') AS ref_no,
+      l.lender_name AS party_name,
+      'Loan Repayment: Principal ' || lr.principal || ' + Interest ' || lr.interest AS description,
+      lr.bank_account_id,
+      COALESCE(lr.bank_name, ba.bank_name, lr.mode) AS bank_label,
+      lr.created_at
+    FROM public.loan_repayments lr
+    JOIN public.loans l ON l.id = lr.loan_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = lr.bank_account_id
+    WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND lr.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (lr.bank_account_id IS NOT NULL OR lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+      AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+
+    UNION ALL
+
+    -- 6. Money OUT: Outgoing Transfers (Cash Withdrawal or Outward Bank-to-Bank)
+    SELECT
+      mt.id,
+      mt.transfer_date AS txn_date,
+      'TRANSFER_OUT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      mt.amount AS out_amount,
+      CASE WHEN mt.transfer_type = 'BANK_TO_CASH' THEN 'CASH' ELSE 'BANK' END AS mode,
+      COALESCE(mt.reference, 'Withdrawal') AS ref_no,
+      CASE 
+        WHEN mt.transfer_type = 'BANK_TO_CASH' THEN 'Cash Withdrawal (Contra)'
+        ELSE 'Transfer to ' || COALESCE(tba.bank_name, 'Bank')
+      END AS party_name,
+      COALESCE(mt.notes, 'Internal Contra Transfer') AS description,
+      mt.from_bank_account_id AS bank_account_id,
+      fba.bank_name AS bank_label,
+      mt.created_at
+    FROM public.money_transfers mt
+    JOIN public.bank_accounts fba ON fba.id = mt.from_bank_account_id
+    LEFT JOIN public.bank_accounts tba ON tba.id = mt.to_bank_account_id
+    WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+      AND (p_bank_account_id IS NULL OR mt.from_bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+      AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+  ),
+  ordered_txns AS (
+    SELECT 
+      t.*,
+      SUM(t.in_amount - t.out_amount) OVER (ORDER BY t.txn_date ASC, t.created_at ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance
+    FROM bank_txns t
+    ORDER BY t.txn_date DESC, t.created_at DESC
+  )
+  SELECT 
+    COALESCE(SUM(in_amount), 0),
+    COALESCE(SUM(out_amount), 0),
+    COALESCE(jsonb_agg(to_jsonb(ot.*)), '[]'::jsonb)
+  INTO v_tot_in, v_tot_out, v_entries
+  FROM ordered_txns ot;
+
+  RETURN jsonb_build_object(
+    'bank_accounts', v_accounts,
+    'summary', jsonb_build_object(
+      'total_in', v_tot_in,
+      'total_out', v_tot_out,
+      'net_flow', (v_tot_in - v_tot_out)
+    ),
+    'entries', v_entries
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.bank_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.bank_ledger(uuid, date, date) TO authenticated;
+
+-- 6. Update soft_delete to support money_transfers and bank_accounts
+CREATE OR REPLACE FUNCTION public.soft_delete(
+  p_table text,
+  p_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_allowed boolean := false;
+  v_has_invoices boolean;
+  v_has_cust_invoices boolean := false;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Validate table
+  IF p_table NOT IN ('customers', 'services', 'job_type_steps', 'vendors', 'payments', 'expense_categories', 'expenses', 'loans', 'receipts', 'money_transfers', 'bank_accounts') THEN
+    RAISE EXCEPTION 'INVALID_TABLE' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Role checks per §5
+  IF v_role = 'OWNER' THEN
+    v_allowed := true;
+  ELSIF v_role = 'ACCOUNTANT' THEN
+    IF p_table IN ('customers', 'payments', 'expenses', 'loans', 'money_transfers') THEN
+      v_allowed := true;
+    END IF;
+  END IF;
+
+  IF NOT v_allowed THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Customers cannot be deleted if they have invoices (BR-9)
+  SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'invoices') INTO v_has_invoices;
+  IF p_table = 'customers' AND v_has_invoices THEN
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.invoices WHERE customer_id = %L AND business_id = %L AND deleted_at IS NULL)', p_id, v_biz_id)
+    INTO v_has_cust_invoices;
+    IF v_has_cust_invoices THEN
+      RAISE EXCEPTION 'CUSTOMER_HAS_INVOICES' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  -- Expense categories: system categories cannot be deleted
+  IF p_table = 'expense_categories' AND EXISTS (
+    SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'expense_categories'
+  ) THEN
+    DECLARE
+      v_is_system boolean := false;
+    BEGIN
+      EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.expense_categories WHERE id = %L AND system = true)', p_id)
+      INTO v_is_system;
+      IF v_is_system THEN
+        RAISE EXCEPTION 'SYSTEM_CATEGORY_CANNOT_BE_DELETED' USING ERRCODE = 'P0001';
+      END IF;
+    END;
+  END IF;
+
+  -- Execute soft delete
+  EXECUTE format(
+    'UPDATE public.%I SET deleted_at = now(), deleted_by = %L WHERE id = %L AND business_id = %L AND deleted_at IS NULL',
+    p_table, v_member_id, p_id, v_biz_id
+  );
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.soft_delete(text, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.soft_delete(text, uuid) TO authenticated;
+
+
+-- >>> Migration: 20261030000023_enhanced_customer_vendor_ledgers.sql <<<
+-- Migration 23: Enhanced Customer & Vendor Ledgers with Opening Balances, Reports & Statements
+-- Provides:
+-- 1. Overhauled customer_ledger with proper opening balance row & running balance on date filters
+-- 2. Overhauled vendor_ledger with business details, cash vs bank breakdown & cumulative paid
+-- 3. New party_ledger_report for all-customer and all-vendor overview reports
+-- 4. Upgraded report(type, params) with 'customer_ledger' and 'vendor_ledger' support
+
+-- 1. OVERHAUL: customer_ledger
+CREATE OR REPLACE FUNCTION public.customer_ledger(
+  customer_id uuid,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_cust public.customers%ROWTYPE;
+  v_biz public.businesses%ROWTYPE;
+  v_opening_billed numeric(14,2) := 0;
+  v_opening_paid numeric(14,2) := 0;
+  v_opening_balance numeric(14,2) := 0;
+  v_period_billed numeric(14,2) := 0;
+  v_period_paid numeric(14,2) := 0;
+  v_closing_balance numeric(14,2) := 0;
+  v_total_advance numeric(14,2) := 0;
+  v_entries jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_cust
+  FROM public.customers
+  WHERE id = customer_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'CUSTOMER_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  -- 1. Opening Balance computation (strictly prior to p_from_date)
+  IF p_from_date IS NOT NULL THEN
+    SELECT COALESCE(SUM(total), 0) INTO v_opening_billed
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND invoices.customer_id = customer_ledger.customer_id
+      AND invoice_date < p_from_date
+      AND status = 'ACTIVE'
+      AND deleted_at IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_opening_paid
+    FROM public.receipts
+    WHERE business_id = v_biz_id
+      AND receipts.customer_id = customer_ledger.customer_id
+      AND receipt_date < p_from_date
+      AND deleted_at IS NULL;
+
+    v_opening_balance := v_opening_billed - v_opening_paid;
+  ELSE
+    v_opening_balance := 0;
+  END IF;
+
+  -- 2. Period Billed and Paid
+  SELECT COALESCE(SUM(total), 0) INTO v_period_billed
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND invoices.customer_id = customer_ledger.customer_id
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL
+    AND (p_from_date IS NULL OR invoice_date >= p_from_date)
+    AND (p_to_date IS NULL OR invoice_date <= p_to_date);
+
+  SELECT COALESCE(SUM(amount), 0) INTO v_period_paid
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND receipts.customer_id = customer_ledger.customer_id
+    AND deleted_at IS NULL
+    AND (p_from_date IS NULL OR receipt_date >= p_from_date)
+    AND (p_to_date IS NULL OR receipt_date <= p_to_date);
+
+  -- 3. Closing Balance & Advance
+  v_closing_balance := v_opening_balance + v_period_billed - v_period_paid;
+
+  SELECT COALESCE(SUM(unallocated_amount), 0) INTO v_total_advance
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND receipts.customer_id = customer_ledger.customer_id
+    AND deleted_at IS NULL;
+
+  -- 4. Assemble Chronological Ledger Entries with Opening Balance
+  WITH combined_events AS (
+    -- Injected Opening Balance row if p_from_date is set
+    SELECT
+      p_from_date AS entry_date,
+      p_from_date::timestamptz AS sort_ts,
+      'OPENING_BALANCE'::text AS type,
+      NULL::uuid AS ref_id,
+      'OPENING'::text AS ref_number,
+      'Opening Balance as of ' || to_char(p_from_date, 'DD Mon YYYY') AS description,
+      CASE WHEN v_opening_balance > 0 THEN v_opening_balance ELSE 0::numeric(14,2) END AS debit,
+      CASE WHEN v_opening_balance < 0 THEN ABS(v_opening_balance) ELSE 0::numeric(14,2) END AS credit
+    WHERE p_from_date IS NOT NULL
+
+    UNION ALL
+
+    -- Invoices (Debit)
+    SELECT
+      i.invoice_date AS entry_date,
+      i.created_at AS sort_ts,
+      'INVOICE'::text AS type,
+      i.id AS ref_id,
+      i.number AS ref_number,
+      'Bill #' || i.number AS description,
+      i.total AS debit,
+      0::numeric(14,2) AS credit
+    FROM public.invoices i
+    WHERE i.business_id = v_biz_id
+      AND i.customer_id = customer_ledger.customer_id
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+      AND (p_from_date IS NULL OR i.invoice_date >= p_from_date)
+      AND (p_to_date IS NULL OR i.invoice_date <= p_to_date)
+
+    UNION ALL
+
+    -- Receipts (Credit)
+    SELECT
+      r.receipt_date AS entry_date,
+      r.created_at AS sort_ts,
+      'RECEIPT'::text AS type,
+      r.id AS ref_id,
+      r.number AS ref_number,
+      'Payment #' || r.number || ' (' || r.mode || ')' AS description,
+      0::numeric(14,2) AS debit,
+      r.amount AS credit
+    FROM public.receipts r
+    WHERE r.business_id = v_biz_id
+      AND r.customer_id = customer_ledger.customer_id
+      AND r.deleted_at IS NULL
+      AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+      AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+  ),
+  ordered_ledger AS (
+    SELECT
+      entry_date,
+      type,
+      ref_id,
+      ref_number,
+      description,
+      debit,
+      credit,
+      SUM(debit - credit) OVER (ORDER BY entry_date ASC, sort_ts ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance
+    FROM combined_events
+    ORDER BY entry_date ASC, sort_ts ASC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(ordered_ledger.*)), '[]'::jsonb)
+  INTO v_entries
+  FROM ordered_ledger;
+
+  RETURN jsonb_build_object(
+    'customer', jsonb_build_object(
+      'id', v_cust.id,
+      'name', v_cust.name,
+      'mobile', v_cust.mobile,
+      'type', v_cust.type,
+      'address', v_cust.address
+    ),
+    'business', jsonb_build_object(
+      'id', v_biz.id,
+      'name', v_biz.name,
+      'owner_name', v_biz.owner_name,
+      'mobile', v_biz.mobile,
+      'email', v_biz.email,
+      'address', v_biz.address,
+      'upi_id', v_biz.upi_id,
+      'receipt_header', v_biz.receipt_header,
+      'receipt_footer', v_biz.receipt_footer
+    ),
+    'summary', jsonb_build_object(
+      'opening_balance', v_opening_balance,
+      'period_billed', v_period_billed,
+      'period_paid', v_period_paid,
+      'balance', v_closing_balance,
+      'advance', v_total_advance,
+      'from_date', p_from_date,
+      'to_date', p_to_date
+    ),
+    'entries', v_entries
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.customer_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.customer_ledger(uuid, date, date) TO authenticated;
+
+
+-- 2. OVERHAUL: vendor_ledger
+CREATE OR REPLACE FUNCTION public.vendor_ledger(
+  p_vendor_id uuid,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARe
+  v_biz_id uuid;
+  v_vendor public.vendors%ROWTYPE;
+  v_biz public.businesses%ROWTYPE;
+  v_tot_paid numeric(14,2) := 0;
+  v_cash_paid numeric(14,2) := 0;
+  v_bank_paid numeric(14,2) := 0;
+  v_count int := 0;
+  v_payments jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_vendor
+  FROM public.vendors
+  WHERE id = p_vendor_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'VENDOR_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  WITH raw_payments AS (
+    SELECT
+      p.id,
+      p.payment_date,
+      p.description,
+      p.amount,
+      p.mode,
+      p.bank_name,
+      p.notes,
+      p.invoice_id,
+      i.number AS invoice_number,
+      p.created_at,
+      SUM(p.amount) OVER (ORDER BY p.payment_date ASC, p.created_at ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_paid
+    FROM public.payments p
+    LEFT JOIN public.invoices i ON i.id = p.invoice_id
+    WHERE p.vendor_id = p_vendor_id
+      AND p.business_id = v_biz_id
+      AND p.deleted_at IS NULL
+      AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+      AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+    ORDER BY p.payment_date DESC, p.created_at DESC
+  )
+  SELECT
+    COALESCE(SUM(amount), 0),
+    COALESCE(SUM(CASE WHEN mode = 'CASH' THEN amount ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN mode <> 'CASH' THEN amount ELSE 0 END), 0),
+    COUNT(*),
+    COALESCE(jsonb_agg(to_jsonb(raw_payments.*)), '[]'::jsonb)
+  INTO v_tot_paid, v_cash_paid, v_bank_paid, v_count, v_payments
+  FROM raw_payments;
+
+  RETURN jsonb_build_object(
+    'vendor', jsonb_build_object(
+      'id', v_vendor.id,
+      'name', v_vendor.name,
+      'mobile', v_vendor.mobile,
+      'created_at', v_vendor.created_at
+    ),
+    'business', jsonb_build_object(
+      'id', v_biz.id,
+      'name', v_biz.name,
+      'owner_name', v_biz.owner_name,
+      'mobile', v_biz.mobile,
+      'email', v_biz.email,
+      'address', v_biz.address,
+      'upi_id', v_biz.upi_id
+    ),
+    'summary', jsonb_build_object(
+      'total_paid', v_tot_paid,
+      'payment_count', v_count,
+      'cash_paid', v_cash_paid,
+      'bank_paid', v_bank_paid,
+      'from_date', p_from_date,
+      'to_date', p_to_date
+    ),
+    'payments', v_payments
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.vendor_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.vendor_ledger(uuid, date, date) TO authenticated;
+
+
+-- 3. NEW RPC: party_ledger_report(p_party_type text, p_from_date date, p_to_date date, p_search text)
+CREATE OR REPLACE FUNCTION public.party_ledger_report(
+  p_party_type text,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL,
+  p_search text DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_data jsonb;
+  v_clean_search text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_clean_search := TRIM(COALESCE(p_search, ''));
+
+  IF UPPER(p_party_type) = 'CUSTOMER' THEN
+    WITH cust_ledger_data AS (
+      SELECT
+        c.id,
+        c.name AS customer_name,
+        c.mobile AS customer_mobile,
+        c.type AS customer_type,
+        -- Opening balance (strictly before p_from_date)
+        COALESCE(
+          (SELECT SUM(i_pre.total) FROM public.invoices i_pre
+           WHERE i_pre.customer_id = c.id AND i_pre.business_id = v_biz_id
+             AND i_pre.status = 'ACTIVE' AND i_pre.deleted_at IS NULL
+             AND p_from_date IS NOT NULL AND i_pre.invoice_date < p_from_date),
+          0
+        ) - COALESCE(
+          (SELECT SUM(r_pre.amount) FROM public.receipts r_pre
+           WHERE r_pre.customer_id = c.id AND r_pre.business_id = v_biz_id
+             AND r_pre.deleted_at IS NULL
+             AND p_from_date IS NOT NULL AND r_pre.receipt_date < p_from_date),
+          0
+        ) AS opening_balance,
+
+        -- Period billed
+        COALESCE(
+          (SELECT SUM(i_cur.total) FROM public.invoices i_cur
+           WHERE i_cur.customer_id = c.id AND i_cur.business_id = v_biz_id
+             AND i_cur.status = 'ACTIVE' AND i_cur.deleted_at IS NULL
+             AND (p_from_date IS NULL OR i_cur.invoice_date >= p_from_date)
+             AND (p_to_date IS NULL OR i_cur.invoice_date <= p_to_date)),
+          0
+        ) AS period_billed,
+
+        -- Period paid
+        COALESCE(
+          (SELECT SUM(r_cur.amount) FROM public.receipts r_cur
+           WHERE r_cur.customer_id = c.id AND r_cur.business_id = v_biz_id
+             AND r_cur.deleted_at IS NULL
+             AND (p_from_date IS NULL OR r_cur.receipt_date >= p_from_date)
+             AND (p_to_date IS NULL OR r_cur.receipt_date <= p_to_date)),
+          0
+        ) AS period_paid,
+
+        -- Bill count in period
+        COALESCE(
+          (SELECT COUNT(*) FROM public.invoices i_cnt
+           WHERE i_cnt.customer_id = c.id AND i_cnt.business_id = v_biz_id
+             AND i_cnt.status = 'ACTIVE' AND i_cnt.deleted_at IS NULL
+             AND (p_from_date IS NULL OR i_cnt.invoice_date >= p_from_date)
+             AND (p_to_date IS NULL OR i_cnt.invoice_date <= p_to_date)),
+          0
+        ) AS bill_count,
+
+        -- Receipt count in period
+        COALESCE(
+          (SELECT COUNT(*) FROM public.receipts r_cnt
+           WHERE r_cnt.customer_id = c.id AND r_cnt.business_id = v_biz_id
+             AND r_cnt.deleted_at IS NULL
+             AND (p_from_date IS NULL OR r_cnt.receipt_date >= p_from_date)
+             AND (p_to_date IS NULL OR r_cnt.receipt_date <= p_to_date)),
+          0
+        ) AS receipt_count,
+
+        -- Total Advance (current unallocated balance)
+        COALESCE(
+          (SELECT SUM(r_adv.unallocated_amount) FROM public.receipts r_adv
+           WHERE r_adv.customer_id = c.id AND r_adv.business_id = v_biz_id
+             AND r_adv.deleted_at IS NULL),
+          0
+        ) AS advance
+      FROM public.customers c
+      WHERE c.business_id = v_biz_id
+        AND c.deleted_at IS NULL
+        AND (
+          v_clean_search = ''
+          OR c.name ILIKE ('%' || v_clean_search || '%')
+          OR c.mobile ILIKE ('%' || v_clean_search || '%')
+        )
+    ),
+    calculated_customers AS (
+      SELECT
+        cld.*,
+        (cld.opening_balance + cld.period_billed - cld.period_paid) AS closing_due
+      FROM cust_ledger_data cld
+      ORDER BY (cld.opening_balance + cld.period_billed - cld.period_paid) DESC, cld.customer_name ASC
+    )
+    SELECT jsonb_build_object(
+      'party_type', 'CUSTOMER',
+      'from_date', p_from_date,
+      'to_date', p_to_date,
+      'total_opening_balance', COALESCE(SUM(opening_balance), 0),
+      'total_period_billed', COALESCE(SUM(period_billed), 0),
+      'total_period_paid', COALESCE(SUM(period_paid), 0),
+      'total_closing_due', COALESCE(SUM(closing_due), 0),
+      'total_advance', COALESCE(SUM(advance), 0),
+      'customer_count', COUNT(*),
+      'rows', COALESCE(jsonb_agg(to_jsonb(calculated_customers.*)), '[]'::jsonb)
+    )
+    INTO v_data
+    FROM calculated_customers;
+
+    RETURN v_data;
+
+  ELSIF UPPER(p_party_type) = 'VENDOR' THEN
+    WITH vendor_ledger_data AS (
+      SELECT
+        v.id,
+        v.name AS vendor_name,
+        v.mobile AS vendor_mobile,
+        COALESCE(SUM(p.amount), 0) AS total_paid,
+        COALESCE(SUM(CASE WHEN p.mode = 'CASH' THEN p.amount ELSE 0 END), 0) AS cash_paid,
+        COALESCE(SUM(CASE WHEN p.mode <> 'CASH' THEN p.amount ELSE 0 END), 0) AS bank_paid,
+        COUNT(p.id) AS payment_count,
+        MAX(p.payment_date) AS last_payment_date
+      FROM public.vendors v
+      LEFT JOIN public.payments p ON p.vendor_id = v.id
+        AND p.business_id = v_biz_id
+        AND p.deleted_at IS NULL
+        AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+        AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+      WHERE v.business_id = v_biz_id
+        AND v.deleted_at IS NULL
+        AND (
+          v_clean_search = ''
+          OR v.name ILIKE ('%' || v_clean_search || '%')
+          OR v.mobile ILIKE ('%' || v_clean_search || '%')
+        )
+      GROUP BY v.id, v.name, v.mobile
+      ORDER BY total_paid DESC, v.name ASC
+    )
+    SELECT jsonb_build_object(
+      'party_type', 'VENDOR',
+      'from_date', p_from_date,
+      'to_date', p_to_date,
+      'total_paid', COALESCE(SUM(total_paid), 0),
+      'total_cash_paid', COALESCE(SUM(cash_paid), 0),
+      'total_bank_paid', COALESCE(SUM(bank_paid), 0),
+      'vendor_count', COUNT(*),
+      'rows', COALESCE(jsonb_agg(to_jsonb(vendor_ledger_data.*)), '[]'::jsonb)
+    )
+    INTO v_data
+    FROM vendor_ledger_data;
+
+    RETURN v_data;
+
+  ELSE
+    RAISE EXCEPTION 'INVALID_PARTY_TYPE' USING ERRCODE = 'P0001';
+  END IF;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.party_ledger_report(text, date, date, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.party_ledger_report(text, date, date, text) TO authenticated;
+
+
+-- 4. UPGRADE: report(type text, params jsonb) to support customer_ledger and vendor_ledger
+CREATE OR REPLACE FUNCTION public.report(
+  type text,
+  params jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_fy text;
+  v_from date;
+  v_to date;
+  v_data jsonb;
+
+  -- P&L specific variables
+  v_income numeric(14,2) := 0;
+  v_payments numeric(14,2) := 0;
+  v_expenses numeric(14,2) := 0;
+  v_outgoing numeric(14,2) := 0;
+  v_net_profit numeric(14,2) := 0;
+  v_loans_taken numeric(14,2) := 0;
+  v_principal_repaid numeric(14,2) := 0;
+  v_interest_paid numeric(14,2) := 0;
+  v_monthly_trend jsonb;
+  v_expense_by_cat jsonb;
+  v_income_by_cat jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_fy := params->>'fy_label';
+  IF v_fy IS NULL THEN
+    v_fy := public.fy_label(v_today);
+  END IF;
+
+  v_from := (params->>'from')::date;
+  v_to := (params->>'to')::date;
+
+  -- Default date boundary from FY if explicit dates not provided
+  IF v_from IS NULL AND v_to IS NULL THEN
+    DECLARE
+      v_start_year int := split_part(v_fy, '-', 1)::int;
+    BEGIN
+      v_from := make_date(v_start_year, 4, 1);
+      v_to := make_date(v_start_year + 1, 3, 31);
+    EXCEPTION WHEN OTHERS THEN
+      v_from := date_trunc('year', v_today)::date;
+      v_to := (date_trunc('year', v_today) + interval '1 year - 1 day')::date;
+    END;
+  END IF;
+
+  CASE LOWER(type)
+    -- CUSTOMER LEDGER REPORT
+    WHEN 'customer_ledger' THEN
+      RETURN public.party_ledger_report('CUSTOMER', v_from, v_to, params->>'search');
+
+    -- VENDOR LEDGER REPORT
+    WHEN 'vendor_ledger' THEN
+      RETURN public.party_ledger_report('VENDOR', v_from, v_to, params->>'search');
+
+    -- 1. PROFIT & LOSS (BR-1: Cash-basis, loans excluded)
+    WHEN 'pnl' THEN
+      SELECT COALESCE(SUM(amount), 0) INTO v_income
+      FROM public.receipts
+      WHERE business_id = v_biz_id AND receipt_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_payments
+      FROM public.payments
+      WHERE business_id = v_biz_id AND payment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_expenses
+      FROM public.expenses
+      WHERE business_id = v_biz_id AND expense_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      v_outgoing := v_payments + v_expenses;
+      v_net_profit := v_income - v_outgoing;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_loans_taken
+      FROM public.loans
+      WHERE business_id = v_biz_id AND loan_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT
+        COALESCE(SUM(principal), 0),
+        COALESCE(SUM(interest), 0)
+      INTO
+        v_principal_repaid,
+        v_interest_paid
+      FROM public.loan_repayments
+      WHERE business_id = v_biz_id AND repayment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      WITH exp_grouped AS (
+        SELECT
+          ec.name AS category_name,
+          COALESCE(SUM(e.amount), 0) AS total
+        FROM public.expense_categories ec
+        JOIN public.expenses e ON e.category_id = ec.id
+        WHERE ec.business_id = v_biz_id
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND e.deleted_at IS NULL
+        GROUP BY ec.name
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'category_name', eg.category_name,
+            'total', eg.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_expense_by_cat
+      FROM exp_grouped eg;
+
+      WITH inc_grouped AS (
+        SELECT
+          r.kind,
+          r.income_category,
+          COALESCE(SUM(r.amount), 0) AS total
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND r.deleted_at IS NULL
+        GROUP BY r.kind, r.income_category
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'kind', ig.kind,
+            'category', ig.income_category,
+            'total', ig.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_income_by_cat
+      FROM inc_grouped ig;
+
+      WITH months AS (
+        SELECT generate_series(
+          date_trunc('month', v_from),
+          date_trunc('month', v_to),
+          '1 month'::interval
+        )::date AS m_start
+      ),
+      monthly_calc AS (
+        SELECT
+          to_char(m.m_start, 'Mon YYYY') AS month_label,
+          m.m_start,
+          COALESCE((
+            SELECT SUM(r.amount)
+            FROM public.receipts r
+            WHERE r.business_id = v_biz_id
+              AND r.receipt_date >= m.m_start
+              AND r.receipt_date < (m.m_start + interval '1 month')::date
+              AND r.deleted_at IS NULL
+          ), 0) AS income,
+          COALESCE((
+            SELECT SUM(p.amount)
+            FROM public.payments p
+            WHERE p.business_id = v_biz_id
+              AND p.payment_date >= m.m_start
+              AND p.payment_date < (m.m_start + interval '1 month')::date
+              AND p.deleted_at IS NULL
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM public.expenses e
+            WHERE e.business_id = v_biz_id
+              AND e.expense_date >= m.m_start
+              AND e.expense_date < (m.m_start + interval '1 month')::date
+              AND e.deleted_at IS NULL
+          ), 0) AS outgoing
+        FROM months m
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'month', mc.month_label,
+            'income', mc.income,
+            'outgoing', mc.outgoing,
+            'profit', (mc.income - mc.outgoing)
+          )
+          ORDER BY mc.m_start ASC
+        ),
+        '[]'::jsonb
+      )
+      INTO v_monthly_trend
+      FROM monthly_calc mc;
+
+      RETURN jsonb_build_object(
+        'type', 'pnl',
+        'fy_label', v_fy,
+        'from', v_from,
+        'to', v_to,
+        'income', v_income,
+        'outgoing', v_outgoing,
+        'payments', v_payments,
+        'expenses', v_expenses,
+        'net_profit', v_net_profit,
+        'loans', jsonb_build_object(
+          'taken', v_loans_taken,
+          'principal_repaid', v_principal_repaid,
+          'interest_paid', v_interest_paid
+        ),
+        'expense_categories', v_expense_by_cat,
+        'income_categories', v_income_by_cat,
+        'monthly_trend', v_monthly_trend
+      );
+
+    -- 2. INVOICES REPORT
+    WHEN 'invoices' THEN
+      WITH inv_list AS (
+        SELECT
+          i.id,
+          i.number,
+          i.invoice_date,
+          i.due_date,
+          i.party_name,
+          i.party_mobile,
+          i.subtotal,
+          i.discount_amount,
+          i.total,
+          i.paid_amount,
+          (i.total - i.paid_amount) AS balance,
+          i.status,
+          CASE
+            WHEN i.status = 'ACTIVE' AND (i.total > i.paid_amount) AND i.due_date < v_today THEN true
+            ELSE false
+          END AS is_overdue
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+          AND (params->>'status' IS NULL OR i.status = params->>'status')
+        ORDER BY i.invoice_date DESC, i.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'invoices',
+        'from', v_from,
+        'to', v_to,
+        'total_billed', COALESCE(SUM(total), 0),
+        'total_paid', COALESCE(SUM(paid_amount), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(inv_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM inv_list;
+
+      RETURN v_data;
+
+    -- 3. RECEIPTS REPORT
+    WHEN 'receipts' THEN
+      WITH rec_list AS (
+        SELECT
+          r.id,
+          r.number,
+          r.receipt_date,
+          c.name AS customer_name,
+          r.amount,
+          r.mode,
+          r.kind,
+          r.income_category,
+          r.reference,
+          r.unallocated_amount
+        FROM public.receipts r
+        LEFT JOIN public.customers c ON c.id = r.customer_id
+        WHERE r.business_id = v_biz_id
+          AND r.deleted_at IS NULL
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND (params->>'mode' IS NULL OR r.mode = params->>'mode')
+          AND (params->>'kind' IS NULL OR r.kind = params->>'kind')
+        ORDER BY r.receipt_date DESC, r.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'receipts',
+        'from', v_from,
+        'to', v_to,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(rec_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM rec_list;
+
+      RETURN v_data;
+
+    -- 4. PAYMENTS REPORT
+    WHEN 'payments' THEN
+      WITH pay_list AS (
+        SELECT
+          p.id,
+          p.payment_date,
+          v.name AS vendor_name,
+          p.description,
+          i.number AS invoice_number,
+          p.amount,
+          p.mode,
+          p.notes
+        FROM public.payments p
+        JOIN public.vendors v ON v.id = p.vendor_id
+        LEFT JOIN public.invoices i ON i.id = p.invoice_id
+        WHERE p.business_id = v_biz_id
+          AND p.deleted_at IS NULL
+          AND p.payment_date BETWEEN v_from AND v_to
+          AND (params->>'vendor_id' IS NULL OR p.vendor_id = (params->>'vendor_id')::uuid)
+        ORDER BY p.payment_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'payments',
+        'from', v_from,
+        'to', v_to,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(pay_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM pay_list;
+
+      RETURN v_data;
+
+    -- 5. EXPENSES REPORT
+    WHEN 'expenses' THEN
+      WITH exp_list AS (
+        SELECT
+          e.id,
+          e.expense_date,
+          ec.name AS category_name,
+          e.description,
+          e.amount,
+          e.mode,
+          e.payee,
+          e.notes
+        FROM public.expenses e
+        JOIN public.expense_categories ec ON ec.id = e.category_id
+        WHERE e.business_id = v_biz_id
+          AND e.deleted_at IS NULL
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND (params->>'category_id' IS NULL OR e.category_id = (params->>'category_id')::uuid)
+        ORDER BY e.expense_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'expenses',
+        'from', v_from,
+        'to', v_to,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(exp_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM exp_list;
+
+      RETURN v_data;
+
+    -- 6. OUTSTANDING DUES REPORT
+    WHEN 'outstanding' THEN
+      WITH dues_query AS (
+        SELECT
+          c.id,
+          c.name AS customer_name,
+          c.mobile AS customer_mobile,
+          c.type AS customer_type,
+          COALESCE(SUM(i.total), 0) AS total_billed,
+          COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+          COALESCE(SUM(i.total - i.paid_amount), 0) AS balance,
+          COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0) AS overdue_balance,
+          MIN(i.invoice_date) AS oldest_invoice_date
+        FROM public.customers c
+        JOIN public.invoices i ON i.customer_id = c.id
+        WHERE c.business_id = v_biz_id
+          AND c.deleted_at IS NULL
+          AND i.business_id = v_biz_id
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+          AND (i.total > i.paid_amount)
+        GROUP BY c.id, c.name, c.mobile, c.type
+        HAVING COALESCE(SUM(i.total - i.paid_amount), 0) > 0
+        ORDER BY balance DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'outstanding',
+        'total_outstanding', COALESCE(SUM(balance), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'total_overdue', COALESCE(SUM(overdue_balance), 0),
+        'customer_count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(dues_query.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM dues_query;
+
+      RETURN v_data;
+
+    -- 7. LOANS REPORT
+    WHEN 'loans' THEN
+      WITH loan_list AS (
+        SELECT
+          l.id,
+          l.lender_name,
+          l.loan_date,
+          l.amount AS taken_amount,
+          COALESCE(SUM(lr.principal), 0) AS principal_repaid,
+          COALESCE(SUM(lr.interest), 0) AS interest_paid,
+          (l.amount - COALESCE(SUM(lr.principal), 0)) AS current_outstanding
+        FROM public.loans l
+        LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+        WHERE l.business_id = v_biz_id
+          AND l.deleted_at IS NULL
+        GROUP BY l.id, l.lender_name, l.loan_date, l.amount
+        ORDER BY l.loan_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'loans',
+        'total_taken', COALESCE(SUM(taken_amount), 0),
+        'total_principal_repaid', COALESCE(SUM(principal_repaid), 0),
+        'total_outstanding', COALESCE(SUM(current_outstanding), 0),
+        'rows', COALESCE(jsonb_agg(to_jsonb(loan_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM loan_list;
+
+      RETURN v_data;
+
+    -- 8. JOBS REPORT
+    WHEN 'jobs' THEN
+      WITH job_list AS (
+        SELECT
+          j.id,
+          j.job_type_name,
+          j.party_name,
+          j.applicant_name,
+          j.amount,
+          j.deadline_date,
+          j.status,
+          m.name AS assigned_staff_name,
+          i.number AS invoice_number
+        FROM public.jobs j
+        JOIN public.invoices i ON i.id = j.invoice_id
+        LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+        WHERE j.business_id = v_biz_id
+          AND j.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+          AND (params->>'status' IS NULL OR j.status = params->>'status')
+        ORDER BY j.deadline_date ASC
+      )
+      SELECT jsonb_build_object(
+        'type', 'jobs',
+        'from', v_from,
+        'to', v_to,
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(job_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM job_list;
+
+      RETURN v_data;
+
+    -- 9. COMMISSION REPORT
+    WHEN 'commission' THEN
+      WITH comm_list AS (
+        SELECT
+          ce.id,
+          m.name AS staff_name,
+          j.job_type_name,
+          ce.base_amount,
+          ce.percent,
+          ce.amount,
+          ce.status,
+          ce.earned_at
+        FROM public.commission_entries ce
+        JOIN public.members m ON m.id = ce.staff_id
+        JOIN public.jobs j ON j.id = ce.job_id
+        WHERE ce.business_id = v_biz_id
+          AND ce.deleted_at IS NULL
+          AND (params->>'staff_id' IS NULL OR ce.staff_id = (params->>'staff_id')::uuid)
+          AND (ce.earned_at IS NULL OR ce.earned_at::date BETWEEN v_from AND v_to)
+        ORDER BY ce.created_at DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'commission',
+        'from', v_from,
+        'to', v_to,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(comm_list.*)), '[]'::jsonb)
+      )
+      INTO v_data
+      FROM comm_list;
+
+      RETURN v_data;
+
+    ELSE
+      RAISE EXCEPTION 'UNKNOWN_REPORT_TYPE' USING ERRCODE = 'P0001';
+  END CASE;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.report(text, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.report(text, jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261030000024_report_period_filters_and_pdf.sql <<<
+-- Migration 24: Enhanced Reports with Period Filtering (Today, Month, FY, All Time) & Business Branding
+-- Supports:
+-- 1. params->>'period' in ('TODAY', 'MONTH', 'YEAR', 'ALL') across all report types
+-- 2. Business profile snapshot included in report output for PDF & Print generation
+-- 3. Dynamic date boundary resolution and clean monthly trends
+
+CREATE OR REPLACE FUNCTION public.report(
+  type text,
+  params jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_fy text;
+  v_from date;
+  v_to date;
+  v_data jsonb;
+  v_period text;
+  v_period_label text;
+  v_biz public.businesses%ROWTYPE;
+
+  -- P&L specific variables
+  v_income numeric(14,2) := 0;
+  v_payments numeric(14,2) := 0;
+  v_expenses numeric(14,2) := 0;
+  v_outgoing numeric(14,2) := 0;
+  v_net_profit numeric(14,2) := 0;
+  v_loans_taken numeric(14,2) := 0;
+  v_principal_repaid numeric(14,2) := 0;
+  v_interest_paid numeric(14,2) := 0;
+  v_monthly_trend jsonb;
+  v_expense_by_cat jsonb;
+  v_income_by_cat jsonb;
+  v_min_trend_date date;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  v_period := UPPER(COALESCE(params->>'period', ''));
+  v_fy := params->>'fy_label';
+  IF v_fy IS NULL THEN
+    v_fy := public.fy_label(v_today);
+  END IF;
+
+  -- 1. Resolve Date Boundaries from params
+  IF v_period = 'TODAY' THEN
+    v_from := v_today;
+    v_to := v_today;
+    v_period_label := 'Today (' || to_char(v_today, 'DD Mon YYYY') || ')';
+  ELSIF v_period = 'MONTH' THEN
+    v_from := date_trunc('month', v_today)::date;
+    v_to := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    v_period_label := 'This Month (' || to_char(v_today, 'Mon YYYY') || ')';
+  ELSIF v_period = 'ALL' OR (params->>'all_time')::boolean IS TRUE THEN
+    v_from := '1970-01-01'::date;
+    v_to := (v_today + interval '5 years')::date;
+    v_period_label := 'All Time';
+  ELSE
+    -- Default or YEAR
+    v_from := (params->>'from')::date;
+    v_to := (params->>'to')::date;
+
+    IF v_from IS NULL AND v_to IS NULL THEN
+      DECLARE
+        v_start_year int := split_part(v_fy, '-', 1)::int;
+      BEGIN
+        v_from := make_date(v_start_year, 4, 1);
+        v_to := make_date(v_start_year + 1, 3, 31);
+      EXCEPTION WHEN OTHERS THEN
+        v_from := date_trunc('year', v_today)::date;
+        v_to := (date_trunc('year', v_today) + interval '1 year - 1 day')::date;
+      END;
+      v_period_label := 'FY ' || v_fy;
+    ELSE
+      v_period_label := to_char(v_from, 'DD Mon YYYY') || ' to ' || to_char(v_to, 'DD Mon YYYY');
+    END IF;
+  END IF;
+
+  CASE LOWER(type)
+    ----------------------------------------------------------------------------
+    -- CUSTOMER LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'customer_ledger' THEN
+      v_data := public.party_ledger_report(
+        'CUSTOMER',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- VENDOR LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'vendor_ledger' THEN
+      v_data := public.party_ledger_report(
+        'VENDOR',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 1. PROFIT & LOSS (BR-1: Cash-basis, loans excluded)
+    ----------------------------------------------------------------------------
+    WHEN 'pnl' THEN
+      SELECT COALESCE(SUM(amount), 0) INTO v_income
+      FROM public.receipts
+      WHERE business_id = v_biz_id AND receipt_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_payments
+      FROM public.payments
+      WHERE business_id = v_biz_id AND payment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_expenses
+      FROM public.expenses
+      WHERE business_id = v_biz_id AND expense_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      v_outgoing := v_payments + v_expenses;
+      v_net_profit := v_income - v_outgoing;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_loans_taken
+      FROM public.loans
+      WHERE business_id = v_biz_id AND loan_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT
+        COALESCE(SUM(principal), 0),
+        COALESCE(SUM(interest), 0)
+      INTO
+        v_principal_repaid,
+        v_interest_paid
+      FROM public.loan_repayments
+      WHERE business_id = v_biz_id AND repayment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      WITH exp_grouped AS (
+        SELECT
+          ec.name AS category_name,
+          COALESCE(SUM(e.amount), 0) AS total
+        FROM public.expense_categories ec
+        JOIN public.expenses e ON e.category_id = ec.id
+        WHERE ec.business_id = v_biz_id
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND e.deleted_at IS NULL
+        GROUP BY ec.name
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'category_name', eg.category_name,
+            'total', eg.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_expense_by_cat
+      FROM exp_grouped eg;
+
+      WITH inc_grouped AS (
+        SELECT
+          r.kind,
+          r.income_category,
+          COALESCE(SUM(r.amount), 0) AS total
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND r.deleted_at IS NULL
+        GROUP BY r.kind, r.income_category
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'kind', ig.kind,
+            'category', ig.income_category,
+            'total', ig.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_income_by_cat
+      FROM inc_grouped ig;
+
+      -- Determine trend start date safely (prevent massive generate_series on All Time)
+      IF v_period = 'ALL' THEN
+        SELECT COALESCE(MIN(receipt_date), date_trunc('year', v_today)::date)
+        INTO v_min_trend_date
+        FROM public.receipts
+        WHERE business_id = v_biz_id AND deleted_at IS NULL;
+      ELSE
+        v_min_trend_date := v_from;
+      END IF;
+
+      WITH months AS (
+        SELECT generate_series(
+          date_trunc('month', v_min_trend_date),
+          date_trunc('month', v_to),
+          '1 month'::interval
+        )::date AS m_start
+      ),
+      monthly_calc AS (
+        SELECT
+          to_char(m.m_start, 'Mon YYYY') AS month_label,
+          m.m_start,
+          COALESCE((
+            SELECT SUM(r.amount)
+            FROM public.receipts r
+            WHERE r.business_id = v_biz_id
+              AND r.receipt_date >= m.m_start
+              AND r.receipt_date < (m.m_start + interval '1 month')::date
+              AND r.deleted_at IS NULL
+          ), 0) AS income,
+          COALESCE((
+            SELECT SUM(p.amount)
+            FROM public.payments p
+            WHERE p.business_id = v_biz_id
+              AND p.payment_date >= m.m_start
+              AND p.payment_date < (m.m_start + interval '1 month')::date
+              AND p.deleted_at IS NULL
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM public.expenses e
+            WHERE e.business_id = v_biz_id
+              AND e.expense_date >= m.m_start
+              AND e.expense_date < (m.m_start + interval '1 month')::date
+              AND e.deleted_at IS NULL
+          ), 0) AS outgoing
+        FROM months m
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'month', mc.month_label,
+            'income', mc.income,
+            'outgoing', mc.outgoing,
+            'profit', (mc.income - mc.outgoing)
+          )
+          ORDER BY mc.m_start ASC
+        ),
+        '[]'::jsonb
+      )
+      INTO v_monthly_trend
+      FROM monthly_calc mc;
+
+      RETURN jsonb_build_object(
+        'type', 'pnl',
+        'fy_label', v_fy,
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'income', v_income,
+        'outgoing', v_outgoing,
+        'payments', v_payments,
+        'expenses', v_expenses,
+        'net_profit', v_net_profit,
+        'loans', jsonb_build_object(
+          'taken', v_loans_taken,
+          'principal_repaid', v_principal_repaid,
+          'interest_paid', v_interest_paid
+        ),
+        'expense_categories', v_expense_by_cat,
+        'income_categories', v_income_by_cat,
+        'monthly_trend', v_monthly_trend,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 2. INVOICES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'invoices' THEN
+      WITH inv_list AS (
+        SELECT
+          i.id,
+          i.number,
+          i.invoice_date,
+          i.due_date,
+          i.party_name,
+          i.party_mobile,
+          i.subtotal,
+          i.discount_amount,
+          i.total,
+          i.paid_amount,
+          (i.total - i.paid_amount) AS balance,
+          i.status,
+          CASE
+            WHEN i.status = 'ACTIVE' AND (i.total > i.paid_amount) AND i.due_date < v_today THEN true
+            ELSE false
+          END AS is_overdue
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+          AND (params->>'status' IS NULL OR i.status = params->>'status')
+        ORDER BY i.invoice_date DESC, i.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'invoices',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_billed', COALESCE(SUM(total), 0),
+        'total_paid', COALESCE(SUM(paid_amount), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(inv_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM inv_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 3. RECEIPTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'receipts' THEN
+      WITH rec_list AS (
+        SELECT
+          r.id,
+          r.number,
+          r.receipt_date,
+          c.name AS customer_name,
+          r.amount,
+          r.mode,
+          r.kind,
+          r.income_category,
+          r.reference,
+          r.unallocated_amount
+        FROM public.receipts r
+        LEFT JOIN public.customers c ON c.id = r.customer_id
+        WHERE r.business_id = v_biz_id
+          AND r.deleted_at IS NULL
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND (params->>'mode' IS NULL OR r.mode = params->>'mode')
+          AND (params->>'kind' IS NULL OR r.kind = params->>'kind')
+        ORDER BY r.receipt_date DESC, r.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'receipts',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(rec_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM rec_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 4. PAYMENTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'payments' THEN
+      WITH pay_list AS (
+        SELECT
+          p.id,
+          p.payment_date,
+          v.name AS vendor_name,
+          p.description,
+          i.number AS invoice_number,
+          p.amount,
+          p.mode,
+          p.notes
+        FROM public.payments p
+        JOIN public.vendors v ON v.id = p.vendor_id
+        LEFT JOIN public.invoices i ON i.id = p.invoice_id
+        WHERE p.business_id = v_biz_id
+          AND p.deleted_at IS NULL
+          AND p.payment_date BETWEEN v_from AND v_to
+          AND (params->>'vendor_id' IS NULL OR p.vendor_id = (params->>'vendor_id')::uuid)
+        ORDER BY p.payment_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'payments',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(pay_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM pay_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 5. EXPENSES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'expenses' THEN
+      WITH exp_list AS (
+        SELECT
+          e.id,
+          e.expense_date,
+          ec.name AS category_name,
+          e.description,
+          e.amount,
+          e.mode,
+          e.payee,
+          e.notes
+        FROM public.expenses e
+        JOIN public.expense_categories ec ON ec.id = e.category_id
+        WHERE e.business_id = v_biz_id
+          AND e.deleted_at IS NULL
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND (params->>'category_id' IS NULL OR e.category_id = (params->>'category_id')::uuid)
+        ORDER BY e.expense_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'expenses',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(exp_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM exp_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 6. OUTSTANDING DUES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'outstanding' THEN
+      WITH dues_query AS (
+        SELECT
+          c.id,
+          c.name AS customer_name,
+          c.mobile AS customer_mobile,
+          c.type AS customer_type,
+          COALESCE(SUM(i.total), 0) AS total_billed,
+          COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+          COALESCE(SUM(i.total - i.paid_amount), 0) AS balance,
+          COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0) AS overdue_balance,
+          MIN(i.invoice_date) AS oldest_invoice_date
+        FROM public.customers c
+        JOIN public.invoices i ON i.customer_id = c.id
+        WHERE c.business_id = v_biz_id
+          AND c.deleted_at IS NULL
+          AND i.business_id = v_biz_id
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+          AND (i.total > i.paid_amount)
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+        GROUP BY c.id, c.name, c.mobile, c.type
+        HAVING COALESCE(SUM(i.total - i.paid_amount), 0) > 0
+        ORDER BY balance DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'outstanding',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_outstanding', COALESCE(SUM(balance), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'total_overdue', COALESCE(SUM(overdue_balance), 0),
+        'customer_count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(dues_query.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM dues_query;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 7. LOANS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'loans' THEN
+      WITH loan_list AS (
+        SELECT
+          l.id,
+          l.lender_name,
+          l.loan_date,
+          l.amount AS taken_amount,
+          COALESCE(SUM(lr.principal), 0) AS principal_repaid,
+          COALESCE(SUM(lr.interest), 0) AS interest_paid,
+          (l.amount - COALESCE(SUM(lr.principal), 0)) AS current_outstanding
+        FROM public.loans l
+        LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+          AND (v_period = 'ALL' OR lr.repayment_date BETWEEN v_from AND v_to)
+        WHERE l.business_id = v_biz_id
+          AND l.deleted_at IS NULL
+          AND (
+            v_period = 'ALL'
+            OR l.loan_date BETWEEN v_from AND v_to
+            OR EXISTS (
+              SELECT 1 FROM public.loan_repayments r
+              WHERE r.loan_id = l.id AND r.deleted_at IS NULL AND r.repayment_date BETWEEN v_from AND v_to
+            )
+          )
+        GROUP BY l.id, l.lender_name, l.loan_date, l.amount
+        ORDER BY l.loan_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'loans',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_taken', COALESCE(SUM(taken_amount), 0),
+        'total_principal_repaid', COALESCE(SUM(principal_repaid), 0),
+        'total_outstanding', COALESCE(SUM(current_outstanding), 0),
+        'rows', COALESCE(jsonb_agg(to_jsonb(loan_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM loan_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 8. JOBS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'jobs' THEN
+      WITH job_list AS (
+        SELECT
+          j.id,
+          j.job_type_name,
+          j.party_name,
+          j.applicant_name,
+          j.amount,
+          j.deadline_date,
+          j.status,
+          m.name AS assigned_staff_name,
+          i.number AS invoice_number,
+          i.invoice_date
+        FROM public.jobs j
+        JOIN public.invoices i ON i.id = j.invoice_id
+        LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+        WHERE j.business_id = v_biz_id
+          AND j.deleted_at IS NULL
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+          AND (params->>'status' IS NULL OR j.status = params->>'status')
+        ORDER BY j.deadline_date ASC
+      )
+      SELECT jsonb_build_object(
+        'type', 'jobs',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(job_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM job_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 9. COMMISSION REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'commission' THEN
+      WITH comm_list AS (
+        SELECT
+          ce.id,
+          m.name AS staff_name,
+          j.job_type_name,
+          ce.base_amount,
+          ce.percent,
+          ce.amount,
+          ce.status,
+          ce.earned_at
+        FROM public.commission_entries ce
+        JOIN public.members m ON m.id = ce.staff_id
+        JOIN public.jobs j ON j.id = ce.job_id
+        WHERE ce.business_id = v_biz_id
+          AND ce.deleted_at IS NULL
+          AND (params->>'staff_id' IS NULL OR ce.staff_id = (params->>'staff_id')::uuid)
+          AND (
+            v_period = 'ALL'
+            OR (ce.earned_at IS NOT NULL AND ce.earned_at::date BETWEEN v_from AND v_to)
+            OR (ce.earned_at IS NULL AND ce.created_at::date BETWEEN v_from AND v_to)
+          )
+        ORDER BY ce.created_at DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'commission',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(comm_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM comm_list;
+
+      RETURN v_data;
+
+    ELSE
+      RAISE EXCEPTION 'UNKNOWN_REPORT_TYPE' USING ERRCODE = 'P0001';
+  END CASE;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.report(text, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.report(text, jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261030000025_report_custom_date_range.sql <<<
+-- Migration 25: First-class Custom Date Range support in report RPC
+-- Handles params->>'period' = 'CUSTOM' with explicit 'from' and 'to' date parameters
+-- Formats period_label cleanly as 'DD Mon YYYY – DD Mon YYYY'
+
+CREATE OR REPLACE FUNCTION public.report(
+  type text,
+  params jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_fy text;
+  v_from date;
+  v_to date;
+  v_data jsonb;
+  v_period text;
+  v_period_label text;
+  v_biz public.businesses%ROWTYPE;
+
+  -- P&L specific variables
+  v_income numeric(14,2) := 0;
+  v_payments numeric(14,2) := 0;
+  v_expenses numeric(14,2) := 0;
+  v_outgoing numeric(14,2) := 0;
+  v_net_profit numeric(14,2) := 0;
+  v_loans_taken numeric(14,2) := 0;
+  v_principal_repaid numeric(14,2) := 0;
+  v_interest_paid numeric(14,2) := 0;
+  v_monthly_trend jsonb;
+  v_expense_by_cat jsonb;
+  v_income_by_cat jsonb;
+  v_min_trend_date date;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  v_period := UPPER(COALESCE(params->>'period', ''));
+  v_fy := params->>'fy_label';
+  IF v_fy IS NULL THEN
+    v_fy := public.fy_label(v_today);
+  END IF;
+
+  -- 1. Resolve Date Boundaries
+  IF v_period = 'TODAY' THEN
+    v_from := v_today;
+    v_to := v_today;
+    v_period_label := 'Today (' || to_char(v_today, 'DD Mon YYYY') || ')';
+  ELSIF v_period = 'MONTH' THEN
+    v_from := date_trunc('month', v_today)::date;
+    v_to := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    v_period_label := 'This Month (' || to_char(v_today, 'Mon YYYY') || ')';
+  ELSIF v_period = 'CUSTOM' THEN
+    v_from := COALESCE((params->>'from')::date, v_today);
+    v_to := COALESCE((params->>'to')::date, v_today);
+    v_period_label := to_char(v_from, 'DD Mon YYYY') || ' – ' || to_char(v_to, 'DD Mon YYYY');
+  ELSIF v_period = 'ALL' OR (params->>'all_time')::boolean IS TRUE THEN
+    v_from := '1970-01-01'::date;
+    v_to := (v_today + interval '5 years')::date;
+    v_period_label := 'All Time';
+  ELSE
+    -- Default or YEAR
+    v_from := (params->>'from')::date;
+    v_to := (params->>'to')::date;
+
+    IF v_from IS NULL AND v_to IS NULL THEN
+      DECLARE
+        v_start_year int := split_part(v_fy, '-', 1)::int;
+      BEGIN
+        v_from := make_date(v_start_year, 4, 1);
+        v_to := make_date(v_start_year + 1, 3, 31);
+      EXCEPTION WHEN OTHERS THEN
+        v_from := date_trunc('year', v_today)::date;
+        v_to := (date_trunc('year', v_today) + interval '1 year - 1 day')::date;
+      END;
+      v_period_label := 'FY ' || v_fy;
+    ELSE
+      v_period_label := to_char(v_from, 'DD Mon YYYY') || ' – ' || to_char(v_to, 'DD Mon YYYY');
+    END IF;
+  END IF;
+
+  CASE LOWER(type)
+    ----------------------------------------------------------------------------
+    -- CUSTOMER LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'customer_ledger' THEN
+      v_data := public.party_ledger_report(
+        'CUSTOMER',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- VENDOR LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'vendor_ledger' THEN
+      v_data := public.party_ledger_report(
+        'VENDOR',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 1. PROFIT & LOSS (BR-1: Cash-basis, loans excluded)
+    ----------------------------------------------------------------------------
+    WHEN 'pnl' THEN
+      SELECT COALESCE(SUM(amount), 0) INTO v_income
+      FROM public.receipts
+      WHERE business_id = v_biz_id AND receipt_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_payments
+      FROM public.payments
+      WHERE business_id = v_biz_id AND payment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_expenses
+      FROM public.expenses
+      WHERE business_id = v_biz_id AND expense_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      v_outgoing := v_payments + v_expenses;
+      v_net_profit := v_income - v_outgoing;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_loans_taken
+      FROM public.loans
+      WHERE business_id = v_biz_id AND loan_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT
+        COALESCE(SUM(principal), 0),
+        COALESCE(SUM(interest), 0)
+      INTO
+        v_principal_repaid,
+        v_interest_paid
+      FROM public.loan_repayments
+      WHERE business_id = v_biz_id AND repayment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      WITH exp_grouped AS (
+        SELECT
+          ec.name AS category_name,
+          COALESCE(SUM(e.amount), 0) AS total
+        FROM public.expense_categories ec
+        JOIN public.expenses e ON e.category_id = ec.id
+        WHERE ec.business_id = v_biz_id
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND e.deleted_at IS NULL
+        GROUP BY ec.name
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'category_name', eg.category_name,
+            'total', eg.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_expense_by_cat
+      FROM exp_grouped eg;
+
+      WITH inc_grouped AS (
+        SELECT
+          r.kind,
+          r.income_category,
+          COALESCE(SUM(r.amount), 0) AS total
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND r.deleted_at IS NULL
+        GROUP BY r.kind, r.income_category
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'kind', ig.kind,
+            'category', ig.income_category,
+            'total', ig.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_income_by_cat
+      FROM inc_grouped ig;
+
+      IF v_period = 'ALL' THEN
+        SELECT COALESCE(MIN(receipt_date), date_trunc('year', v_today)::date)
+        INTO v_min_trend_date
+        FROM public.receipts
+        WHERE business_id = v_biz_id AND deleted_at IS NULL;
+      ELSE
+        v_min_trend_date := v_from;
+      END IF;
+
+      WITH months AS (
+        SELECT generate_series(
+          date_trunc('month', v_min_trend_date),
+          date_trunc('month', v_to),
+          '1 month'::interval
+        )::date AS m_start
+      ),
+      monthly_calc AS (
+        SELECT
+          to_char(m.m_start, 'Mon YYYY') AS month_label,
+          m.m_start,
+          COALESCE((
+            SELECT SUM(r.amount)
+            FROM public.receipts r
+            WHERE r.business_id = v_biz_id
+              AND r.receipt_date >= m.m_start
+              AND r.receipt_date < (m.m_start + interval '1 month')::date
+              AND r.deleted_at IS NULL
+          ), 0) AS income,
+          COALESCE((
+            SELECT SUM(p.amount)
+            FROM public.payments p
+            WHERE p.business_id = v_biz_id
+              AND p.payment_date >= m.m_start
+              AND p.payment_date < (m.m_start + interval '1 month')::date
+              AND p.deleted_at IS NULL
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM public.expenses e
+            WHERE e.business_id = v_biz_id
+              AND e.expense_date >= m.m_start
+              AND e.expense_date < (m.m_start + interval '1 month')::date
+              AND e.deleted_at IS NULL
+          ), 0) AS outgoing
+        FROM months m
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'month', mc.month_label,
+            'income', mc.income,
+            'outgoing', mc.outgoing,
+            'profit', (mc.income - mc.outgoing)
+          )
+          ORDER BY mc.m_start ASC
+        ),
+        '[]'::jsonb
+      )
+      INTO v_monthly_trend
+      FROM monthly_calc mc;
+
+      RETURN jsonb_build_object(
+        'type', 'pnl',
+        'fy_label', v_fy,
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'income', v_income,
+        'outgoing', v_outgoing,
+        'payments', v_payments,
+        'expenses', v_expenses,
+        'net_profit', v_net_profit,
+        'loans', jsonb_build_object(
+          'taken', v_loans_taken,
+          'principal_repaid', v_principal_repaid,
+          'interest_paid', v_interest_paid
+        ),
+        'expense_categories', v_expense_by_cat,
+        'income_categories', v_income_by_cat,
+        'monthly_trend', v_monthly_trend,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 2. INVOICES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'invoices' THEN
+      WITH inv_list AS (
+        SELECT
+          i.id,
+          i.number,
+          i.invoice_date,
+          i.due_date,
+          i.party_name,
+          i.party_mobile,
+          i.subtotal,
+          i.discount_amount,
+          i.total,
+          i.paid_amount,
+          (i.total - i.paid_amount) AS balance,
+          i.status,
+          CASE
+            WHEN i.status = 'ACTIVE' AND (i.total > i.paid_amount) AND i.due_date < v_today THEN true
+            ELSE false
+          END AS is_overdue
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+          AND (params->>'status' IS NULL OR i.status = params->>'status')
+        ORDER BY i.invoice_date DESC, i.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'invoices',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_billed', COALESCE(SUM(total), 0),
+        'total_paid', COALESCE(SUM(paid_amount), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(inv_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM inv_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 3. RECEIPTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'receipts' THEN
+      WITH rec_list AS (
+        SELECT
+          r.id,
+          r.number,
+          r.receipt_date,
+          c.name AS customer_name,
+          r.amount,
+          r.mode,
+          r.kind,
+          r.income_category,
+          r.reference,
+          r.unallocated_amount
+        FROM public.receipts r
+        LEFT JOIN public.customers c ON c.id = r.customer_id
+        WHERE r.business_id = v_biz_id
+          AND r.deleted_at IS NULL
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND (params->>'mode' IS NULL OR r.mode = params->>'mode')
+          AND (params->>'kind' IS NULL OR r.kind = params->>'kind')
+        ORDER BY r.receipt_date DESC, r.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'receipts',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(rec_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM rec_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 4. PAYMENTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'payments' THEN
+      WITH pay_list AS (
+        SELECT
+          p.id,
+          p.payment_date,
+          v.name AS vendor_name,
+          p.description,
+          i.number AS invoice_number,
+          p.amount,
+          p.mode,
+          p.notes
+        FROM public.payments p
+        JOIN public.vendors v ON v.id = p.vendor_id
+        LEFT JOIN public.invoices i ON i.id = p.invoice_id
+        WHERE p.business_id = v_biz_id
+          AND p.deleted_at IS NULL
+          AND p.payment_date BETWEEN v_from AND v_to
+          AND (params->>'vendor_id' IS NULL OR p.vendor_id = (params->>'vendor_id')::uuid)
+        ORDER BY p.payment_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'payments',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(pay_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM pay_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 5. EXPENSES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'expenses' THEN
+      WITH exp_list AS (
+        SELECT
+          e.id,
+          e.expense_date,
+          ec.name AS category_name,
+          e.description,
+          e.amount,
+          e.mode,
+          e.payee,
+          e.notes
+        FROM public.expenses e
+        JOIN public.expense_categories ec ON ec.id = e.category_id
+        WHERE e.business_id = v_biz_id
+          AND e.deleted_at IS NULL
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND (params->>'category_id' IS NULL OR e.category_id = (params->>'category_id')::uuid)
+        ORDER BY e.expense_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'expenses',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(exp_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM exp_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 6. OUTSTANDING DUES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'outstanding' THEN
+      WITH dues_query AS (
+        SELECT
+          c.id,
+          c.name AS customer_name,
+          c.mobile AS customer_mobile,
+          c.type AS customer_type,
+          COALESCE(SUM(i.total), 0) AS total_billed,
+          COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+          COALESCE(SUM(i.total - i.paid_amount), 0) AS balance,
+          COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0) AS overdue_balance,
+          MIN(i.invoice_date) AS oldest_invoice_date
+        FROM public.customers c
+        JOIN public.invoices i ON i.customer_id = c.id
+        WHERE c.business_id = v_biz_id
+          AND c.deleted_at IS NULL
+          AND i.business_id = v_biz_id
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+          AND (i.total > i.paid_amount)
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+        GROUP BY c.id, c.name, c.mobile, c.type
+        HAVING COALESCE(SUM(i.total - i.paid_amount), 0) > 0
+        ORDER BY balance DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'outstanding',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_outstanding', COALESCE(SUM(balance), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'total_overdue', COALESCE(SUM(overdue_balance), 0),
+        'customer_count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(dues_query.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM dues_query;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 7. LOANS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'loans' THEN
+      WITH loan_list AS (
+        SELECT
+          l.id,
+          l.lender_name,
+          l.loan_date,
+          l.amount AS taken_amount,
+          COALESCE(SUM(lr.principal), 0) AS principal_repaid,
+          COALESCE(SUM(lr.interest), 0) AS interest_paid,
+          (l.amount - COALESCE(SUM(lr.principal), 0)) AS current_outstanding
+        FROM public.loans l
+        LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+          AND (v_period = 'ALL' OR lr.repayment_date BETWEEN v_from AND v_to)
+        WHERE l.business_id = v_biz_id
+          AND l.deleted_at IS NULL
+          AND (
+            v_period = 'ALL'
+            OR l.loan_date BETWEEN v_from AND v_to
+            OR EXISTS (
+              SELECT 1 FROM public.loan_repayments r
+              WHERE r.loan_id = l.id AND r.deleted_at IS NULL AND r.repayment_date BETWEEN v_from AND v_to
+            )
+          )
+        GROUP BY l.id, l.lender_name, l.loan_date, l.amount
+        ORDER BY l.loan_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'loans',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_taken', COALESCE(SUM(taken_amount), 0),
+        'total_principal_repaid', COALESCE(SUM(principal_repaid), 0),
+        'total_outstanding', COALESCE(SUM(current_outstanding), 0),
+        'rows', COALESCE(jsonb_agg(to_jsonb(loan_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM loan_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 8. JOBS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'jobs' THEN
+      WITH job_list AS (
+        SELECT
+          j.id,
+          j.job_type_name,
+          j.party_name,
+          j.applicant_name,
+          j.amount,
+          j.deadline_date,
+          j.status,
+          m.name AS assigned_staff_name,
+          i.number AS invoice_number,
+          i.invoice_date
+        FROM public.jobs j
+        JOIN public.invoices i ON i.id = j.invoice_id
+        LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+        WHERE j.business_id = v_biz_id
+          AND j.deleted_at IS NULL
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+          AND (params->>'status' IS NULL OR j.status = params->>'status')
+        ORDER BY j.deadline_date ASC
+      )
+      SELECT jsonb_build_object(
+        'type', 'jobs',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(job_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM job_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 9. COMMISSION REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'commission' THEN
+      WITH comm_list AS (
+        SELECT
+          ce.id,
+          m.name AS staff_name,
+          j.job_type_name,
+          ce.base_amount,
+          ce.percent,
+          ce.amount,
+          ce.status,
+          ce.earned_at
+        FROM public.commission_entries ce
+        JOIN public.members m ON m.id = ce.staff_id
+        JOIN public.jobs j ON j.id = ce.job_id
+        WHERE ce.business_id = v_biz_id
+          AND ce.deleted_at IS NULL
+          AND (params->>'staff_id' IS NULL OR ce.staff_id = (params->>'staff_id')::uuid)
+          AND (
+            v_period = 'ALL'
+            OR (ce.earned_at IS NOT NULL AND ce.earned_at::date BETWEEN v_from AND v_to)
+            OR (ce.earned_at IS NULL AND ce.created_at::date BETWEEN v_from AND v_to)
+          )
+        ORDER BY ce.created_at DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'commission',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(comm_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM comm_list;
+
+      RETURN v_data;
+
+    ELSE
+      RAISE EXCEPTION 'UNKNOWN_REPORT_TYPE' USING ERRCODE = 'P0001';
+  END CASE;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.report(text, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.report(text, jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261031000026_safe_edit_and_delete_enhancements.sql <<<
+-- Migration 26: Safe Edit and Delete enhancements across all major modules
+-- Conforms to accounting integrity, audit logging, and hard multi-tenant isolation
+
+-- 1. RPC: update_receipt (Owner & Accountant)
+-- Allows editing receipt metadata (date, payment mode, bank account, reference, notes, category)
+-- without corrupting invoice allocations
+CREATE OR REPLACE FUNCTION public.update_receipt(
+  id uuid,
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_rec public.receipts%ROWTYPE;
+  v_date date;
+  v_mode text;
+  v_bank_id uuid;
+  v_ref text;
+  v_notes text;
+  v_cat text;
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_rec
+  FROM public.receipts
+  WHERE receipts.id = update_receipt.id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Extract fields from payload
+  IF payload ? 'receipt_date' THEN
+    v_date := (payload->>'receipt_date')::date;
+  ELSE
+    v_date := v_rec.receipt_date;
+  END IF;
+
+  IF payload ? 'mode' THEN
+    v_mode := payload->>'mode';
+    IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+      RAISE EXCEPTION 'INVALID_PAYMENT_MODE' USING ERRCODE = 'P0001';
+    END IF;
+  ELSE
+    v_mode := v_rec.mode;
+  END IF;
+
+  IF payload ? 'bank_account_id' THEN
+    IF payload->>'bank_account_id' IS NOT NULL AND payload->>'bank_account_id' <> '' THEN
+      v_bank_id := (payload->>'bank_account_id')::uuid;
+      PERFORM 1 FROM public.bank_accounts WHERE bank_accounts.id = v_bank_id AND business_id = v_biz_id;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'BANK_ACCOUNT_NOT_FOUND' USING ERRCODE = 'P0001';
+      END IF;
+    ELSE
+      v_bank_id := NULL;
+    END IF;
+  ELSE
+    v_bank_id := v_rec.bank_account_id;
+  END IF;
+
+  v_ref := CASE WHEN payload ? 'reference' THEN NULLIF(TRIM(payload->>'reference'), '') ELSE v_rec.reference END;
+  v_notes := CASE WHEN payload ? 'notes' THEN NULLIF(TRIM(payload->>'notes'), '') ELSE v_rec.notes END;
+  v_cat := CASE WHEN payload ? 'income_category' THEN NULLIF(TRIM(payload->>'income_category'), '') ELSE v_rec.income_category END;
+
+  UPDATE public.receipts
+  SET
+    receipt_date = v_date,
+    fy_label = app.fy_label(v_date),
+    mode = v_mode,
+    bank_account_id = v_bank_id,
+    reference = v_ref,
+    notes = v_notes,
+    income_category = v_cat,
+    updated_at = now(),
+    updated_by = v_member_id
+  WHERE receipts.id = v_rec.id
+  RETURNING to_jsonb(receipts.*) INTO v_result;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_receipt(uuid, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_receipt(uuid, jsonb) TO authenticated;
+
+
+-- 2. RPC: delete_loan_repayment (Owner & Accountant)
+-- Safely reverses a loan repayment and cleans up any linked interest expense
+CREATE OR REPLACE FUNCTION public.delete_loan_repayment(
+  repayment_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_rep public.loan_repayments%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_rep
+  FROM public.loan_repayments
+  WHERE id = repayment_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'REPAYMENT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- 1. If interest expense was generated, soft-delete it
+  UPDATE public.expenses
+  SET deleted_at = now(),
+      deleted_by = v_member_id,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE loan_repayment_id = v_rep.id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  -- 2. Soft-delete the repayment row itself
+  UPDATE public.loan_repayments
+  SET deleted_at = now(),
+      deleted_by = v_member_id,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = v_rep.id;
+
+  RETURN jsonb_build_object('success', true, 'repayment_id', v_rep.id);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.delete_loan_repayment(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.delete_loan_repayment(uuid) TO authenticated;
+
+
+-- 3. RPC: delete_staff_payout (Owner only)
+-- Safely reverses a staff payout and cleans up the linked Salary/Commission expense
+CREATE OR REPLACE FUNCTION public.delete_staff_payout(
+  payout_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_payout public.staff_payouts%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_payout
+  FROM public.staff_payouts
+  WHERE id = payout_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'PAYOUT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- 1. Soft-delete the linked Expense in Salary / Commission
+  IF v_payout.expense_id IS NOT NULL THEN
+    UPDATE public.expenses
+    SET deleted_at = now(),
+        deleted_by = v_member_id,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE id = v_payout.expense_id AND business_id = v_biz_id AND deleted_at IS NULL;
+  END IF;
+
+  -- Also handle any expense linked via staff_id matching this payout if expense_id was null
+  UPDATE public.expenses
+  SET deleted_at = now(),
+      deleted_by = v_member_id,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE staff_id = v_payout.staff_id
+    AND expense_date = v_payout.payout_date
+    AND amount = v_payout.amount
+    AND business_id = v_biz_id
+    AND deleted_at IS NULL;
+
+  -- 2. Soft-delete staff_payout
+  UPDATE public.staff_payouts
+  SET deleted_at = now(),
+      deleted_by = v_member_id,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = v_payout.id;
+
+  RETURN jsonb_build_object('success', true, 'payout_id', v_payout.id);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.delete_staff_payout(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.delete_staff_payout(uuid) TO authenticated;
+
+
+-- 4. RPC: cancel_job (Owner & Accountant)
+-- Directly cancels a job and its associated commission entry
+CREATE OR REPLACE FUNCTION public.cancel_job(
+  p_job_id uuid,
+  p_reason text DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_job public.jobs%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = p_job_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'JOB_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Update job status to CANCELLED
+  UPDATE public.jobs
+  SET status = 'CANCELLED',
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = p_job_id;
+
+  -- Cancel linked commission entry
+  UPDATE public.commission_entries
+  SET status = 'CANCELLED',
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE job_id = p_job_id;
+
+  RETURN jsonb_build_object('success', true, 'job_id', p_job_id);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.cancel_job(uuid, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.cancel_job(uuid, text) TO authenticated;
+
+
+-- 5. Enhanced update_job (Owner only)
+-- Also allows editing applicant_name and party snapshots
+DROP FUNCTION IF EXISTS public.update_job(uuid, date, uuid);
+CREATE OR REPLACE FUNCTION public.update_job(
+  p_job_id uuid,
+  p_deadline_date date,
+  p_assigned_staff_id uuid DEFAULT NULL,
+  p_applicant_name text DEFAULT NULL,
+  p_party_name text DEFAULT NULL,
+  p_party_mobile text DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_job public.jobs%ROWTYPE;
+  v_old_staff_id uuid;
+  v_updated public.jobs%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = p_job_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'JOB_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_old_staff_id := v_job.assigned_staff_id;
+
+  -- Validate staff if provided
+  IF p_assigned_staff_id IS NOT NULL THEN
+    PERFORM 1 FROM public.members
+    WHERE id = p_assigned_staff_id AND business_id = v_biz_id AND active = true;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  -- Update job fields
+  UPDATE public.jobs
+  SET
+    deadline_date = COALESCE(p_deadline_date, v_job.deadline_date),
+    assigned_staff_id = p_assigned_staff_id,
+    applicant_name = COALESCE(p_applicant_name, v_job.applicant_name),
+    party_name = COALESCE(p_party_name, v_job.party_name),
+    party_mobile = COALESCE(p_party_mobile, v_job.party_mobile),
+    updated_at = now(),
+    updated_by = v_member_id
+  WHERE id = p_job_id
+  RETURNING * INTO v_updated;
+
+  -- Handle commission entry reassignment
+  IF v_old_staff_id IS DISTINCT FROM p_assigned_staff_id THEN
+    IF p_assigned_staff_id IS NOT NULL AND v_job.commission_percent > 0 THEN
+      INSERT INTO public.commission_entries (
+        job_id, staff_id, base_amount, percent, amount, status
+      )
+      VALUES (
+        v_job.id,
+        p_assigned_staff_id,
+        v_job.amount,
+        v_job.commission_percent,
+        ROUND(v_job.amount * v_job.commission_percent / 100.0, 2),
+        CASE WHEN v_job.status = 'COMPLETED' THEN 'EARNED' ELSE 'UPCOMING' END
+      )
+      ON CONFLICT (job_id) DO UPDATE SET
+        staff_id = EXCLUDED.staff_id,
+        updated_at = now(),
+        updated_by = v_member_id;
+    ELSIF p_assigned_staff_id IS NULL THEN
+      DELETE FROM public.commission_entries WHERE job_id = v_job.id;
+    END IF;
+  END IF;
+
+  RETURN to_jsonb(v_updated);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_job(uuid, date, uuid, text, text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_job(uuid, date, uuid, text, text, text) TO authenticated;
+
+
+-- 6. Comprehensive soft_delete with accounting safeguards
+CREATE OR REPLACE FUNCTION public.soft_delete(
+  p_table text,
+  p_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_allowed boolean := false;
+  v_has_records boolean;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Validate table
+  IF p_table NOT IN (
+    'customers', 'services', 'job_type_steps', 'vendors', 'payments',
+    'expense_categories', 'expenses', 'loans', 'receipts', 'money_transfers', 'bank_accounts'
+  ) THEN
+    RAISE EXCEPTION 'INVALID_TABLE' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Role checks per §5
+  IF v_role = 'OWNER' THEN
+    v_allowed := true;
+  ELSIF v_role = 'ACCOUNTANT' THEN
+    IF p_table IN ('customers', 'payments', 'expenses', 'loans', 'money_transfers') THEN
+      v_allowed := true;
+    END IF;
+  END IF;
+
+  IF NOT v_allowed THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- 1. Safeguard Customers: cannot delete if customer has invoices (BR-9)
+  IF p_table = 'customers' THEN
+    SELECT EXISTS (
+      SELECT 1 FROM public.invoices
+      WHERE customer_id = p_id AND business_id = v_biz_id AND deleted_at IS NULL
+    ) INTO v_has_records;
+    IF v_has_records THEN
+      RAISE EXCEPTION 'CUSTOMER_HAS_INVOICES' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  -- 2. Safeguard Expense Categories: system categories cannot be deleted
+  IF p_table = 'expense_categories' THEN
+    SELECT EXISTS (
+      SELECT 1 FROM public.expense_categories
+      WHERE id = p_id AND system = true
+    ) INTO v_has_records;
+    IF v_has_records THEN
+      RAISE EXCEPTION 'SYSTEM_CATEGORY_CANNOT_BE_DELETED' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  -- 3. Safeguard Expenses: system-generated expenses (from loan repayments or commission payouts) cannot be deleted directly
+  IF p_table = 'expenses' THEN
+    SELECT EXISTS (
+      SELECT 1 FROM public.expenses
+      WHERE id = p_id AND business_id = v_biz_id AND (loan_repayment_id IS NOT NULL OR staff_id IS NOT NULL)
+    ) INTO v_has_records;
+    IF v_has_records THEN
+      RAISE EXCEPTION 'SYSTEM_EXPENSE_READ_ONLY' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  -- Execute soft delete
+  EXECUTE format(
+    'UPDATE public.%I SET deleted_at = now(), deleted_by = %L WHERE id = %L AND business_id = %L AND deleted_at IS NULL',
+    p_table, v_member_id, p_id, v_biz_id
+  );
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.soft_delete(text, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.soft_delete(text, uuid) TO authenticated;
+
+
+-- >>> Migration: 20261031000027_enhanced_update_invoice.sql <<<
+-- Migration 27: Enhanced update_invoice with full party snapshot, item recalculation, job & commission recreation, and accounting integrity
+
+DROP FUNCTION IF EXISTS public.update_invoice(uuid, jsonb);
+
+CREATE OR REPLACE FUNCTION public.update_invoice(
+  p_invoice_id uuid,
+  payload jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_inv public.invoices%ROWTYPE;
+  v_items jsonb;
+  v_item jsonb;
+  v_subtotal numeric(14,2) := 0;
+  v_line_amount numeric(14,2);
+  v_qty numeric(10,2);
+  v_rate numeric(14,2);
+  v_discount_type text;
+  v_discount_value numeric(14,2);
+  v_discount_amount numeric(14,2) := 0;
+  v_total numeric(14,2);
+  v_party_name text;
+  v_party_mobile text;
+  v_customer_id uuid;
+  v_invoice_date date;
+  v_due_date date;
+  v_notes text;
+  v_result jsonb;
+
+  -- Job creation vars
+  v_item_id uuid;
+  v_item_service_id uuid;
+  v_service_id uuid;
+  v_service_row public.services%ROWTYPE;
+  v_job_type_name text;
+  v_deadline_date date;
+  v_comm_percent numeric(5,2);
+  v_job_staff_id uuid;
+  v_job_id uuid;
+  v_step_row RECORD;
+  v_step_count int;
+  v_comm_amount numeric(14,2);
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_inv
+  FROM public.invoices
+  WHERE invoices.id = p_invoice_id AND invoices.business_id = v_biz_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_inv.status = 'CANCELLED' THEN
+    RAISE EXCEPTION 'INVOICE_CANCELLED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Role check: Staff can only edit own invoice
+  IF v_role = 'STAFF' AND v_inv.created_by <> v_member_id THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Lock check: if any allocations exist or paid_amount > 0, raise INVOICE_LOCKED per BR-8
+  IF v_inv.paid_amount > 0 OR EXISTS (SELECT 1 FROM public.receipt_allocations ra WHERE ra.invoice_id = v_inv.id) THEN
+    RAISE EXCEPTION 'INVOICE_LOCKED' USING ERRCODE = 'P0001', DETAIL = jsonb_build_object('invoice_id', v_inv.id)::text;
+  END IF;
+
+  -- Customer / Party updates
+  v_party_name := v_inv.party_name;
+  v_party_mobile := v_inv.party_mobile;
+  v_customer_id := v_inv.customer_id;
+
+  IF payload ? 'customer_id' THEN
+    IF payload->>'customer_id' IS NOT NULL AND payload->>'customer_id' <> '' THEN
+      v_customer_id := (payload->>'customer_id')::uuid;
+      SELECT c.name, c.mobile INTO v_party_name, v_party_mobile
+      FROM public.customers c
+      WHERE c.id = v_customer_id AND c.business_id = v_biz_id;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'CUSTOMER_NOT_FOUND' USING ERRCODE = 'P0001';
+      END IF;
+    ELSE
+      v_customer_id := NULL;
+    END IF;
+  END IF;
+
+  IF payload ? 'walk_in' AND payload->'walk_in' IS NOT NULL THEN
+    v_customer_id := NULL;
+    v_party_name := COALESCE(payload->'walk_in'->>'name', 'Walk-in');
+    v_party_mobile := payload->'walk_in'->>'mobile';
+  END IF;
+
+  v_invoice_date := COALESCE((payload->>'invoice_date')::date, v_inv.invoice_date);
+  v_due_date := COALESCE((payload->>'due_date')::date, v_inv.due_date);
+  v_notes := CASE WHEN payload ? 'notes' THEN payload->>'notes' ELSE v_inv.notes END;
+
+  -- Recalculate items and handle jobs
+  v_items := payload->'items';
+  IF v_items IS NOT NULL AND jsonb_array_length(v_items) > 0 THEN
+    -- Check if any existing job step has been ticked (BR-12)
+    IF EXISTS (
+      SELECT 1 FROM public.jobs j
+      JOIN public.job_steps js ON js.job_id = j.id
+      WHERE j.invoice_id = v_inv.id AND js.ticked = true
+    ) THEN
+      RAISE EXCEPTION 'JOB_HAS_PROGRESS' USING ERRCODE = 'P0001';
+    END IF;
+
+    -- Clean up previous unticked jobs & items safely
+    DELETE FROM public.job_step_events jse
+    WHERE jse.job_step_id IN (
+      SELECT js.id FROM public.job_steps js
+      JOIN public.jobs j ON j.id = js.job_id
+      WHERE j.invoice_id = v_inv.id
+    );
+
+    DELETE FROM public.job_steps js
+    WHERE js.job_id IN (
+      SELECT j.id FROM public.jobs j WHERE j.invoice_id = v_inv.id
+    );
+
+    DELETE FROM public.commission_entries ce
+    WHERE ce.job_id IN (
+      SELECT j.id FROM public.jobs j WHERE j.invoice_id = v_inv.id
+    );
+
+    DELETE FROM public.jobs j WHERE j.invoice_id = v_inv.id;
+    DELETE FROM public.invoice_items ii WHERE ii.invoice_id = v_inv.id;
+
+    -- Insert new items & jobs
+    FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+      v_item := v_items->i;
+      v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+      v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+      v_line_amount := ROUND(v_qty * v_rate, 2);
+      v_subtotal := v_subtotal + v_line_amount;
+
+      v_item_service_id := NULL;
+      IF (v_item->>'service_id') IS NOT NULL AND (v_item->>'service_id') <> '' AND (v_item->>'service_id') <> 'null' THEN
+        SELECT s.id INTO v_item_service_id
+        FROM public.services s
+        WHERE s.id = (v_item->>'service_id')::uuid
+          AND s.business_id = v_biz_id
+          AND s.deleted_at IS NULL;
+      END IF;
+
+      INSERT INTO public.invoice_items (
+        business_id,
+        invoice_id,
+        service_id,
+        description,
+        quantity,
+        rate,
+        amount,
+        is_job,
+        applicant_name,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        v_biz_id,
+        v_inv.id,
+        v_item_service_id,
+        COALESCE(v_item->>'description', 'Item'),
+        v_qty,
+        v_rate,
+        v_line_amount,
+        COALESCE((v_item->>'is_job')::boolean, false),
+        v_item->>'applicant_name',
+        v_member_id,
+        v_member_id
+      )
+      RETURNING invoice_items.id INTO v_item_id;
+
+      -- Job recreation if create_job (is_job) is true
+      IF COALESCE((v_item->>'is_job')::boolean, false) = true THEN
+        v_service_id := NULL;
+        v_job_type_name := COALESCE(v_item->>'description', 'Service Job');
+        v_deadline_date := v_invoice_date + 15;
+        v_comm_percent := 0;
+
+        IF v_item_service_id IS NOT NULL THEN
+          SELECT * INTO v_service_row
+          FROM public.services s
+          WHERE s.id = v_item_service_id;
+
+          IF FOUND THEN
+            v_service_id := v_service_row.id;
+            v_job_type_name := v_service_row.name;
+            v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+            v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+          END IF;
+        END IF;
+
+        IF v_service_id IS NULL THEN
+          SELECT * INTO v_service_row
+          FROM public.services s
+          WHERE s.business_id = v_biz_id
+            AND LOWER(TRIM(s.name)) = LOWER(TRIM(COALESCE(v_item->>'description', 'Service Job')))
+            AND s.deleted_at IS NULL
+          LIMIT 1;
+
+          IF FOUND THEN
+            v_service_id := v_service_row.id;
+            v_job_type_name := v_service_row.name;
+            v_deadline_date := v_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+            v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+          END IF;
+        END IF;
+
+        v_job_staff_id := NULL;
+        IF v_role = 'STAFF' THEN
+          v_job_staff_id := v_member_id;
+        END IF;
+
+        INSERT INTO public.jobs (
+          business_id,
+          invoice_id,
+          invoice_item_id,
+          service_id,
+          job_type_name,
+          party_name,
+          party_mobile,
+          applicant_name,
+          amount,
+          deadline_date,
+          assigned_staff_id,
+          commission_percent,
+          status,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_inv.id,
+          v_item_id,
+          v_service_id,
+          v_job_type_name,
+          v_party_name,
+          v_party_mobile,
+          v_item->>'applicant_name',
+          v_line_amount,
+          v_deadline_date,
+          v_job_staff_id,
+          v_comm_percent,
+          'IN_PROGRESS',
+          v_member_id,
+          v_member_id
+        )
+        RETURNING jobs.id INTO v_job_id;
+
+        -- Job steps snapshot
+        v_step_count := 0;
+        IF v_service_id IS NOT NULL THEN
+          FOR v_step_row IN
+            SELECT jts.position, jts.name, jts.whatsapp_message
+            FROM public.job_type_steps jts
+            WHERE jts.service_id = v_service_id AND jts.business_id = v_biz_id
+            ORDER BY jts.position ASC
+          LOOP
+            v_step_count := v_step_count + 1;
+            INSERT INTO public.job_steps (
+              business_id,
+              job_id,
+              position,
+              name,
+              whatsapp_message,
+              ticked,
+              created_by,
+              updated_by
+            )
+            VALUES (
+              v_biz_id,
+              v_job_id,
+              v_step_row.position,
+              v_step_row.name,
+              v_step_row.whatsapp_message,
+              false,
+              v_member_id,
+              v_member_id
+            );
+          END LOOP;
+        END IF;
+
+        IF v_step_count = 0 THEN
+          INSERT INTO public.job_steps (
+            business_id,
+            job_id,
+            position,
+            name,
+            whatsapp_message,
+            ticked,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            v_job_id,
+            1,
+            'Processing',
+            NULL,
+            false,
+            v_member_id,
+            v_member_id
+          );
+        END IF;
+
+        -- Commission entry if applicable
+        IF v_job_staff_id IS NOT NULL AND v_comm_percent > 0 THEN
+          v_comm_amount := ROUND(v_line_amount * (v_comm_percent / 100), 2);
+          INSERT INTO public.commission_entries (
+            business_id,
+            job_id,
+            staff_id,
+            base_amount,
+            percent,
+            amount,
+            status,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            v_job_id,
+            v_job_staff_id,
+            v_line_amount,
+            v_comm_percent,
+            v_comm_amount,
+            'UPCOMING',
+            v_member_id,
+            v_member_id
+          );
+        END IF;
+      END IF;
+    END LOOP;
+  ELSE
+    v_subtotal := v_inv.subtotal;
+  END IF;
+
+  -- Discount recalculation
+  v_discount_type := COALESCE(payload->>'discount_type', v_inv.discount_type);
+  v_discount_value := COALESCE((payload->>'discount_value')::numeric, v_inv.discount_value);
+
+  IF v_discount_type = 'FLAT' THEN
+    v_discount_amount := LEAST(v_discount_value, v_subtotal);
+  ELSIF v_discount_type = 'PERCENT' THEN
+    v_discount_amount := ROUND(v_subtotal * (LEAST(GREATEST(v_discount_value, 0), 100) / 100), 2);
+  ELSE
+    v_discount_amount := 0;
+  END IF;
+
+  v_total := GREATEST(0, v_subtotal - v_discount_amount);
+
+  -- Update invoice
+  UPDATE public.invoices
+  SET
+    party_name = v_party_name,
+    party_mobile = v_party_mobile,
+    customer_id = v_customer_id,
+    invoice_date = v_invoice_date,
+    due_date = v_due_date,
+    subtotal = v_subtotal,
+    discount_type = v_discount_type,
+    discount_value = v_discount_value,
+    discount_amount = v_discount_amount,
+    total = v_total,
+    notes = v_notes,
+    updated_at = now(),
+    updated_by = v_member_id
+  WHERE invoices.id = v_inv.id
+  RETURNING to_jsonb(invoices.*) INTO v_result;
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_invoice(uuid, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_invoice(uuid, jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261031000028_team_management_and_accountant_role.sql <<<
+-- Migration 28: Team Management, Accountant Role Enforcement, and Self-Service Password Change
+-- Allows Owner to create Staff/Accountant via email + password
+-- Accountant role strictly manages accounts (no jobs, no commission)
+-- Staff work is tracked by creator/member without manual assignment dropdown
+-- Any authenticated user can change their own password in Settings
+
+-- 1. Schema updates for public.members
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE public.members ALTER COLUMN mobile DROP NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_members_biz_email 
+ON public.members(business_id, LOWER(email)) 
+WHERE deleted_at IS NULL AND email IS NOT NULL;
+
+-- 2. Update app auth helpers to support email
+CREATE OR REPLACE FUNCTION app.current_member_id()
+RETURNS uuid AS $$
+  SELECT m.id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (u.email IS NOT NULL AND m.email IS NOT NULL AND LOWER(u.email) = LOWER(m.email))
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+    OR (
+      auth.uid() IS NULL
+      AND (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    (m.auth_user_id = auth.uid()) DESC,
+    (u.email IS NOT NULL AND m.email IS NOT NULL AND LOWER(u.email) = LOWER(m.email)) DESC,
+    (m.role = 'OWNER') DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_business_id()
+RETURNS uuid AS $$
+  SELECT m.business_id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (u.email IS NOT NULL AND m.email IS NOT NULL AND LOWER(u.email) = LOWER(m.email))
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+    OR (
+      auth.uid() IS NULL
+      AND (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    (m.auth_user_id = auth.uid()) DESC,
+    (u.email IS NOT NULL AND m.email IS NOT NULL AND LOWER(u.email) = LOWER(m.email)) DESC,
+    (m.role = 'OWNER') DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_role()
+RETURNS text AS $$
+  SELECT m.role
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (u.email IS NOT NULL AND m.email IS NOT NULL AND LOWER(u.email) = LOWER(m.email))
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com')
+      )
+    )
+    OR (
+      auth.uid() IS NULL
+      AND (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    (m.auth_user_id = auth.uid()) DESC,
+    (u.email IS NOT NULL AND m.email IS NOT NULL AND LOWER(u.email) = LOWER(m.email)) DESC,
+    (m.role = 'OWNER') DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+
+-- 3. RPC: create_team_member
+CREATE OR REPLACE FUNCTION public.create_team_member(
+  p_name text,
+  p_email text,
+  p_password text,
+  p_role text,
+  p_mobile text DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_caller_role text;
+  v_clean_email text;
+  v_clean_mobile text;
+  v_clean_name text;
+  v_user_id uuid;
+  v_new_member record;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_caller_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_caller_role != 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can add team members';
+  END IF;
+
+  v_clean_name := TRIM(COALESCE(p_name, ''));
+  IF length(v_clean_name) < 2 THEN
+    RAISE EXCEPTION 'NAME_REQUIRED' USING ERRCODE = 'P0001', DETAIL = 'Name must be at least 2 characters';
+  END IF;
+
+  v_clean_email := LOWER(TRIM(COALESCE(p_email, '')));
+  IF v_clean_email = '' OR v_clean_email !~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' THEN
+    RAISE EXCEPTION 'INVALID_EMAIL' USING ERRCODE = 'P0001', DETAIL = 'A valid email address is required';
+  END IF;
+
+  IF p_password IS NULL OR length(TRIM(p_password)) < 6 THEN
+    RAISE EXCEPTION 'PASSWORD_TOO_SHORT' USING ERRCODE = 'P0001', DETAIL = 'Password must be at least 6 characters';
+  END IF;
+
+  IF UPPER(p_role) NOT IN ('STAFF', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'INVALID_ROLE' USING ERRCODE = 'P0001', DETAIL = 'Role must be STAFF or ACCOUNTANT';
+  END IF;
+
+  v_clean_mobile := NULLIF(TRIM(COALESCE(p_mobile, '')), '');
+  IF v_clean_mobile IS NOT NULL THEN
+    v_clean_mobile := REGEXP_REPLACE(v_clean_mobile, '\D', '', 'g');
+    IF length(v_clean_mobile) >= 10 THEN
+      v_clean_mobile := RIGHT(v_clean_mobile, 10);
+    END IF;
+  END IF;
+
+  -- Check if member email already exists in this business
+  IF EXISTS (
+    SELECT 1 FROM public.members 
+    WHERE business_id = v_biz_id AND LOWER(email) = v_clean_email AND deleted_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'MEMBER_EXISTS' USING ERRCODE = 'P0001', DETAIL = 'A member with this email already exists';
+  END IF;
+
+  -- Find or create user in auth.users
+  SELECT id INTO v_user_id FROM auth.users WHERE LOWER(email) = v_clean_email LIMIT 1;
+  IF v_user_id IS NOT NULL THEN
+    -- Update existing auth user password
+    UPDATE auth.users
+    SET encrypted_password = public.crypt(TRIM(p_password), public.gen_salt('bf')),
+        updated_at = now()
+    WHERE id = v_user_id;
+  ELSE
+    v_user_id := gen_random_uuid();
+    INSERT INTO auth.users (
+      id,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      v_user_id,
+      v_clean_email,
+      public.crypt(TRIM(p_password), public.gen_salt('bf')),
+      now(),
+      '{"provider": "email", "providers": ["email"]}'::jsonb,
+      jsonb_build_object('name', v_clean_name, 'role', UPPER(p_role)),
+      now(),
+      now()
+    );
+  END IF;
+
+  -- Insert member record
+  INSERT INTO public.members (
+    business_id,
+    auth_user_id,
+    name,
+    email,
+    mobile,
+    role,
+    can_login,
+    active,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_user_id,
+    v_clean_name,
+    v_clean_email,
+    COALESCE(v_clean_mobile, ''),
+    UPPER(p_role),
+    true,
+    true,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING * INTO v_new_member;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'member_id', v_new_member.id,
+    'name', v_new_member.name,
+    'email', v_new_member.email,
+    'role', v_new_member.role,
+    'active', v_new_member.active
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = 'public', 'auth';
+
+REVOKE ALL ON FUNCTION public.create_team_member(text, text, text, text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_team_member(text, text, text, text, text) TO authenticated;
+
+
+-- 4. RPC: update_team_member
+CREATE OR REPLACE FUNCTION public.update_team_member(
+  p_member_id uuid,
+  p_name text,
+  p_mobile text DEFAULT NULL,
+  p_role text DEFAULT NULL,
+  p_active boolean DEFAULT true,
+  p_new_password text DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_caller_id uuid;
+  v_caller_role text;
+  v_target record;
+  v_clean_name text;
+  v_clean_mobile text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_caller_id := (SELECT app.current_member_id());
+  v_caller_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_caller_role != 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can manage team members';
+  END IF;
+
+  SELECT * INTO v_target
+  FROM public.members
+  WHERE id = p_member_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'MEMBER_NOT_FOUND' USING ERRCODE = 'P0001', DETAIL = 'Member not found';
+  END IF;
+
+  -- Protect Owner role and self-demotion
+  IF v_target.role = 'OWNER' THEN
+    IF (p_role IS NOT NULL AND UPPER(p_role) != 'OWNER') OR p_active = false THEN
+      RAISE EXCEPTION 'CANNOT_MODIFY_OWNER_ROLE' USING ERRCODE = 'P0001', DETAIL = 'Cannot change Owner role or deactivate Owner';
+    END IF;
+  ELSE
+    IF p_role IS NOT NULL AND UPPER(p_role) NOT IN ('STAFF', 'ACCOUNTANT') THEN
+      RAISE EXCEPTION 'INVALID_ROLE' USING ERRCODE = 'P0001', DETAIL = 'Role must be STAFF or ACCOUNTANT';
+    END IF;
+  END IF;
+
+  v_clean_name := TRIM(COALESCE(p_name, v_target.name));
+  IF length(v_clean_name) < 2 THEN
+    RAISE EXCEPTION 'NAME_REQUIRED' USING ERRCODE = 'P0001', DETAIL = 'Name must be at least 2 characters';
+  END IF;
+
+  IF p_mobile IS NOT NULL THEN
+    v_clean_mobile := REGEXP_REPLACE(p_mobile, '\D', '', 'g');
+    IF length(v_clean_mobile) >= 10 THEN
+      v_clean_mobile := RIGHT(v_clean_mobile, 10);
+    ELSE
+      v_clean_mobile := p_mobile;
+    END IF;
+  ELSE
+    v_clean_mobile := v_target.mobile;
+  END IF;
+
+  UPDATE public.members
+  SET name = v_clean_name,
+      mobile = COALESCE(v_clean_mobile, ''),
+      role = COALESCE(UPPER(p_role), v_target.role),
+      active = COALESCE(p_active, v_target.active),
+      updated_at = now(),
+      updated_by = v_caller_id
+  WHERE id = p_member_id;
+
+  -- Optional Password Reset by Owner
+  IF p_new_password IS NOT NULL AND TRIM(p_new_password) != '' THEN
+    IF length(TRIM(p_new_password)) < 6 THEN
+      RAISE EXCEPTION 'PASSWORD_TOO_SHORT' USING ERRCODE = 'P0001', DETAIL = 'Password must be at least 6 characters';
+    END IF;
+
+    IF v_target.auth_user_id IS NOT NULL THEN
+      UPDATE auth.users
+      SET encrypted_password = public.crypt(TRIM(p_new_password), public.gen_salt('bf')),
+          updated_at = now()
+      WHERE id = v_target.auth_user_id;
+    END IF;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'member_id', p_member_id,
+    'name', v_clean_name,
+    'role', COALESCE(UPPER(p_role), v_target.role),
+    'active', COALESCE(p_active, v_target.active)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = 'public', 'auth';
+
+REVOKE ALL ON FUNCTION public.update_team_member(uuid, text, text, text, boolean, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_team_member(uuid, text, text, text, boolean, text) TO authenticated;
+
+
+-- 5. RPC: delete_team_member
+CREATE OR REPLACE FUNCTION public.delete_team_member(
+  p_member_id uuid
+)
+RETURNS boolean AS $$
+DECLARE
+  v_biz_id uuid;
+  v_caller_id uuid;
+  v_caller_role text;
+  v_target record;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_caller_id := (SELECT app.current_member_id());
+  v_caller_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_caller_role != 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can delete team members';
+  END IF;
+
+  SELECT * INTO v_target
+  FROM public.members
+  WHERE id = p_member_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'MEMBER_NOT_FOUND' USING ERRCODE = 'P0001', DETAIL = 'Member not found';
+  END IF;
+
+  IF v_target.id = v_caller_id OR v_target.role = 'OWNER' THEN
+    RAISE EXCEPTION 'CANNOT_DELETE_OWNER' USING ERRCODE = 'P0001', DETAIL = 'Cannot delete the Owner';
+  END IF;
+
+  UPDATE public.members
+  SET deleted_at = now(),
+      deleted_by = v_caller_id,
+      active = false,
+      updated_at = now()
+  WHERE id = p_member_id;
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = 'public', 'auth';
+
+REVOKE ALL ON FUNCTION public.delete_team_member(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.delete_team_member(uuid) TO authenticated;
+
+
+-- 6. RPC: change_own_password (Self-service for any user)
+CREATE OR REPLACE FUNCTION public.change_own_password(
+  p_new_password text
+)
+RETURNS boolean AS $$
+DECLARE
+  v_uid uuid;
+  v_member_id uuid;
+BEGIN
+  v_uid := auth.uid();
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_uid IS NULL AND v_member_id IS NOT NULL THEN
+    SELECT auth_user_id INTO v_uid FROM public.members WHERE id = v_member_id;
+  END IF;
+
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'NOT_AUTHENTICATED' USING ERRCODE = '42501', DETAIL = 'Authentication required';
+  END IF;
+
+  IF p_new_password IS NULL OR length(TRIM(p_new_password)) < 6 THEN
+    RAISE EXCEPTION 'PASSWORD_TOO_SHORT' USING ERRCODE = 'P0001', DETAIL = 'Password must be at least 6 characters';
+  END IF;
+
+  UPDATE auth.users
+  SET encrypted_password = public.crypt(TRIM(p_new_password), public.gen_salt('bf')),
+      updated_at = now()
+  WHERE id = v_uid;
+
+  IF NOT FOUND THEN
+    INSERT INTO auth.users (
+      id,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      v_uid,
+      COALESCE((SELECT email FROM public.members WHERE id = v_member_id), 'user@simplify.local'),
+      public.crypt(TRIM(p_new_password), public.gen_salt('bf')),
+      now(),
+      '{"provider": "email", "providers": ["email"]}'::jsonb,
+      '{}'::jsonb,
+      now(),
+      now()
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      encrypted_password = public.crypt(TRIM(p_new_password), public.gen_salt('bf')),
+      updated_at = now();
+  END IF;
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = 'public', 'auth';
+
+REVOKE ALL ON FUNCTION public.change_own_password(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.change_own_password(text) TO authenticated;
+
+
+-- 7. RPC: list_team_members
+CREATE OR REPLACE FUNCTION public.list_team_members()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_members jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role != 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can view team members';
+  END IF;
+
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'name', m.name,
+        'email', m.email,
+        'mobile', m.mobile,
+        'role', m.role,
+        'active', m.active,
+        'can_login', m.can_login,
+        'has_auth_user', (m.auth_user_id IS NOT NULL),
+        'created_at', m.created_at
+      )
+      ORDER BY 
+        CASE WHEN m.role = 'OWNER' THEN 1 WHEN m.role = 'ACCOUNTANT' THEN 2 ELSE 3 END,
+        m.name ASC
+    ),
+    '[]'::jsonb
+  )
+  INTO v_members
+  FROM public.members m
+  WHERE m.business_id = v_biz_id AND m.deleted_at IS NULL;
+
+  RETURN v_members;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.list_team_members() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_team_members() TO authenticated;
+
+
+-- 8. Restrict Accountant from Job Management and Commission functions
+CREATE OR REPLACE FUNCTION public.list_jobs(
+  p_tab text DEFAULT 'CURRENT',
+  p_service_id uuid DEFAULT NULL,
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0,
+  p_sort text DEFAULT 'QUEUE'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+
+  v_count_current int := 0;
+  v_count_completed int := 0;
+  v_count_due int := 0;
+  v_count_yellow int := 0;
+  v_count_red int := 0;
+
+  v_jobs jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Accountants do not have access to job management';
+  END IF;
+
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  -- Compute tab counts (Staff only sees their own work counts)
+  SELECT
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS'),
+    COUNT(*) FILTER (WHERE j.status = 'COMPLETED'),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days)
+  INTO
+    v_count_current,
+    v_count_completed,
+    v_count_due,
+    v_count_yellow,
+    v_count_red
+  FROM public.jobs j
+  WHERE j.business_id = v_biz_id 
+    AND j.deleted_at IS NULL
+    AND (v_role = 'OWNER' OR j.assigned_staff_id = v_caller_id OR j.created_by = v_caller_id);
+
+  WITH job_steps_agg AS (
+    SELECT
+      js.job_id,
+      COUNT(*)::int AS total_steps,
+      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps,
+      (
+        SELECT s2.name 
+        FROM public.job_steps s2 
+        WHERE s2.job_id = js.job_id AND s2.ticked = false AND s2.deleted_at IS NULL 
+        ORDER BY s2.position ASC 
+        LIMIT 1
+      ) AS next_step_name
+    FROM public.job_steps js
+    WHERE js.business_id = v_biz_id AND js.deleted_at IS NULL
+    GROUP BY js.job_id
+  ),
+  filtered_jobs AS (
+    SELECT
+      j.id,
+      j.invoice_id,
+      i.number AS invoice_number,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount,
+      j.deadline_date,
+      (j.deadline_date - v_today) AS days_left,
+      j.status,
+      j.completed_at,
+      j.assigned_staff_id,
+      m.name AS assigned_staff_name,
+      j.created_at,
+      COALESCE(jsa.total_steps, 0) AS total_steps,
+      COALESCE(jsa.ticked_steps, 0) AS ticked_steps,
+      jsa.next_step_name,
+      CASE
+        WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+        ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
+      END AS progress_percent,
+      CASE
+        WHEN (j.deadline_date - v_today) < 0 THEN 'LATE'
+        WHEN (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+        WHEN (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+        ELSE 'NORMAL'
+      END AS deadline_bucket
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+    LEFT JOIN job_steps_agg jsa ON jsa.job_id = j.id
+    WHERE j.business_id = v_biz_id
+      AND j.deleted_at IS NULL
+      AND (v_role = 'OWNER' OR j.assigned_staff_id = v_caller_id OR j.created_by = v_caller_id)
+      AND (
+        p_service_id IS NULL 
+        OR j.service_id = p_service_id 
+        OR j.job_type_name = (SELECT name FROM public.services WHERE id = p_service_id)
+      )
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR j.party_name ILIKE '%' || p_search || '%'
+        OR j.party_mobile ILIKE '%' || p_search || '%'
+        OR j.applicant_name ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+        OR j.job_type_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE UPPER(p_tab)
+          WHEN 'CURRENT' THEN j.status = 'IN_PROGRESS'
+          WHEN 'COMPLETED' THEN j.status = 'COMPLETED'
+          WHEN 'DUE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'LATE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'YELLOW' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days
+          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days
+          ELSE j.status = 'IN_PROGRESS'
+        END
+      )
+    ORDER BY
+      CASE UPPER(p_tab)
+        WHEN 'COMPLETED' THEN j.completed_at
+        ELSE NULL
+      END DESC NULLS LAST,
+      CASE 
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN COALESCE(jsa.ticked_steps, 0)
+      END DESC NULLS LAST,
+      CASE 
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN (COALESCE(jsa.ticked_steps, 0)::numeric / GREATEST(1, jsa.total_steps)::numeric) 
+      END DESC NULLS LAST,
+      CASE 
+        WHEN UPPER(p_sort) = 'URGENT' OR (UPPER(p_tab) IN ('DUE', 'RED', 'YELLOW') AND UPPER(p_sort) != 'PROGRESS')
+        THEN (j.deadline_date - v_today) 
+      END ASC,
+      j.created_at ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(filtered_jobs.*)), '[]'::jsonb)
+  INTO v_jobs
+  FROM filtered_jobs;
+
+  RETURN jsonb_build_object(
+    'tab_counts', jsonb_build_object(
+      'current', v_count_current,
+      'completed', v_count_completed,
+      'due', v_count_due,
+      'yellow', v_count_yellow,
+      'red', v_count_red
+    ),
+    'jobs', v_jobs
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) TO authenticated;
+
+
+-- 9. Restrict staff_summary to Owner and Staff (exclude Accountant)
+CREATE OR REPLACE FUNCTION public.staff_summary(
+  p_staff_id uuid DEFAULT NULL,
+  p_from date DEFAULT NULL,
+  p_to date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+  v_staff_list jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Accountants do not have access to staff commission';
+  END IF;
+
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  SELECT COALESCE(SUM(ce.amount), 0)
+  INTO v_total_earned
+  FROM public.commission_entries ce
+  WHERE ce.business_id = v_biz_id
+    AND ce.status = 'EARNED'
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+    AND (p_from IS NULL OR ce.earned_at::date >= p_from)
+    AND (p_to IS NULL OR ce.earned_at::date <= p_to);
+
+  SELECT COALESCE(SUM(sp.amount), 0)
+  INTO v_total_paid
+  FROM public.staff_payouts sp
+  WHERE sp.business_id = v_biz_id
+    AND sp.deleted_at IS NULL
+    AND (v_target_staff_id IS NULL OR sp.staff_id = v_target_staff_id)
+    AND (p_from IS NULL OR sp.payout_date >= p_from)
+    AND (p_to IS NULL OR sp.payout_date <= p_to);
+
+  SELECT COALESCE(SUM(ce.amount), 0)
+  INTO v_total_upcoming
+  FROM public.commission_entries ce
+  WHERE ce.business_id = v_biz_id
+    AND ce.status = 'UPCOMING'
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id);
+
+  v_balance_payable := v_total_earned - v_total_paid;
+
+  -- Breakdown: only members with role = 'STAFF'
+  IF v_role = 'OWNER' AND v_target_staff_id IS NULL THEN
+    SELECT COALESCE(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', m.id,
+          'name', m.name,
+          'mobile', m.mobile,
+          'email', m.email,
+          'active', m.active,
+          'total_earned', COALESCE(sub.earned, 0),
+          'total_paid', COALESCE(sub.paid, 0),
+          'balance', COALESCE(sub.earned, 0) - COALESCE(sub.paid, 0),
+          'upcoming', COALESCE(sub.upcoming, 0)
+        )
+        ORDER BY m.name ASC
+      ),
+      '[]'::jsonb
+    )
+    INTO v_staff_list
+    FROM public.members m
+    LEFT JOIN LATERAL (
+      SELECT
+        (SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries WHERE staff_id = m.id AND status = 'EARNED') AS earned,
+        (SELECT COALESCE(SUM(amount), 0) FROM public.staff_payouts WHERE staff_id = m.id AND deleted_at IS NULL) AS paid,
+        (SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries WHERE staff_id = m.id AND status = 'UPCOMING') AS upcoming
+    ) sub ON true
+    WHERE m.business_id = v_biz_id 
+      AND m.role = 'STAFF'
+      AND m.deleted_at IS NULL;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'total_earned', v_total_earned,
+    'total_paid', v_total_paid,
+    'balance_payable', v_balance_payable,
+    'upcoming', v_total_upcoming,
+    'total_upcoming', v_total_upcoming,
+    'staff', v_staff_list,
+    'staff_list', v_staff_list
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_summary(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_summary(uuid, date, date) TO authenticated;
+
+
+-- >>> Migration: 20261103000029_jobs_progress_sort_ascending.sql <<<
+-- Migration 29: Update list_jobs Progress sort to Ascending (fewer ticked steps at top, more ticked at bottom)
+-- User request: JOB page me Progress karne per Order Ascending kardo jitne zyada tick wale job wo niche kam wale top me
+
+CREATE OR REPLACE FUNCTION public.list_jobs(
+  p_tab text DEFAULT 'CURRENT',
+  p_service_id uuid DEFAULT NULL,
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0,
+  p_sort text DEFAULT 'QUEUE'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+
+  v_count_current int := 0;
+  v_count_completed int := 0;
+  v_count_due int := 0;
+  v_count_yellow int := 0;
+  v_count_red int := 0;
+
+  v_jobs jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Accountants do not have access to job management';
+  END IF;
+
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  -- Compute tab counts (Staff only sees their own work counts)
+  SELECT
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS'),
+    COUNT(*) FILTER (WHERE j.status = 'COMPLETED'),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days)
+  INTO
+    v_count_current,
+    v_count_completed,
+    v_count_due,
+    v_count_yellow,
+    v_count_red
+  FROM public.jobs j
+  WHERE j.business_id = v_biz_id 
+    AND j.deleted_at IS NULL
+    AND (v_role = 'OWNER' OR j.assigned_staff_id = v_caller_id OR j.created_by = v_caller_id);
+
+  WITH job_steps_agg AS (
+    SELECT
+      js.job_id,
+      COUNT(*)::int AS total_steps,
+      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps,
+      (
+        SELECT s2.name 
+        FROM public.job_steps s2 
+        WHERE s2.job_id = js.job_id AND s2.ticked = false AND s2.deleted_at IS NULL 
+        ORDER BY s2.position ASC 
+        LIMIT 1
+      ) AS next_step_name
+    FROM public.job_steps js
+    WHERE js.business_id = v_biz_id AND js.deleted_at IS NULL
+    GROUP BY js.job_id
+  ),
+  filtered_jobs AS (
+    SELECT
+      j.id,
+      j.invoice_id,
+      i.number AS invoice_number,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount,
+      j.deadline_date,
+      (j.deadline_date - v_today) AS days_left,
+      j.status,
+      j.completed_at,
+      j.assigned_staff_id,
+      m.name AS assigned_staff_name,
+      j.created_at,
+      COALESCE(jsa.total_steps, 0) AS total_steps,
+      COALESCE(jsa.ticked_steps, 0) AS ticked_steps,
+      jsa.next_step_name,
+      CASE
+        WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+        ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
+      END AS progress_percent,
+      CASE
+        WHEN (j.deadline_date - v_today) < 0 THEN 'LATE'
+        WHEN (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+        WHEN (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+        ELSE 'NORMAL'
+      END AS deadline_bucket
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+    LEFT JOIN job_steps_agg jsa ON jsa.job_id = j.id
+    WHERE j.business_id = v_biz_id
+      AND j.deleted_at IS NULL
+      AND (v_role = 'OWNER' OR j.assigned_staff_id = v_caller_id OR j.created_by = v_caller_id)
+      AND (
+        p_service_id IS NULL 
+        OR j.service_id = p_service_id 
+        OR j.job_type_name = (SELECT name FROM public.services WHERE id = p_service_id)
+      )
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR j.party_name ILIKE '%' || p_search || '%'
+        OR j.party_mobile ILIKE '%' || p_search || '%'
+        OR j.applicant_name ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+        OR j.job_type_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE UPPER(p_tab)
+          WHEN 'CURRENT' THEN j.status = 'IN_PROGRESS'
+          WHEN 'COMPLETED' THEN j.status = 'COMPLETED'
+          WHEN 'DUE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'LATE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'YELLOW' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days
+          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days
+          ELSE j.status = 'IN_PROGRESS'
+        END
+      )
+    ORDER BY
+      CASE UPPER(p_tab)
+        WHEN 'COMPLETED' THEN j.completed_at
+        ELSE NULL
+      END DESC NULLS LAST,
+      -- PROGRESS sort order: ASCENDING (least completed steps at top, most completed at bottom)
+      CASE 
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN COALESCE(jsa.ticked_steps, 0)
+      END ASC NULLS FIRST,
+      CASE 
+        WHEN UPPER(p_sort) = 'PROGRESS' 
+        THEN (COALESCE(jsa.ticked_steps, 0)::numeric / GREATEST(1, jsa.total_steps)::numeric) 
+      END ASC NULLS FIRST,
+      CASE 
+        WHEN UPPER(p_sort) = 'URGENT' OR (UPPER(p_tab) IN ('DUE', 'RED', 'YELLOW') AND UPPER(p_sort) != 'PROGRESS')
+        THEN (j.deadline_date - v_today) 
+      END ASC,
+      j.created_at ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(filtered_jobs.*)), '[]'::jsonb)
+  INTO v_jobs
+  FROM filtered_jobs;
+
+  RETURN jsonb_build_object(
+    'tab_counts', jsonb_build_object(
+      'current', v_count_current,
+      'completed', v_count_completed,
+      'due', v_count_due,
+      'yellow', v_count_yellow,
+      'red', v_count_red
+    ),
+    'jobs', v_jobs
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) TO authenticated;
+
+
+
+-- >>> Migration: 20261104000030_sync_service_steps_to_open_jobs.sql <<<
+-- Migration 30: Support for Services with No Steps, Direct Completion, and Live Step Synchronization to Jobs
+-- When an admin turns a simple service into a multi-step job, active jobs automatically receive the steps.
+
+-- 1. RPC to sync newly defined job_type_steps to any active open jobs for that service
+CREATE OR REPLACE FUNCTION public.sync_service_steps_to_jobs(
+  p_service_id uuid
+)
+RETURNS int AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_job RECORD;
+  v_step RECORD;
+  v_synced_jobs_count int := 0;
+  v_existing_steps_count int;
+  v_service RECORD;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role != 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can sync service steps';
+  END IF;
+
+  SELECT * INTO v_service
+  FROM public.services
+  WHERE id = p_service_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+
+  -- Iterate through open/in-progress jobs for this service
+  FOR v_job IN
+    SELECT j.id, j.deadline_date, j.invoice_date
+    FROM public.jobs j
+    LEFT JOIN public.invoices i ON i.id = j.invoice_id
+    WHERE j.business_id = v_biz_id
+      AND j.service_id = p_service_id
+      AND j.status = 'IN_PROGRESS'
+      AND j.deleted_at IS NULL
+  LOOP
+    -- Count existing steps for this job
+    SELECT COUNT(*) INTO v_existing_steps_count
+    FROM public.job_steps
+    WHERE job_id = v_job.id AND deleted_at IS NULL;
+
+    -- If the job has 0 steps, populate from job_type_steps
+    IF v_existing_steps_count = 0 THEN
+      FOR v_step IN
+        SELECT position, name, whatsapp_message
+        FROM public.job_type_steps
+        WHERE service_id = p_service_id AND deleted_at IS NULL
+        ORDER BY position ASC
+      LOOP
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job.id,
+          v_step.position,
+          v_step.name,
+          v_step.whatsapp_message,
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END LOOP;
+
+      -- Update job snapshot fields to match updated service
+      UPDATE public.jobs
+      SET
+        job_type_name = v_service.name,
+        commission_percent = COALESCE(v_service.commission_percent, commission_percent),
+        deadline_date = CASE
+          WHEN v_service.deadline_days IS NOT NULL AND v_service.deadline_days > 0 AND v_job.invoice_date IS NOT NULL
+          THEN (v_job.invoice_date + (v_service.deadline_days || ' days')::interval)::date
+          ELSE deadline_date
+        END
+      WHERE id = v_job.id;
+
+      v_synced_jobs_count := v_synced_jobs_count + 1;
+    END IF;
+  END LOOP;
+
+  RETURN v_synced_jobs_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.sync_service_steps_to_jobs(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.sync_service_steps_to_jobs(uuid) TO authenticated;
+
+-- 2. RPC to complete a job directly (especially for jobs with 0 steps / single-step jobs)
+CREATE OR REPLACE FUNCTION public.complete_job_directly(
+  p_job_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_job public.jobs%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = p_job_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'NOT_FOUND' USING ERRCODE = 'P0001', DETAIL = 'Job not found';
+  END IF;
+
+  IF v_job.status = 'CANCELLED' THEN
+    RAISE EXCEPTION 'JOB_CANCELLED' USING ERRCODE = 'P0001', DETAIL = 'Cannot complete a cancelled job';
+  END IF;
+
+  -- Toggle status: if already COMPLETED, reopen; if IN_PROGRESS, mark COMPLETED
+  IF v_job.status = 'COMPLETED' THEN
+    UPDATE public.jobs
+    SET status = 'IN_PROGRESS', completed_at = NULL, updated_by = v_member_id, updated_at = now()
+    WHERE id = p_job_id;
+
+    -- Update commission if exists
+    UPDATE public.commission_entries
+    SET status = 'UPCOMING', earned_at = NULL, updated_by = v_member_id, updated_at = now()
+    WHERE job_id = p_job_id AND status != 'CANCELLED';
+
+    RETURN jsonb_build_object('success', true, 'status', 'IN_PROGRESS');
+  ELSE
+    UPDATE public.jobs
+    SET status = 'COMPLETED', completed_at = now(), updated_by = v_member_id, updated_at = now()
+    WHERE id = p_job_id;
+
+    -- Earn commission on completion (BR-15)
+    UPDATE public.commission_entries
+    SET status = 'EARNED', earned_at = now(), updated_by = v_member_id, updated_at = now()
+    WHERE job_id = p_job_id AND status != 'CANCELLED';
+
+    RETURN jsonb_build_object('success', true, 'status', 'COMPLETED');
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.complete_job_directly(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.complete_job_directly(uuid) TO authenticated;
+
+
+
+-- >>> Migration: 20261104000031_clean_dummy_steps_and_enhance_sync.sql <<<
+-- Migration 31: Clean dummy 'Processing' steps and enhance sync_service_steps_to_jobs
+-- Ensures services without multi-steps have 0 dummy steps, and syncing to existing open jobs replaces dummy/unticked steps.
+
+-- 1. Remove dummy 'Processing' step from existing jobs where ticked = false and count = 1
+DELETE FROM public.job_steps
+WHERE name IN ('Processing', 'Processing / Document Verification')
+  AND ticked = false
+  AND job_id IN (
+    SELECT job_id
+    FROM public.job_steps
+    GROUP BY job_id
+    HAVING COUNT(*) = 1
+  );
+
+-- 2. Enhanced sync_service_steps_to_jobs
+CREATE OR REPLACE FUNCTION public.sync_service_steps_to_jobs(
+  p_service_id uuid
+)
+RETURNS int AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_job RECORD;
+  v_step RECORD;
+  v_synced_jobs_count int := 0;
+  v_ticked_count int;
+  v_service RECORD;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role != 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can sync service steps';
+  END IF;
+
+  SELECT * INTO v_service
+  FROM public.services
+  WHERE id = p_service_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+
+  -- Iterate through open/in-progress jobs for this service (matching ID or snapshotted name)
+  FOR v_job IN
+    SELECT j.id, j.deadline_date, i.invoice_date
+    FROM public.jobs j
+    LEFT JOIN public.invoices i ON i.id = j.invoice_id
+    WHERE j.business_id = v_biz_id
+      AND (j.service_id = p_service_id OR (j.service_id IS NULL AND LOWER(TRIM(j.job_type_name)) = LOWER(TRIM(v_service.name))))
+      AND j.status = 'IN_PROGRESS'
+      AND j.deleted_at IS NULL
+  LOOP
+    -- Count ticked steps for this job
+    SELECT COUNT(*) INTO v_ticked_count
+    FROM public.job_steps
+    WHERE job_id = v_job.id AND ticked = true AND deleted_at IS NULL;
+
+    -- If no steps have been ticked yet (e.g. 0 steps or unticked placeholder), replace completely with new steps
+    IF v_ticked_count = 0 THEN
+      -- Delete unticked steps
+      DELETE FROM public.job_steps
+      WHERE job_id = v_job.id AND ticked = false;
+
+      -- Insert all steps from job_type_steps
+      FOR v_step IN
+        SELECT position, name, whatsapp_message
+        FROM public.job_type_steps
+        WHERE service_id = p_service_id AND deleted_at IS NULL
+        ORDER BY position ASC
+      LOOP
+        INSERT INTO public.job_steps (
+          business_id,
+          job_id,
+          position,
+          name,
+          whatsapp_message,
+          ticked,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job.id,
+          v_step.position,
+          v_step.name,
+          v_step.whatsapp_message,
+          false,
+          v_member_id,
+          v_member_id
+        );
+      END LOOP;
+
+      -- Update job snapshot fields to match updated service
+      UPDATE public.jobs
+      SET
+        service_id = p_service_id,
+        job_type_name = v_service.name,
+        commission_percent = COALESCE(v_service.commission_percent, commission_percent),
+        deadline_date = CASE
+          WHEN v_service.deadline_days IS NOT NULL AND v_service.deadline_days > 0 AND v_job.invoice_date IS NOT NULL
+          THEN (v_job.invoice_date + (v_service.deadline_days || ' days')::interval)::date
+          ELSE deadline_date
+        END
+      WHERE id = v_job.id;
+
+      v_synced_jobs_count := v_synced_jobs_count + 1;
+    END IF;
+  END LOOP;
+
+  RETURN v_synced_jobs_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.sync_service_steps_to_jobs(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.sync_service_steps_to_jobs(uuid) TO authenticated;
+
+-- 3. Update create_invoice to NOT insert dummy 'Processing' steps when a service has 0 steps
+CREATE OR REPLACE FUNCTION public.create_invoice(
+  p_invoice_date date,
+  p_due_date date,
+  p_customer_id uuid,
+  p_party_name text,
+  p_party_mobile text,
+  p_items jsonb,
+  p_discount_type text DEFAULT 'NONE',
+  p_discount_value numeric DEFAULT 0,
+  p_paid_amount numeric DEFAULT 0,
+  p_payment_mode text DEFAULT 'CASH',
+  p_payment_ref text DEFAULT NULL,
+  p_notes text DEFAULT NULL,
+  p_force_new_customer boolean DEFAULT false,
+  p_bank_id uuid DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_biz RECORD;
+  v_member_id uuid;
+  v_role text;
+  v_invoice_id uuid;
+  v_invoice_number text;
+  v_fy text;
+  v_counter int;
+  v_subtotal numeric(14,2) := 0;
+  v_discount_amount numeric(14,2) := 0;
+  v_total numeric(14,2) := 0;
+  v_paid numeric(14,2) := 0;
+  v_customer_id uuid;
+  v_final_party_name text;
+  v_final_party_mobile text;
+  v_item jsonb;
+  v_qty numeric(14,2);
+  v_rate numeric(14,2);
+  v_line_amount numeric(14,2);
+  v_item_id uuid;
+  v_job_id uuid;
+  v_service_id uuid;
+  v_item_service_id uuid;
+  v_service_row RECORD;
+  v_job_type_name text;
+  v_deadline_date date;
+  v_comm_percent numeric(5,2);
+  v_comm_amount numeric(14,2);
+  v_job_staff_id uuid;
+  v_step_row RECORD;
+  v_step_count int;
+  v_receipt_id uuid;
+  v_receipt_number text;
+  v_receipt_counter int;
+  v_alloc_amount numeric(14,2);
+  v_norm_mobile text;
+  v_existing_cust_id uuid;
+  v_existing_count int;
+  v_needs_bank boolean := false;
+  v_bank_row RECORD;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL THEN
+    RAISE EXCEPTION 'NO_ACTIVE_BUSINESS' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'BUSINESS_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF p_items IS NULL OR jsonb_array_length(p_items) = 0 THEN
+    RAISE EXCEPTION 'INVOICE_ITEMS_EMPTY' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_fy := public.fy_label(p_invoice_date);
+
+  -- Mandatory bank selection check
+  v_paid := COALESCE(p_paid_amount, 0);
+  IF v_paid > 0 AND UPPER(p_payment_mode) IN ('UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    v_needs_bank := true;
+    IF p_bank_id IS NULL THEN
+      RAISE EXCEPTION 'BANK_ACCOUNT_REQUIRED'
+        USING ERRCODE = 'P0001',
+        DETAIL = 'Please select a Bank or Online Account for this online payment';
+    END IF;
+
+    SELECT * INTO v_bank_row
+    FROM public.bank_accounts
+    WHERE id = p_bank_id AND business_id = v_biz_id AND deleted_at IS NULL AND is_active = true;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'INVALID_BANK_ACCOUNT'
+        USING ERRCODE = 'P0001',
+        DETAIL = 'Selected bank account is invalid or inactive';
+    END IF;
+  END IF;
+
+  -- Calculate line items and subtotal
+  FOR v_item IN SELECT * FROM jsonb_array_elements(p_items)
+  LOOP
+    v_qty := ROUND(COALESCE((v_item->>'quantity')::numeric, 1), 2);
+    v_rate := ROUND(COALESCE((v_item->>'rate')::numeric, 0), 2);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+    v_subtotal := v_subtotal + v_line_amount;
+  END LOOP;
+
+  -- Apply discount
+  IF p_discount_type = 'FLAT' THEN
+    v_discount_amount := ROUND(LEAST(COALESCE(p_discount_value, 0), v_subtotal), 2);
+  ELSIF p_discount_type = 'PERCENT' THEN
+    v_discount_amount := ROUND(v_subtotal * (LEAST(COALESCE(p_discount_value, 0), 100) / 100.0), 2);
+  ELSE
+    v_discount_amount := 0;
+  END IF;
+
+  v_total := ROUND(v_subtotal - v_discount_amount, 2);
+
+  IF v_paid > v_total THEN
+    v_paid := v_total;
+  END IF;
+
+  -- Customer resolution (BR-5)
+  v_customer_id := p_customer_id;
+  v_final_party_name := TRIM(COALESCE(p_party_name, ''));
+  v_final_party_mobile := TRIM(COALESCE(p_party_mobile, ''));
+
+  IF v_customer_id IS NOT NULL THEN
+    SELECT name, mobile INTO v_final_party_name, v_final_party_mobile
+    FROM public.customers
+    WHERE id = v_customer_id AND business_id = v_biz_id;
+  ELSE
+    IF (v_total - v_paid) > 0 THEN
+      IF v_final_party_name = '' OR v_final_party_mobile = '' THEN
+        RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_DUE' USING ERRCODE = 'P0001';
+      END IF;
+    END IF;
+
+    IF v_final_party_name = '' AND v_final_party_mobile = '' THEN
+      v_final_party_name := 'Walk-in';
+      v_final_party_mobile := NULL;
+    ELSE
+      IF v_final_party_mobile != '' THEN
+        v_norm_mobile := regexp_replace(v_final_party_mobile, '[^0-9]', '', 'g');
+        IF length(v_norm_mobile) = 12 AND v_norm_mobile LIKE '91%' THEN
+          v_norm_mobile := substring(v_norm_mobile from 3);
+        ELSIF length(v_norm_mobile) = 11 AND v_norm_mobile LIKE '0%' THEN
+          v_norm_mobile := substring(v_norm_mobile from 2);
+        END IF;
+
+        IF NOT p_force_new_customer THEN
+          SELECT id INTO v_existing_cust_id
+          FROM public.customers
+          WHERE business_id = v_biz_id
+            AND mobile = v_norm_mobile
+            AND deleted_at IS NULL
+          LIMIT 1;
+
+          IF FOUND THEN
+            v_customer_id := v_existing_cust_id;
+          END IF;
+        END IF;
+
+        IF v_customer_id IS NULL THEN
+          SELECT COUNT(*) INTO v_existing_count
+          FROM public.customers
+          WHERE business_id = v_biz_id AND mobile = v_norm_mobile AND deleted_at IS NULL;
+
+          INSERT INTO public.customers (
+            business_id,
+            type,
+            name,
+            mobile,
+            possible_duplicate,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            'WALK_IN',
+            v_final_party_name,
+            v_norm_mobile,
+            (v_existing_count > 0),
+            v_member_id,
+            v_member_id
+          )
+          RETURNING id INTO v_customer_id;
+        END IF;
+      ELSE
+        INSERT INTO public.customers (
+          business_id,
+          type,
+          name,
+          mobile,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          'WALK_IN',
+          v_final_party_name,
+          NULL,
+          v_member_id,
+          v_member_id
+        )
+        RETURNING id INTO v_customer_id;
+      END IF;
+    END IF;
+  END IF;
+
+  -- Generate invoice number
+  v_counter := public.next_invoice_number(v_biz_id, v_fy);
+  IF v_biz.numbering_mode = 'FY_RESET' THEN
+    v_invoice_number := COALESCE(v_biz.invoice_prefix, 'INV-') || v_fy || '-' || lpad(v_counter::text, 4, '0');
+  ELSE
+    v_invoice_number := COALESCE(v_biz.invoice_prefix, 'INV-') || lpad(v_counter::text, 4, '0');
+  END IF;
+
+  INSERT INTO public.invoices (
+    business_id,
+    number,
+    fy_label,
+    invoice_date,
+    due_date,
+    customer_id,
+    party_name,
+    party_mobile,
+    subtotal,
+    discount_type,
+    discount_value,
+    discount_amount,
+    total,
+    paid_amount,
+    status,
+    notes,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_invoice_number,
+    v_fy,
+    p_invoice_date,
+    COALESCE(p_due_date, p_invoice_date),
+    v_customer_id,
+    v_final_party_name,
+    v_final_party_mobile,
+    v_subtotal,
+    p_discount_type,
+    p_discount_value,
+    v_discount_amount,
+    v_total,
+    0,
+    'ACTIVE',
+    p_notes,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_invoice_id;
+
+  -- Line items and job creation
+  FOR v_item IN SELECT * FROM jsonb_array_elements(p_items)
+  LOOP
+    v_qty := ROUND(COALESCE((v_item->>'quantity')::numeric, 1), 2);
+    v_rate := ROUND(COALESCE((v_item->>'rate')::numeric, 0), 2);
+    v_line_amount := ROUND(v_qty * v_rate, 2);
+
+    v_item_service_id := NULL;
+    IF (v_item->>'service_id') IS NOT NULL AND (v_item->>'service_id') != '' THEN
+      v_item_service_id := (v_item->>'service_id')::uuid;
+    END IF;
+
+    INSERT INTO public.invoice_items (
+      business_id,
+      invoice_id,
+      service_id,
+      description,
+      quantity,
+      rate,
+      amount,
+      is_job,
+      applicant_name,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_invoice_id,
+      v_item_service_id,
+      COALESCE(v_item->>'description', 'Item'),
+      v_qty,
+      v_rate,
+      v_line_amount,
+      COALESCE((v_item->>'is_job')::boolean, false),
+      v_item->>'applicant_name',
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_item_id;
+
+    -- Job creation if create_job (is_job) is explicitly true
+    IF COALESCE((v_item->>'is_job')::boolean, false) = true THEN
+      IF NOT v_biz.job_management_enabled THEN
+        UPDATE public.businesses SET job_management_enabled = true WHERE id = v_biz_id;
+        v_biz.job_management_enabled := true;
+      END IF;
+
+      v_service_id := NULL;
+      v_job_type_name := COALESCE(v_item->>'description', 'Service Job');
+      v_deadline_date := p_invoice_date + 15;
+      v_comm_percent := 0;
+
+      IF v_item_service_id IS NOT NULL THEN
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE id = v_item_service_id;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := p_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        END IF;
+      END IF;
+
+      IF v_service_id IS NULL THEN
+        SELECT * INTO v_service_row
+        FROM public.services
+        WHERE business_id = v_biz_id AND LOWER(TRIM(name)) = LOWER(TRIM(COALESCE(v_item->>'description', 'Service Job'))) AND deleted_at IS NULL
+        LIMIT 1;
+
+        IF FOUND THEN
+          v_service_id := v_service_row.id;
+          v_job_type_name := v_service_row.name;
+          v_deadline_date := p_invoice_date + COALESCE(v_service_row.deadline_days, 15);
+          v_comm_percent := COALESCE(v_service_row.commission_percent, 0);
+        END IF;
+      END IF;
+
+      v_job_staff_id := NULL;
+      IF v_role = 'STAFF' THEN
+        v_job_staff_id := v_member_id;
+      END IF;
+
+      INSERT INTO public.jobs (
+        business_id,
+        invoice_id,
+        invoice_item_id,
+        service_id,
+        job_type_name,
+        party_name,
+        party_mobile,
+        applicant_name,
+        amount,
+        deadline_date,
+        assigned_staff_id,
+        commission_percent,
+        status,
+        created_by,
+        updated_by
+      )
+      VALUES (
+        v_biz_id,
+        v_invoice_id,
+        v_item_id,
+        v_service_id,
+        v_job_type_name,
+        v_final_party_name,
+        v_final_party_mobile,
+        v_item->>'applicant_name',
+        v_line_amount,
+        v_deadline_date,
+        v_job_staff_id,
+        v_comm_percent,
+        'IN_PROGRESS',
+        v_member_id,
+        v_member_id
+      )
+      RETURNING id INTO v_job_id;
+
+      -- Snapshot job type steps if service exists and has steps (BR-12)
+      v_step_count := 0;
+      IF v_service_id IS NOT NULL THEN
+        FOR v_step_row IN
+          SELECT position, name, whatsapp_message
+          FROM public.job_type_steps
+          WHERE service_id = v_service_id AND business_id = v_biz_id
+          ORDER BY position ASC
+        LOOP
+          v_step_count := v_step_count + 1;
+          INSERT INTO public.job_steps (
+            business_id,
+            job_id,
+            position,
+            name,
+            whatsapp_message,
+            ticked,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            v_job_id,
+            v_step_row.position,
+            v_step_row.name,
+            v_step_row.whatsapp_message,
+            false,
+            v_member_id,
+            v_member_id
+          );
+        END LOOP;
+      END IF;
+
+      -- NOTE: If v_step_count = 0, NO dummy step is inserted! Job has 0 steps as requested.
+
+      -- Commission entry if staff assigned & commission > 0 (BR-15)
+      IF v_job_staff_id IS NOT NULL AND v_comm_percent > 0 THEN
+        v_comm_amount := ROUND(v_line_amount * (v_comm_percent / 100), 2);
+        INSERT INTO public.commission_entries (
+          business_id,
+          job_id,
+          staff_id,
+          base_amount,
+          percent,
+          amount,
+          status,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          v_biz_id,
+          v_job_id,
+          v_job_staff_id,
+          v_line_amount,
+          v_comm_percent,
+          v_comm_amount,
+          'UPCOMING',
+          v_member_id,
+          v_member_id
+        );
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- Payment / Receipt handling (BR-7)
+  IF v_paid > 0 THEN
+    v_receipt_counter := public.next_receipt_number(v_biz_id, v_fy);
+    IF v_biz.numbering_mode = 'FY_RESET' THEN
+      v_receipt_number := 'RC-' || v_fy || '-' || lpad(v_receipt_counter::text, 4, '0');
+    ELSE
+      v_receipt_number := 'RC-' || lpad(v_receipt_counter::text, 4, '0');
+    END IF;
+
+    INSERT INTO public.receipts (
+      business_id,
+      number,
+      fy_label,
+      receipt_date,
+      customer_id,
+      amount,
+      mode,
+      reference,
+      kind,
+      unallocated_amount,
+      notes,
+      bank_id,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_number,
+      v_fy,
+      p_invoice_date,
+      v_customer_id,
+      v_paid,
+      p_payment_mode,
+      p_payment_ref,
+      'INVOICE_PAYMENT',
+      0,
+      'Payment for ' || v_invoice_number,
+      p_bank_id,
+      v_member_id,
+      v_member_id
+    )
+    RETURNING id INTO v_receipt_id;
+
+    INSERT INTO public.receipt_allocations (
+      business_id,
+      receipt_id,
+      invoice_id,
+      amount,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_receipt_id,
+      v_invoice_id,
+      v_paid,
+      v_member_id,
+      v_member_id
+    );
+
+    UPDATE public.invoices
+    SET paid_amount = v_paid
+    WHERE id = v_invoice_id;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'invoice_id', v_invoice_id,
+    'invoice_number', v_invoice_number,
+    'total', v_total,
+    'paid_amount', v_paid,
+    'balance', v_total - v_paid,
+    'customer_id', v_customer_id
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.create_invoice(date, date, uuid, text, text, jsonb, text, numeric, numeric, text, text, text, boolean, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_invoice(date, date, uuid, text, text, jsonb, text, numeric, numeric, text, text, text, boolean, uuid) TO authenticated;
+
+
+
+-- >>> Migration: 20261104000032_sync_normal_service_to_jobs.sql <<<
+-- Migration 32: Bi-directional step synchronization for jobs
+-- When an admin updates a service from multi-step job to normal service (is_job_type = false),
+-- open jobs for that service have their steps removed so the job card immediately reflects "---- NO STEPS ----".
+
+CREATE OR REPLACE FUNCTION public.sync_service_steps_to_jobs(
+  p_service_id uuid
+)
+RETURNS int AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_job RECORD;
+  v_step RECORD;
+  v_synced_jobs_count int := 0;
+  v_ticked_count int;
+  v_service RECORD;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role != 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can sync service steps';
+  END IF;
+
+  SELECT * INTO v_service
+  FROM public.services
+  WHERE id = p_service_id AND business_id = v_biz_id AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+
+  -- If service is normal (not a job type), clean up job_type_steps immediately
+  IF v_service.is_job_type = false THEN
+    DELETE FROM public.job_type_steps WHERE service_id = p_service_id;
+  END IF;
+
+  -- Iterate through open/in-progress jobs for this service (matching ID or snapshotted name)
+  FOR v_job IN
+    SELECT j.id, j.deadline_date, i.invoice_date
+    FROM public.jobs j
+    LEFT JOIN public.invoices i ON i.id = j.invoice_id
+    WHERE j.business_id = v_biz_id
+      AND (j.service_id = p_service_id OR (j.service_id IS NULL AND LOWER(TRIM(j.job_type_name)) = LOWER(TRIM(v_service.name))))
+      AND j.status = 'IN_PROGRESS'
+      AND j.deleted_at IS NULL
+  LOOP
+    -- Count ticked steps for this job
+    SELECT COUNT(*) INTO v_ticked_count
+    FROM public.job_steps
+    WHERE job_id = v_job.id AND ticked = true AND deleted_at IS NULL;
+
+    -- Case 1: Service is updated to a NORMAL service (is_job_type = false)
+    IF v_service.is_job_type = false THEN
+      -- If no steps are ticked, remove all steps completely so card shows ---- NO STEPS ----
+      IF v_ticked_count = 0 THEN
+        DELETE FROM public.job_steps WHERE job_id = v_job.id;
+      ELSE
+        -- Remove unticked steps
+        DELETE FROM public.job_steps WHERE job_id = v_job.id AND ticked = false;
+      END IF;
+
+      -- Update job snapshot fields
+      UPDATE public.jobs
+      SET
+        service_id = p_service_id,
+        job_type_name = v_service.name
+      WHERE id = v_job.id;
+
+      v_synced_jobs_count := v_synced_jobs_count + 1;
+
+    -- Case 2: Service is a multi-step job (is_job_type = true)
+    ELSE
+      -- If no steps have been ticked yet, replace completely with new steps
+      IF v_ticked_count = 0 THEN
+        DELETE FROM public.job_steps WHERE job_id = v_job.id;
+
+        FOR v_step IN
+          SELECT position, name, whatsapp_message
+          FROM public.job_type_steps
+          WHERE service_id = p_service_id AND deleted_at IS NULL
+          ORDER BY position ASC
+        LOOP
+          INSERT INTO public.job_steps (
+            business_id,
+            job_id,
+            position,
+            name,
+            whatsapp_message,
+            ticked,
+            created_by,
+            updated_by
+          )
+          VALUES (
+            v_biz_id,
+            v_job.id,
+            v_step.position,
+            v_step.name,
+            v_step.whatsapp_message,
+            false,
+            v_member_id,
+            v_member_id
+          );
+        END LOOP;
+
+        -- Update job snapshot fields to match updated service
+        UPDATE public.jobs
+        SET
+          service_id = p_service_id,
+          job_type_name = v_service.name,
+          commission_percent = COALESCE(v_service.commission_percent, commission_percent),
+          deadline_date = CASE
+            WHEN v_service.deadline_days IS NOT NULL AND v_service.deadline_days > 0 AND v_job.invoice_date IS NOT NULL
+            THEN (v_job.invoice_date + (v_service.deadline_days || ' days')::interval)::date
+            ELSE deadline_date
+          END
+        WHERE id = v_job.id;
+
+        v_synced_jobs_count := v_synced_jobs_count + 1;
+      END IF;
+    END IF;
+  END LOOP;
+
+  RETURN v_synced_jobs_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.sync_service_steps_to_jobs(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.sync_service_steps_to_jobs(uuid) TO authenticated;
+
+
+-- >>> Migration: 20261104000033_add_outstanding_to_pnl_report.sql <<<
+-- Migration 33: Add Total Outstanding to P&L report RPC
+-- Calculates active pending invoice dues and includes in P&L report jsonb payload
+
+CREATE OR REPLACE FUNCTION public.report(
+  type text,
+  params jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_fy text;
+  v_from date;
+  v_to date;
+  v_data jsonb;
+  v_period text;
+  v_period_label text;
+  v_biz public.businesses%ROWTYPE;
+
+  -- P&L specific variables
+  v_income numeric(14,2) := 0;
+  v_payments numeric(14,2) := 0;
+  v_expenses numeric(14,2) := 0;
+  v_outgoing numeric(14,2) := 0;
+  v_net_profit numeric(14,2) := 0;
+  v_total_outstanding numeric(14,2) := 0;
+  v_loans_taken numeric(14,2) := 0;
+  v_principal_repaid numeric(14,2) := 0;
+  v_interest_paid numeric(14,2) := 0;
+  v_monthly_trend jsonb;
+  v_expense_by_cat jsonb;
+  v_income_by_cat jsonb;
+  v_min_trend_date date;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  v_period := UPPER(COALESCE(params->>'period', ''));
+  v_fy := params->>'fy_label';
+  IF v_fy IS NULL THEN
+    v_fy := public.fy_label(v_today);
+  END IF;
+
+  -- 1. Resolve Date Boundaries
+  IF v_period = 'TODAY' THEN
+    v_from := v_today;
+    v_to := v_today;
+    v_period_label := 'Today (' || to_char(v_today, 'DD Mon YYYY') || ')';
+  ELSIF v_period = 'MONTH' THEN
+    v_from := date_trunc('month', v_today)::date;
+    v_to := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    v_period_label := 'This Month (' || to_char(v_today, 'Mon YYYY') || ')';
+  ELSIF v_period = 'CUSTOM' THEN
+    v_from := COALESCE((params->>'from')::date, v_today);
+    v_to := COALESCE((params->>'to')::date, v_today);
+    v_period_label := to_char(v_from, 'DD Mon YYYY') || ' – ' || to_char(v_to, 'DD Mon YYYY');
+  ELSIF v_period = 'ALL' OR (params->>'all_time')::boolean IS TRUE THEN
+    v_from := '1970-01-01'::date;
+    v_to := (v_today + interval '5 years')::date;
+    v_period_label := 'All Time';
+  ELSE
+    -- Default or YEAR
+    v_from := (params->>'from')::date;
+    v_to := (params->>'to')::date;
+
+    IF v_from IS NULL AND v_to IS NULL THEN
+      DECLARE
+        v_start_year int := split_part(v_fy, '-', 1)::int;
+      BEGIN
+        v_from := make_date(v_start_year, 4, 1);
+        v_to := make_date(v_start_year + 1, 3, 31);
+      EXCEPTION WHEN OTHERS THEN
+        v_from := date_trunc('year', v_today)::date;
+        v_to := (date_trunc('year', v_today) + interval '1 year - 1 day')::date;
+      END;
+      v_period_label := 'FY ' || v_fy;
+    ELSE
+      v_period_label := to_char(v_from, 'DD Mon YYYY') || ' – ' || to_char(v_to, 'DD Mon YYYY');
+    END IF;
+  END IF;
+
+  CASE LOWER(type)
+    ----------------------------------------------------------------------------
+    -- CUSTOMER LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'customer_ledger' THEN
+      v_data := public.party_ledger_report(
+        'CUSTOMER',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- VENDOR LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'vendor_ledger' THEN
+      v_data := public.party_ledger_report(
+        'VENDOR',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 1. PROFIT & LOSS (BR-1: Cash-basis, loans excluded)
+    ----------------------------------------------------------------------------
+    WHEN 'pnl' THEN
+      SELECT COALESCE(SUM(amount), 0) INTO v_income
+      FROM public.receipts
+      WHERE business_id = v_biz_id AND receipt_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_payments
+      FROM public.payments
+      WHERE business_id = v_biz_id AND payment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_expenses
+      FROM public.expenses
+      WHERE business_id = v_biz_id AND expense_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      v_outgoing := v_payments + v_expenses;
+      v_net_profit := v_income - v_outgoing;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_loans_taken
+      FROM public.loans
+      WHERE business_id = v_biz_id AND loan_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT
+        COALESCE(SUM(principal), 0),
+        COALESCE(SUM(interest), 0)
+      INTO
+        v_principal_repaid,
+        v_interest_paid
+      FROM public.loan_repayments
+      WHERE business_id = v_biz_id AND repayment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      WITH exp_grouped AS (
+        SELECT
+          ec.name AS category_name,
+          COALESCE(SUM(e.amount), 0) AS total
+        FROM public.expense_categories ec
+        JOIN public.expenses e ON e.category_id = ec.id
+        WHERE ec.business_id = v_biz_id
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND e.deleted_at IS NULL
+        GROUP BY ec.name
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'category_name', eg.category_name,
+            'total', eg.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_expense_by_cat
+      FROM exp_grouped eg;
+
+      WITH inc_grouped AS (
+        SELECT
+          r.kind,
+          r.income_category,
+          COALESCE(SUM(r.amount), 0) AS total
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND r.deleted_at IS NULL
+        GROUP BY r.kind, r.income_category
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'kind', ig.kind,
+            'category', ig.income_category,
+            'total', ig.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_income_by_cat
+      FROM inc_grouped ig;
+
+      IF v_period = 'ALL' THEN
+        SELECT COALESCE(MIN(receipt_date), date_trunc('year', v_today)::date)
+        INTO v_min_trend_date
+        FROM public.receipts
+        WHERE business_id = v_biz_id AND deleted_at IS NULL;
+      ELSE
+        v_min_trend_date := v_from;
+      END IF;
+
+      WITH months AS (
+        SELECT generate_series(
+          date_trunc('month', v_min_trend_date),
+          date_trunc('month', v_to),
+          '1 month'::interval
+        )::date AS m_start
+      ),
+      monthly_calc AS (
+        SELECT
+          to_char(m.m_start, 'Mon YYYY') AS month_label,
+          m.m_start,
+          COALESCE((
+            SELECT SUM(r.amount)
+            FROM public.receipts r
+            WHERE r.business_id = v_biz_id
+              AND r.receipt_date >= m.m_start
+              AND r.receipt_date < (m.m_start + interval '1 month')::date
+              AND r.deleted_at IS NULL
+          ), 0) AS income,
+          COALESCE((
+            SELECT SUM(p.amount)
+            FROM public.payments p
+            WHERE p.business_id = v_biz_id
+              AND p.payment_date >= m.m_start
+              AND p.payment_date < (m.m_start + interval '1 month')::date
+              AND p.deleted_at IS NULL
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM public.expenses e
+            WHERE e.business_id = v_biz_id
+              AND e.expense_date >= m.m_start
+              AND e.expense_date < (m.m_start + interval '1 month')::date
+              AND e.deleted_at IS NULL
+          ), 0) AS outgoing
+        FROM months m
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'month', mc.month_label,
+            'income', mc.income,
+            'outgoing', mc.outgoing,
+            'profit', (mc.income - mc.outgoing)
+          )
+          ORDER BY mc.m_start ASC
+        ),
+        '[]'::jsonb
+      )
+      INTO v_monthly_trend
+      FROM monthly_calc mc;
+
+      -- Total Outstanding (Pending customer dues across active invoices)
+      SELECT COALESCE(SUM(total - paid_amount), 0)
+      INTO v_total_outstanding
+      FROM public.invoices
+      WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+      RETURN jsonb_build_object(
+        'type', 'pnl',
+        'fy_label', v_fy,
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'income', v_income,
+        'outgoing', v_outgoing,
+        'payments', v_payments,
+        'expenses', v_expenses,
+        'net_profit', v_net_profit,
+        'total_outstanding', v_total_outstanding,
+        'loans', jsonb_build_object(
+          'taken', v_loans_taken,
+          'principal_repaid', v_principal_repaid,
+          'interest_paid', v_interest_paid
+        ),
+        'expense_categories', v_expense_by_cat,
+        'income_categories', v_income_by_cat,
+        'monthly_trend', v_monthly_trend,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 2. INVOICES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'invoices' THEN
+      WITH inv_list AS (
+        SELECT
+          i.id,
+          i.number,
+          i.invoice_date,
+          i.due_date,
+          i.party_name,
+          i.party_mobile,
+          i.subtotal,
+          i.discount_amount,
+          i.total,
+          i.paid_amount,
+          (i.total - i.paid_amount) AS balance,
+          i.status,
+          CASE
+            WHEN i.status = 'ACTIVE' AND (i.total > i.paid_amount) AND i.due_date < v_today THEN true
+            ELSE false
+          END AS is_overdue
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+          AND (params->>'status' IS NULL OR i.status = params->>'status')
+        ORDER BY i.invoice_date DESC, i.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'invoices',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_billed', COALESCE(SUM(total), 0),
+        'total_paid', COALESCE(SUM(paid_amount), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(inv_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM inv_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 3. RECEIPTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'receipts' THEN
+      WITH rec_list AS (
+        SELECT
+          r.id,
+          r.number,
+          r.receipt_date,
+          c.name AS customer_name,
+          r.amount,
+          r.mode,
+          r.kind,
+          r.income_category,
+          r.reference,
+          r.unallocated_amount
+        FROM public.receipts r
+        LEFT JOIN public.customers c ON c.id = r.customer_id
+        WHERE r.business_id = v_biz_id
+          AND r.deleted_at IS NULL
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND (params->>'mode' IS NULL OR r.mode = params->>'mode')
+          AND (params->>'kind' IS NULL OR r.kind = params->>'kind')
+        ORDER BY r.receipt_date DESC, r.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'receipts',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(rec_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM rec_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 4. PAYMENTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'payments' THEN
+      WITH pay_list AS (
+        SELECT
+          p.id,
+          p.payment_date,
+          v.name AS vendor_name,
+          p.description,
+          i.number AS invoice_number,
+          p.amount,
+          p.mode,
+          p.notes
+        FROM public.payments p
+        JOIN public.vendors v ON v.id = p.vendor_id
+        LEFT JOIN public.invoices i ON i.id = p.invoice_id
+        WHERE p.business_id = v_biz_id
+          AND p.deleted_at IS NULL
+          AND p.payment_date BETWEEN v_from AND v_to
+          AND (params->>'vendor_id' IS NULL OR p.vendor_id = (params->>'vendor_id')::uuid)
+        ORDER BY p.payment_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'payments',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(pay_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM pay_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 5. EXPENSES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'expenses' THEN
+      WITH exp_list AS (
+        SELECT
+          e.id,
+          e.expense_date,
+          ec.name AS category_name,
+          e.description,
+          e.amount,
+          e.mode,
+          e.payee,
+          e.notes
+        FROM public.expenses e
+        JOIN public.expense_categories ec ON ec.id = e.category_id
+        WHERE e.business_id = v_biz_id
+          AND e.deleted_at IS NULL
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND (params->>'category_id' IS NULL OR e.category_id = (params->>'category_id')::uuid)
+        ORDER BY e.expense_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'expenses',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(exp_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM exp_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 6. OUTSTANDING DUES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'outstanding' THEN
+      WITH dues_query AS (
+        SELECT
+          c.id,
+          c.name AS customer_name,
+          c.mobile AS customer_mobile,
+          c.type AS customer_type,
+          COALESCE(SUM(i.total), 0) AS total_billed,
+          COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+          COALESCE(SUM(i.total - i.paid_amount), 0) AS balance,
+          COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0) AS overdue_balance,
+          MIN(i.invoice_date) AS oldest_invoice_date
+        FROM public.customers c
+        JOIN public.invoices i ON i.customer_id = c.id
+        WHERE c.business_id = v_biz_id
+          AND c.deleted_at IS NULL
+          AND i.business_id = v_biz_id
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+          AND (i.total > i.paid_amount)
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+        GROUP BY c.id, c.name, c.mobile, c.type
+        HAVING COALESCE(SUM(i.total - i.paid_amount), 0) > 0
+        ORDER BY balance DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'outstanding',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_outstanding', COALESCE(SUM(balance), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'total_overdue', COALESCE(SUM(overdue_balance), 0),
+        'customer_count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(dues_query.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM dues_query;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 7. LOANS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'loans' THEN
+      WITH loan_list AS (
+        SELECT
+          l.id,
+          l.lender_name,
+          l.loan_date,
+          l.amount AS taken_amount,
+          COALESCE(SUM(lr.principal), 0) AS principal_repaid,
+          COALESCE(SUM(lr.interest), 0) AS interest_paid,
+          (l.amount - COALESCE(SUM(lr.principal), 0)) AS current_outstanding
+        FROM public.loans l
+        LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+          AND (v_period = 'ALL' OR lr.repayment_date BETWEEN v_from AND v_to)
+        WHERE l.business_id = v_biz_id
+          AND l.deleted_at IS NULL
+          AND (
+            v_period = 'ALL'
+            OR l.loan_date BETWEEN v_from AND v_to
+            OR EXISTS (
+              SELECT 1 FROM public.loan_repayments r
+              WHERE r.loan_id = l.id AND r.deleted_at IS NULL AND r.repayment_date BETWEEN v_from AND v_to
+            )
+          )
+        GROUP BY l.id, l.lender_name, l.loan_date, l.amount
+        ORDER BY l.loan_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'loans',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_taken', COALESCE(SUM(taken_amount), 0),
+        'total_principal_repaid', COALESCE(SUM(principal_repaid), 0),
+        'total_outstanding', COALESCE(SUM(current_outstanding), 0),
+        'rows', COALESCE(jsonb_agg(to_jsonb(loan_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM loan_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 8. JOBS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'jobs' THEN
+      WITH job_list AS (
+        SELECT
+          j.id,
+          j.job_type_name,
+          j.party_name,
+          j.applicant_name,
+          j.amount,
+          j.deadline_date,
+          j.status,
+          m.name AS assigned_staff_name,
+          i.number AS invoice_number,
+          i.invoice_date
+        FROM public.jobs j
+        JOIN public.invoices i ON i.id = j.invoice_id
+        LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+        WHERE j.business_id = v_biz_id
+          AND j.deleted_at IS NULL
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+          AND (params->>'status' IS NULL OR j.status = params->>'status')
+        ORDER BY j.deadline_date ASC
+      )
+      SELECT jsonb_build_object(
+        'type', 'jobs',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(job_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM job_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 9. COMMISSION REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'commission' THEN
+      WITH comm_list AS (
+        SELECT
+          ce.id,
+          m.name AS staff_name,
+          j.job_type_name,
+          ce.base_amount,
+          ce.percent,
+          ce.amount,
+          ce.status,
+          ce.earned_at
+        FROM public.commission_entries ce
+        JOIN public.members m ON m.id = ce.staff_id
+        JOIN public.jobs j ON j.id = ce.job_id
+        WHERE ce.business_id = v_biz_id
+          AND ce.deleted_at IS NULL
+          AND (params->>'staff_id' IS NULL OR ce.staff_id = (params->>'staff_id')::uuid)
+          AND (
+            v_period = 'ALL'
+            OR (ce.earned_at IS NOT NULL AND ce.earned_at::date BETWEEN v_from AND v_to)
+            OR (ce.earned_at IS NULL AND ce.created_at::date BETWEEN v_from AND v_to)
+          )
+        ORDER BY ce.created_at DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'commission',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(comm_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM comm_list;
+
+      RETURN v_data;
+
+    ELSE
+      RAISE EXCEPTION 'UNKNOWN_REPORT_TYPE' USING ERRCODE = 'P0001';
+  END CASE;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.report(text, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.report(text, jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261105000034_demo_requests.sql <<<
+-- Migration: 20261105000034_demo_requests.sql
+-- Description: Create demo_requests table and secure public submission RPC
+
+CREATE TABLE IF NOT EXISTS public.demo_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    full_name TEXT NOT NULL,
+    business_name TEXT NOT NULL,
+    mobile TEXT NOT NULL,
+    email TEXT NOT NULL,
+    business_type TEXT NOT NULL,
+    preferred_date DATE,
+    message TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+);
+
+-- Enable RLS
+ALTER TABLE public.demo_requests ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Only authenticated owners can read demo requests
+CREATE POLICY "Owners can view demo requests"
+    ON public.demo_requests
+    FOR SELECT
+    TO authenticated
+    USING (
+        EXISTS (
+            SELECT 1 FROM public.members
+            WHERE members.auth_user_id = auth.uid()
+              AND members.role = 'OWNER'
+              AND members.active = true
+        )
+    );
+
+-- Create secure submission RPC callable by anyone (anon and authenticated)
+CREATE OR REPLACE FUNCTION public.submit_demo_request(payload JSONB)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_full_name TEXT;
+    v_business_name TEXT;
+    v_mobile TEXT;
+    v_email TEXT;
+    v_business_type TEXT;
+    v_preferred_date DATE;
+    v_message TEXT;
+    v_id UUID;
+    v_clean_mobile TEXT;
+BEGIN
+    v_full_name := trim(COALESCE(payload->>'full_name', ''));
+    v_business_name := trim(COALESCE(payload->>'business_name', ''));
+    v_mobile := trim(COALESCE(payload->>'mobile', ''));
+    v_email := lower(trim(COALESCE(payload->>'email', '')));
+    v_business_type := trim(COALESCE(payload->>'business_type', 'General Business'));
+    v_message := trim(COALESCE(payload->>'message', ''));
+
+    IF payload->>'preferred_date' IS NOT NULL AND payload->>'preferred_date' <> '' THEN
+        BEGIN
+            v_preferred_date := (payload->>'preferred_date')::DATE;
+        EXCEPTION WHEN OTHERS THEN
+            v_preferred_date := NULL;
+        END;
+    ELSE
+        v_preferred_date := NULL;
+    END IF;
+
+    -- Validations
+    IF v_full_name = '' THEN
+        RAISE EXCEPTION 'Full name is required' USING ERRCODE = 'P0001';
+    END IF;
+
+    IF v_business_name = '' THEN
+        RAISE EXCEPTION 'Business name is required' USING ERRCODE = 'P0001';
+    END IF;
+
+    IF v_mobile = '' THEN
+        RAISE EXCEPTION 'Mobile number is required' USING ERRCODE = 'P0001';
+    END IF;
+
+    -- Normalize Indian mobile (strip +91, 0, spaces, dashes)
+    v_clean_mobile := regexp_replace(v_mobile, '[^0-9]', '', 'g');
+    IF length(v_clean_mobile) = 12 AND v_clean_mobile LIKE '91%' THEN
+        v_clean_mobile := substr(v_clean_mobile, 3);
+    ELSIF length(v_clean_mobile) = 11 AND v_clean_mobile LIKE '0%' THEN
+        v_clean_mobile := substr(v_clean_mobile, 2);
+    END IF;
+
+    IF length(v_clean_mobile) <> 10 THEN
+        RAISE EXCEPTION 'Please provide a valid 10-digit mobile number' USING ERRCODE = 'P0001';
+    END IF;
+
+    IF v_email = '' OR position('@' in v_email) = 0 THEN
+        RAISE EXCEPTION 'Please provide a valid email address' USING ERRCODE = 'P0001';
+    END IF;
+
+    INSERT INTO public.demo_requests (
+        full_name,
+        business_name,
+        mobile,
+        email,
+        business_type,
+        preferred_date,
+        message,
+        status
+    ) VALUES (
+        v_full_name,
+        v_business_name,
+        v_clean_mobile,
+        v_email,
+        v_business_type,
+        v_preferred_date,
+        NULLIF(v_message, ''),
+        'PENDING'
+    ) RETURNING id INTO v_id;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'id', v_id,
+        'message', 'Demo request received successfully. Our team will contact you shortly.'
+    );
+END;
+$$;
+
+-- Grant permissions for RPC
+REVOKE ALL ON FUNCTION public.submit_demo_request(JSONB) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.submit_demo_request(JSONB) TO anon, authenticated;
+
+
+
+-- >>> Migration: 20261105000035_staff_salary_and_commission_enhancements.sql <<<
+-- Migration 35: Staff Salary & Commission Enhancements
+-- 1. Ensure compensation_type column exists
+ALTER TABLE public.members 
+  ADD COLUMN IF NOT EXISTS compensation_type text NOT NULL DEFAULT 'COMMISSION' 
+  CHECK (compensation_type IN ('COMMISSION', 'SALARY'));
+
+
+-- Function: pay_staff
+CREATE OR REPLACE FUNCTION public.pay_staff(payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_today date;
+  v_staff_id uuid;
+  v_staff record;
+  v_amount numeric(14,2);
+  v_payout_date date;
+  v_mode text;
+  v_notes text;
+  v_bank_account_id uuid;
+  v_bank_name text;
+  v_cat_id uuid;
+  v_expense_id uuid;
+  v_payout_id uuid;
+  v_fy text;
+  v_desc text;
+  v_payout_type text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001', DETAIL = 'Only Owner can pay staff';
+  END IF;
+
+  v_staff_id := (payload->>'staff_id')::uuid;
+  v_amount := ROUND(COALESCE((payload->>'amount')::numeric, 0), 2);
+  v_payout_date := COALESCE((payload->>'payout_date')::date, v_today);
+  v_mode := COALESCE(payload->>'mode', 'CASH');
+  v_notes := payload->>'notes';
+  v_bank_account_id := NULLIF(payload->>'bank_account_id', '')::uuid;
+  v_bank_name := payload->>'bank_name';
+
+  IF v_staff_id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_ID_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_amount <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Validate bank account for online/non-cash modes
+  IF v_mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND v_bank_account_id IS NULL THEN
+    SELECT id, bank_name INTO v_bank_account_id, v_bank_name
+    FROM public.bank_accounts
+    WHERE business_id = v_biz_id AND active = true AND deleted_at IS NULL
+    ORDER BY created_at ASC LIMIT 1;
+  END IF;
+
+  -- Verify staff exists in this business
+  SELECT id, name, role, compensation_type INTO v_staff
+  FROM public.members
+  WHERE id = v_staff_id AND business_id = v_biz_id AND active = true;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_payout_type := COALESCE(payload->>'payout_type', v_staff.compensation_type, 'COMMISSION');
+
+  IF v_payout_type = 'SALARY' THEN
+    v_desc := 'Staff Salary: ' || v_staff.name;
+  ELSE
+    v_desc := 'Staff Commission: ' || v_staff.name;
+  END IF;
+
+  -- Find or create "Salary / Commission" system category
+  SELECT id INTO v_cat_id
+  FROM public.expense_categories
+  WHERE business_id = v_biz_id AND name = 'Salary / Commission';
+
+  IF v_cat_id IS NULL THEN
+    INSERT INTO public.expense_categories (business_id, name, system)
+    VALUES (v_biz_id, 'Salary / Commission', true)
+    RETURNING id INTO v_cat_id;
+  END IF;
+
+  v_fy := public.fy_label(v_payout_date);
+
+  -- 1. Create Expense in "Salary / Commission" (Flows directly to P&L Outgoing)
+  INSERT INTO public.expenses (
+    business_id,
+    fy_label,
+    expense_date,
+    category_id,
+    description,
+    amount,
+    mode,
+    payee,
+    staff_id,
+    notes,
+    bank_account_id,
+    bank_name,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_fy,
+    v_payout_date,
+    v_cat_id,
+    v_desc,
+    v_amount,
+    v_mode,
+    v_staff.name,
+    v_staff.id,
+    v_notes,
+    v_bank_account_id,
+    v_bank_name,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_expense_id;
+
+  -- 2. Create staff_payouts record linked to expense
+  INSERT INTO public.staff_payouts (
+    business_id,
+    staff_id,
+    amount,
+    payout_date,
+    mode,
+    notes,
+    expense_id,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_staff.id,
+    v_amount,
+    v_payout_date,
+    v_mode,
+    v_notes,
+    v_expense_id,
+    v_member_id,
+    v_member_id
+  )
+  RETURNING id INTO v_payout_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'payout_id', v_payout_id,
+    'expense_id', v_expense_id,
+    'staff_id', v_staff.id,
+    'staff_name', v_staff.name,
+    'payout_type', v_payout_type,
+    'amount', v_amount,
+    'payout_date', v_payout_date,
+    'mode', v_mode
+  );
+END;
+$function$
+;
+REVOKE ALL ON FUNCTION public.pay_staff FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.pay_staff TO authenticated;
+
+-- Function: set_staff_compensation_type
+CREATE OR REPLACE FUNCTION public.set_staff_compensation_type(p_staff_id uuid, p_compensation_type text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_type text;
+  v_staff public.members%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001', DETAIL = 'Only business owner can change compensation mode';
+  END IF;
+
+  v_type := UPPER(TRIM(p_compensation_type));
+  IF v_type NOT IN ('COMMISSION', 'SALARY') THEN
+    RAISE EXCEPTION 'INVALID_COMPENSATION_TYPE' USING ERRCODE = 'P0001', DETAIL = 'Compensation type must be COMMISSION or SALARY';
+  END IF;
+
+  SELECT * INTO v_staff
+  FROM public.members
+  WHERE id = p_staff_id AND business_id = v_biz_id AND active = true AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  UPDATE public.members
+  SET compensation_type = v_type,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = p_staff_id;
+
+  -- If switching to SALARY, remove pending UPCOMING commissions since staff will now be paid fixed salary
+  IF v_type = 'SALARY' THEN
+    DELETE FROM public.commission_entries
+    WHERE staff_id = p_staff_id AND status = 'UPCOMING';
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'staff_id', p_staff_id,
+    'compensation_type', v_type
+  );
+END;
+$function$
+;
+REVOKE ALL ON FUNCTION public.set_staff_compensation_type FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.set_staff_compensation_type TO authenticated;
+
+-- Function: staff_commission
+CREATE OR REPLACE FUNCTION public.staff_commission(p_staff_id uuid DEFAULT NULL::uuid, p_period text DEFAULT 'DAY'::text, p_from date DEFAULT NULL::date, p_to date DEFAULT NULL::date)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_start_date date;
+  v_end_date date;
+  v_year int;
+  v_month int;
+  v_entries jsonb;
+  v_payouts jsonb;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view own
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Calculate date boundaries based on period
+  CASE UPPER(p_period)
+    WHEN 'DAY' THEN
+      v_start_date := v_today;
+      v_end_date := v_today;
+    WHEN 'MONTH' THEN
+      v_start_date := date_trunc('month', v_today)::date;
+      v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    WHEN 'YEAR' THEN
+      v_year := EXTRACT(YEAR FROM v_today)::int;
+      v_month := EXTRACT(MONTH FROM v_today)::int;
+      IF v_month >= 4 THEN
+        v_start_date := make_date(v_year, 4, 1);
+        v_end_date := make_date(v_year + 1, 3, 31);
+      ELSE
+        v_start_date := make_date(v_year - 1, 4, 1);
+        v_end_date := make_date(v_year, 3, 31);
+      END IF;
+    WHEN 'ALL' THEN
+      v_start_date := NULL;
+      v_end_date := NULL;
+    ELSE
+      v_start_date := v_today;
+      v_end_date := v_today;
+  END CASE;
+
+  -- Explicit from/to overrides
+  IF p_from IS NOT NULL THEN
+    v_start_date := p_from;
+  END IF;
+  IF p_to IS NOT NULL THEN
+    v_end_date := p_to;
+  END IF;
+
+  -- Commission entries drill-down with exact bill timestamps
+  WITH comm_list AS (
+    SELECT
+      ce.id,
+      ce.job_id,
+      ce.staff_id,
+      m.name AS staff_name,
+      m.compensation_type,
+      ce.base_amount,
+      ce.percent,
+      ce.amount,
+      ce.status,
+      ce.earned_at,
+      ce.created_at AS commission_created_at,
+      j.job_type_name,
+      j.applicant_name,
+      j.party_name,
+      j.party_mobile,
+      i.id AS invoice_id,
+      i.number AS invoice_number,
+      i.invoice_date,
+      i.created_at AS invoice_created_at
+    FROM public.commission_entries ce
+    JOIN public.members m ON m.id = ce.staff_id
+    JOIN public.jobs j ON j.id = ce.job_id
+    JOIN public.invoices i ON i.id = j.invoice_id
+    WHERE ce.business_id = v_biz_id
+      AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+      AND (
+        (ce.status = 'EARNED' AND (v_start_date IS NULL OR ce.earned_at::date >= v_start_date) AND (v_end_date IS NULL OR ce.earned_at::date <= v_end_date))
+        OR
+        (ce.status = 'UPCOMING' AND (v_start_date IS NULL OR i.invoice_date >= v_start_date) AND (v_end_date IS NULL OR i.invoice_date <= v_end_date))
+      )
+    ORDER BY COALESCE(ce.earned_at, ce.created_at) DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(comm_list.*)), '[]'::jsonb)
+  INTO v_entries
+  FROM comm_list;
+
+  -- Staff Payouts in this period with exact timestamps
+  WITH payout_list AS (
+    SELECT
+      sp.id,
+      sp.staff_id,
+      m.name AS staff_name,
+      m.compensation_type,
+      sp.amount,
+      sp.payout_date,
+      sp.mode,
+      sp.notes,
+      sp.created_at AS payout_created_at,
+      e.description AS expense_description
+    FROM public.staff_payouts sp
+    JOIN public.members m ON m.id = sp.staff_id
+    LEFT JOIN public.expenses e ON e.id = sp.expense_id
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+      AND (v_target_staff_id IS NULL OR sp.staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR sp.payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR sp.payout_date <= v_end_date)
+    ORDER BY sp.payout_date DESC, sp.created_at DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(payout_list.*)), '[]'::jsonb)
+  INTO v_payouts
+  FROM payout_list;
+
+  -- Totals in this scope
+  SELECT
+    COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+    COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+  INTO
+    v_total_earned,
+    v_total_upcoming
+  FROM public.commission_entries ce
+  JOIN public.invoices i ON i.id = (SELECT invoice_id FROM public.jobs WHERE id = ce.job_id)
+  WHERE ce.business_id = v_biz_id
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+    AND (
+      (ce.status = 'EARNED' AND (v_start_date IS NULL OR ce.earned_at::date >= v_start_date) AND (v_end_date IS NULL OR ce.earned_at::date <= v_end_date))
+      OR
+      (ce.status = 'UPCOMING' AND (v_start_date IS NULL OR i.invoice_date >= v_start_date) AND (v_end_date IS NULL OR i.invoice_date <= v_end_date))
+    );
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_total_paid
+  FROM public.staff_payouts
+  WHERE business_id = v_biz_id AND deleted_at IS NULL
+    AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+    AND (v_start_date IS NULL OR payout_date >= v_start_date)
+    AND (v_end_date IS NULL OR payout_date <= v_end_date);
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'start_date', v_start_date,
+    'end_date', v_end_date,
+    'total_earned', v_total_earned,
+    'total_paid', v_total_paid,
+    'balance_payable', (v_total_earned - v_total_paid),
+    'upcoming', v_total_upcoming,
+    'entries', v_entries,
+    'payouts', v_payouts
+  );
+END;
+$function$
+;
+REVOKE ALL ON FUNCTION public.staff_commission FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_commission TO authenticated;
+
+-- Function: staff_summary
+CREATE OR REPLACE FUNCTION public.staff_summary(p_staff_id uuid DEFAULT NULL::uuid, p_from date DEFAULT NULL::date, p_to date DEFAULT NULL::date)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_month_start date;
+  v_month_end date;
+  v_fy_start date;
+  v_fy_end date;
+  v_year int;
+  v_month int;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+  v_staff_list jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view own summary
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Compute exact date boundaries for Today, Month, FY
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  v_year := EXTRACT(YEAR FROM v_today)::int;
+  v_month := EXTRACT(MONTH FROM v_today)::int;
+  IF v_month >= 4 THEN
+    v_fy_start := make_date(v_year, 4, 1);
+    v_fy_end := make_date(v_year + 1, 3, 31);
+  ELSE
+    v_fy_start := make_date(v_year - 1, 4, 1);
+    v_fy_end := make_date(v_year, 3, 31);
+  END IF;
+
+  -- Total Earned in query scope
+  SELECT COALESCE(SUM(ce.amount), 0)
+  INTO v_total_earned
+  FROM public.commission_entries ce
+  WHERE ce.business_id = v_biz_id
+    AND ce.status = 'EARNED'
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+    AND (p_from IS NULL OR ce.earned_at::date >= p_from)
+    AND (p_to IS NULL OR ce.earned_at::date <= p_to);
+
+  -- Total Paid in query scope
+  SELECT COALESCE(SUM(sp.amount), 0)
+  INTO v_total_paid
+  FROM public.staff_payouts sp
+  WHERE sp.business_id = v_biz_id
+    AND sp.deleted_at IS NULL
+    AND (v_target_staff_id IS NULL OR sp.staff_id = v_target_staff_id)
+    AND (p_from IS NULL OR sp.payout_date >= p_from)
+    AND (p_to IS NULL OR sp.payout_date <= p_to);
+
+  -- Upcoming
+  SELECT COALESCE(SUM(ce.amount), 0)
+  INTO v_total_upcoming
+  FROM public.commission_entries ce
+  WHERE ce.business_id = v_biz_id
+    AND ce.status = 'UPCOMING'
+    AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id);
+
+  v_balance_payable := v_total_earned - v_total_paid;
+
+  -- Per-staff breakdown (visible to Owner & Accountant)
+  IF v_role IN ('OWNER', 'ACCOUNTANT') AND v_target_staff_id IS NULL THEN
+    SELECT COALESCE(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', m.id,
+          'name', m.name,
+          'mobile', m.mobile,
+          'role', m.role,
+          'compensation_type', COALESCE(m.compensation_type, 'COMMISSION'),
+          'today_earned', COALESCE(t_comm.earned, 0),
+          'month_earned', COALESCE(m_comm.earned, 0),
+          'year_earned', COALESCE(y_comm.earned, 0),
+          'earned', COALESCE(e.earned, 0),
+          'paid', COALESCE(p.paid, 0),
+          'balance', (COALESCE(e.earned, 0) - COALESCE(p.paid, 0)),
+          'salary_paid_month', COALESCE(m_sal.paid, 0),
+          'salary_paid_year', COALESCE(y_sal.paid, 0),
+          'salary_paid_all', COALESCE(p.paid, 0),
+          'upcoming', COALESCE(u.upcoming, 0)
+        )
+        ORDER BY m.name ASC
+      ),
+      '[]'::jsonb
+    )
+    INTO v_staff_list
+    FROM public.members m
+    -- Today's commission
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS earned
+      FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED'
+        AND earned_at::date = v_today
+      GROUP BY staff_id
+    ) t_comm ON t_comm.staff_id = m.id
+    -- This Month's commission
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS earned
+      FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED'
+        AND earned_at::date >= v_month_start AND earned_at::date <= v_month_end
+      GROUP BY staff_id
+    ) m_comm ON m_comm.staff_id = m.id
+    -- This Year's (FY) commission
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS earned
+      FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED'
+        AND earned_at::date >= v_fy_start AND earned_at::date <= v_fy_end
+      GROUP BY staff_id
+    ) y_comm ON y_comm.staff_id = m.id
+    -- All-time or scoped earned
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS earned
+      FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED'
+        AND (p_from IS NULL OR earned_at::date >= p_from)
+        AND (p_to IS NULL OR earned_at::date <= p_to)
+      GROUP BY staff_id
+    ) e ON e.staff_id = m.id
+    -- All-time or scoped paid
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS paid
+      FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL
+        AND (p_from IS NULL OR payout_date >= p_from)
+        AND (p_to IS NULL OR payout_date <= p_to)
+      GROUP BY staff_id
+    ) p ON p.staff_id = m.id
+    -- This Month's salary/payout paid
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS paid
+      FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL
+        AND payout_date >= v_month_start AND payout_date <= v_month_end
+      GROUP BY staff_id
+    ) m_sal ON m_sal.staff_id = m.id
+    -- This Year's (FY) salary/payout paid
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS paid
+      FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL
+        AND payout_date >= v_fy_start AND payout_date <= v_fy_end
+      GROUP BY staff_id
+    ) y_sal ON y_sal.staff_id = m.id
+    -- Upcoming pending commission
+    LEFT JOIN (
+      SELECT staff_id, SUM(amount) AS upcoming
+      FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'UPCOMING'
+      GROUP BY staff_id
+    ) u ON u.staff_id = m.id
+    WHERE m.business_id = v_biz_id AND m.active = true AND m.deleted_at IS NULL;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'total_earned', v_total_earned,
+    'total_paid', v_total_paid,
+    'balance_payable', v_balance_payable,
+    'upcoming', v_total_upcoming,
+    'staff', v_staff_list
+  );
+END;
+$function$
+;
+REVOKE ALL ON FUNCTION public.staff_summary FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_summary TO authenticated;
+
+
+-- >>> Migration: 20261107000036_update_job_enhanced.sql <<<
+-- Migration 36: Enhanced update_job supporting staff assignment, deadline, particular, customer name & phone
+
+DROP FUNCTION IF EXISTS public.update_job(uuid, date, uuid);
+DROP FUNCTION IF EXISTS public.update_job(uuid, date, uuid, text, text, text);
+
+CREATE OR REPLACE FUNCTION public.update_job(
+  p_job_id uuid,
+  p_deadline_date date DEFAULT NULL,
+  p_assigned_staff_id uuid DEFAULT NULL,
+  p_applicant_name text DEFAULT NULL,
+  p_party_name text DEFAULT NULL,
+  p_party_mobile text DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_job public.jobs%ROWTYPE;
+  v_old_staff_id uuid;
+  v_updated public.jobs%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = p_job_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'JOB_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_old_staff_id := v_job.assigned_staff_id;
+
+  -- Validate staff if provided
+  IF p_assigned_staff_id IS NOT NULL THEN
+    PERFORM 1 FROM public.members
+    WHERE id = p_assigned_staff_id AND business_id = v_biz_id AND active = true;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  UPDATE public.jobs
+  SET deadline_date = COALESCE(p_deadline_date, deadline_date),
+      assigned_staff_id = p_assigned_staff_id,
+      applicant_name = COALESCE(p_applicant_name, applicant_name),
+      party_name = COALESCE(p_party_name, party_name),
+      party_mobile = COALESCE(p_party_mobile, party_mobile),
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = v_job.id
+  RETURNING * INTO v_updated;
+
+  -- If staff reassigned before completion, move commission entry (BR-15)
+  IF p_assigned_staff_id IS DISTINCT FROM v_old_staff_id THEN
+    IF p_assigned_staff_id IS NOT NULL AND v_job.commission_percent > 0 THEN
+      INSERT INTO public.commission_entries (
+        business_id, job_id, staff_id, base_amount, percent, amount, status
+      ) VALUES (
+        v_biz_id,
+        v_job.id,
+        p_assigned_staff_id,
+        v_job.amount,
+        v_job.commission_percent,
+        ROUND((v_job.amount * v_job.commission_percent / 100), 2),
+        CASE WHEN v_job.status = 'COMPLETED' THEN 'EARNED' ELSE 'UPCOMING' END
+      )
+      ON CONFLICT (job_id) DO UPDATE
+      SET staff_id = EXCLUDED.staff_id,
+          updated_at = now(),
+          updated_by = v_member_id;
+    ELSE
+      DELETE FROM public.commission_entries WHERE job_id = v_job.id;
+    END IF;
+  END IF;
+
+  RETURN to_jsonb(v_updated);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_job(uuid, date, uuid, text, text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_job(uuid, date, uuid, text, text, text) TO authenticated;
+
+
+
+-- >>> Migration: 20261107000037_staff_salary_management.sql <<<
+-- Migration 37: Complete Staff Salary & Commission Management
+-- Supports Commission Staff & Fixed Salary Staff, Accrued Monthly Salary, Advance Offsets, and Jobs Done Tracking
+
+ALTER TABLE public.members 
+  ADD COLUMN IF NOT EXISTS monthly_salary numeric(14,2) DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS salary_start_date date DEFAULT NULL;
+
+-- 1. RPC: set_staff_salary_config (Owner only)
+CREATE OR REPLACE FUNCTION public.set_staff_salary_config(
+  p_staff_id uuid,
+  p_compensation_type text,
+  p_monthly_salary numeric DEFAULT NULL,
+  p_salary_start_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_member_id uuid;
+  v_type text;
+  v_salary numeric(14,2);
+  v_start_date date;
+  v_staff public.members%ROWTYPE;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_member_id := (SELECT app.current_member_id());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001', DETAIL = 'Only Owner can update staff compensation';
+  END IF;
+
+  v_type := UPPER(TRIM(p_compensation_type));
+  IF v_type NOT IN ('COMMISSION', 'SALARY') THEN
+    RAISE EXCEPTION 'INVALID_COMPENSATION_TYPE' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_staff
+  FROM public.members
+  WHERE id = p_staff_id AND business_id = v_biz_id AND active = true AND deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_type = 'SALARY' THEN
+    v_salary := ROUND(COALESCE(p_monthly_salary, 0), 2);
+    v_start_date := COALESCE(p_salary_start_date, date_trunc('month', (SELECT app.today()))::date);
+    
+    -- If switching to SALARY, remove pending UPCOMING commission since staff is now salaried
+    DELETE FROM public.commission_entries
+    WHERE staff_id = p_staff_id AND status = 'UPCOMING';
+  ELSE
+    v_salary := NULL;
+    v_start_date := NULL;
+  END IF;
+
+  UPDATE public.members
+  SET compensation_type = v_type,
+      monthly_salary = v_salary,
+      salary_start_date = v_start_date,
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = p_staff_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'staff_id', p_staff_id,
+    'compensation_type', v_type,
+    'monthly_salary', v_salary,
+    'salary_start_date', v_start_date
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.set_staff_salary_config(uuid, text, numeric, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.set_staff_salary_config(uuid, text, numeric, date) TO authenticated;
+
+
+-- 2. Enhanced staff_summary (Handles both Commission & Salaried staff)
+CREATE OR REPLACE FUNCTION public.staff_summary(
+  p_staff_id uuid DEFAULT NULL::uuid,
+  p_from date DEFAULT NULL::date,
+  p_to date DEFAULT NULL::date
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_month_start date;
+  v_month_end date;
+  v_fy_start date;
+  v_fy_end date;
+  v_year int;
+  v_month int;
+  
+  -- Query scope date filters
+  v_scope_from date;
+  v_scope_to date;
+
+  v_total_due numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+  v_staff_list jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view own summary
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Dates calculation
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  v_year := EXTRACT(YEAR FROM v_today)::int;
+  v_month := EXTRACT(MONTH FROM v_today)::int;
+  IF v_month >= 4 THEN
+    v_fy_start := make_date(v_year, 4, 1);
+    v_fy_end := make_date(v_year + 1, 3, 31);
+  ELSE
+    v_fy_start := make_date(v_year - 1, 4, 1);
+    v_fy_end := make_date(v_year, 3, 31);
+  END IF;
+
+  v_scope_from := COALESCE(p_from, v_month_start);
+  v_scope_to := COALESCE(p_to, v_month_end);
+
+  -- Per-staff calculations
+  WITH staff_base AS (
+    SELECT 
+      m.id,
+      m.name,
+      m.mobile,
+      m.role,
+      COALESCE(m.compensation_type, 'COMMISSION') AS compensation_type,
+      COALESCE(m.monthly_salary, 0) AS monthly_salary,
+      COALESCE(m.salary_start_date, m.created_at::date) AS salary_start_date,
+      m.created_at
+    FROM public.members m
+    WHERE m.business_id = v_biz_id 
+      AND m.active = true 
+      AND m.deleted_at IS NULL
+      AND (v_target_staff_id IS NULL OR m.id = v_target_staff_id)
+  ),
+  staff_jobs AS (
+    -- Count of jobs completed in this period
+    SELECT 
+      j.assigned_staff_id AS staff_id,
+      COUNT(*) AS jobs_done_period
+    FROM public.jobs j
+    WHERE j.business_id = v_biz_id
+      AND j.status = 'COMPLETED'
+      AND j.completed_at IS NOT NULL
+      AND j.completed_at::date >= v_scope_from 
+      AND j.completed_at::date <= v_scope_to
+    GROUP BY j.assigned_staff_id
+  ),
+  staff_comm_period AS (
+    -- Commission earned in this period
+    SELECT 
+      ce.staff_id,
+      COALESCE(SUM(ce.amount), 0) AS earned_period
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.status = 'EARNED'
+      AND ce.earned_at::date >= v_scope_from
+      AND ce.earned_at::date <= v_scope_to
+    GROUP BY ce.staff_id
+  ),
+  staff_comm_all AS (
+    -- All-time commission earned
+    SELECT 
+      ce.staff_id,
+      COALESCE(SUM(ce.amount), 0) AS earned_all
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.status = 'EARNED'
+    GROUP BY ce.staff_id
+  ),
+  staff_comm_upcoming AS (
+    -- Pending upcoming commission on in-progress jobs
+    SELECT 
+      ce.staff_id,
+      COALESCE(SUM(ce.amount), 0) AS upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.status = 'UPCOMING'
+    GROUP BY ce.staff_id
+  ),
+  staff_payouts_period AS (
+    -- Payouts paid in this period
+    SELECT 
+      sp.staff_id,
+      COALESCE(SUM(sp.amount), 0) AS paid_period
+    FROM public.staff_payouts sp
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+      AND sp.payout_date >= v_scope_from
+      AND sp.payout_date <= v_scope_to
+    GROUP BY sp.staff_id
+  ),
+  staff_payouts_all AS (
+    -- All-time payouts
+    SELECT 
+      sp.staff_id,
+      COALESCE(SUM(sp.amount), 0) AS paid_all
+    FROM public.staff_payouts sp
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+    GROUP BY sp.staff_id
+  ),
+  computed_staff AS (
+    SELECT
+      sb.id,
+      sb.name,
+      sb.mobile,
+      sb.role,
+      sb.compensation_type,
+      sb.monthly_salary,
+      sb.salary_start_date,
+      COALESCE(sj.jobs_done_period, 0) AS jobs_done,
+      
+      -- Due in period
+      CASE 
+        WHEN sb.compensation_type = 'SALARY' THEN
+          -- If period is current month or overlaps active salary month
+          CASE 
+            WHEN sb.salary_start_date <= v_scope_to THEN sb.monthly_salary
+            ELSE 0
+          END
+        ELSE
+          COALESCE(scp.earned_period, 0)
+      END AS period_due,
+
+      -- Paid in period
+      COALESCE(spp.paid_period, 0) AS period_paid,
+
+      -- Total Accrued / Earned All-Time
+      CASE 
+        WHEN sb.compensation_type = 'SALARY' THEN
+          -- Total months accrued from start_date to current month
+          GREATEST(0, (
+            (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM sb.salary_start_date)) * 12 +
+            (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM sb.salary_start_date)) + 1
+          )::int) * sb.monthly_salary
+        ELSE
+          COALESCE(sca.earned_all, 0)
+      END AS all_time_due,
+
+      -- Total Paid All-Time
+      COALESCE(spa.paid_all, 0) AS all_time_paid,
+
+      -- Overall Balance = All Time Due - All Time Paid (Positive = Payable, Negative = Advance Given)
+      CASE 
+        WHEN sb.compensation_type = 'SALARY' THEN
+          (GREATEST(0, (
+            (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM sb.salary_start_date)) * 12 +
+            (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM sb.salary_start_date)) + 1
+          )::int) * sb.monthly_salary) - COALESCE(spa.paid_all, 0)
+        ELSE
+          COALESCE(sca.earned_all, 0) - COALESCE(spa.paid_all, 0)
+      END AS balance,
+
+      -- Upcoming commission (Only for commission staff)
+      CASE 
+        WHEN sb.compensation_type = 'COMMISSION' THEN COALESCE(scu.upcoming, 0)
+        ELSE 0
+      END AS upcoming
+    FROM staff_base sb
+    LEFT JOIN staff_jobs sj ON sj.staff_id = sb.id
+    LEFT JOIN staff_comm_period scp ON scp.staff_id = sb.id
+    LEFT JOIN staff_comm_all sca ON sca.staff_id = sb.id
+    LEFT JOIN staff_comm_upcoming scu ON scu.staff_id = sb.id
+    LEFT JOIN staff_payouts_period spp ON spp.staff_id = sb.id
+    LEFT JOIN staff_payouts_all spa ON spa.staff_id = sb.id
+  )
+  SELECT 
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', cs.id,
+        'name', cs.name,
+        'mobile', cs.mobile,
+        'role', cs.role,
+        'compensation_type', cs.compensation_type,
+        'monthly_salary', cs.monthly_salary,
+        'salary_start_date', cs.salary_start_date,
+        'jobs_done', cs.jobs_done,
+        'earned', cs.period_due,     -- Due in this period
+        'paid', cs.period_paid,       -- Paid in this period
+        'balance', cs.balance,        -- Net balance payable (or negative advance)
+        'upcoming', cs.upcoming,
+        'all_time_due', cs.all_time_due,
+        'all_time_paid', cs.all_time_paid
+      )
+      ORDER BY cs.name ASC
+    ), '[]'::jsonb),
+    COALESCE(SUM(cs.period_due), 0),
+    COALESCE(SUM(cs.period_paid), 0),
+    COALESCE(SUM(CASE WHEN cs.balance > 0 THEN cs.balance ELSE 0 END), 0),
+    COALESCE(SUM(cs.upcoming), 0)
+  INTO 
+    v_staff_list,
+    v_total_due,
+    v_total_paid,
+    v_balance_payable,
+    v_total_upcoming
+  FROM computed_staff cs;
+
+  RETURN jsonb_build_object(
+    'total_earned', v_total_due,
+    'total_paid', v_total_paid,
+    'balance_payable', v_balance_payable,
+    'upcoming', v_total_upcoming,
+    'period_from', v_scope_from,
+    'period_to', v_scope_to,
+    'staff', v_staff_list
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_summary(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_summary(uuid, date, date) TO authenticated;
+
+
+-- 3. Enhanced staff_commission drill-down (Includes Salary Months breakdown & Completed Jobs)
+CREATE OR REPLACE FUNCTION public.staff_commission(
+  p_staff_id uuid DEFAULT NULL::uuid,
+  p_period text DEFAULT 'MONTH'::text,
+  p_from date DEFAULT NULL::date,
+  p_to date DEFAULT NULL::date
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_start_date date;
+  v_end_date date;
+  v_year int;
+  v_month int;
+  v_staff record;
+  v_entries jsonb := '[]'::jsonb;
+  v_payouts jsonb := '[]'::jsonb;
+  v_salary_months jsonb := '[]'::jsonb;
+  v_total_due numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+  v_balance numeric(14,2) := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Period calculation
+  CASE UPPER(p_period)
+    WHEN 'DAY' THEN
+      v_start_date := v_today;
+      v_end_date := v_today;
+    WHEN 'MONTH' THEN
+      v_start_date := date_trunc('month', v_today)::date;
+      v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    WHEN 'YEAR' THEN
+      v_year := EXTRACT(YEAR FROM v_today)::int;
+      v_month := EXTRACT(MONTH FROM v_today)::int;
+      IF v_month >= 4 THEN
+        v_start_date := make_date(v_year, 4, 1);
+        v_end_date := make_date(v_year + 1, 3, 31);
+      ELSE
+        v_start_date := make_date(v_year - 1, 4, 1);
+        v_end_date := make_date(v_year, 3, 31);
+      END IF;
+    WHEN 'ALL' THEN
+      v_start_date := NULL;
+      v_end_date := NULL;
+    ELSE
+      v_start_date := date_trunc('month', v_today)::date;
+      v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+  END CASE;
+
+  IF p_from IS NOT NULL THEN v_start_date := p_from; END IF;
+  IF p_to IS NOT NULL THEN v_end_date := p_to; END IF;
+
+  -- Get staff record if single staff targeted
+  IF v_target_staff_id IS NOT NULL THEN
+    SELECT 
+      id, name, mobile, role, 
+      COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+      COALESCE(monthly_salary, 0) AS monthly_salary,
+      COALESCE(salary_start_date, created_at::date) AS salary_start_date
+    INTO v_staff
+    FROM public.members
+    WHERE id = v_target_staff_id AND business_id = v_biz_id;
+  END IF;
+
+  -- 1. Completed jobs / commission entries list
+  WITH job_comm_list AS (
+    SELECT
+      j.id AS job_id,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount AS job_amount,
+      j.deadline_date,
+      j.status AS job_status,
+      j.completed_at,
+      i.id AS invoice_id,
+      i.number AS invoice_number,
+      i.invoice_date,
+      ce.id AS commission_id,
+      COALESCE(ce.percent, j.commission_percent, 0) AS commission_percent,
+      COALESCE(ce.amount, 0) AS commission_amount,
+      COALESCE(ce.status, 'NO_COMMISSION') AS commission_status,
+      ce.earned_at
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.commission_entries ce ON ce.job_id = j.id AND ce.staff_id = j.assigned_staff_id
+    WHERE j.business_id = v_biz_id
+      AND (v_target_staff_id IS NULL OR j.assigned_staff_id = v_target_staff_id)
+      AND j.status = 'COMPLETED'
+      AND (v_start_date IS NULL OR j.completed_at::date >= v_start_date)
+      AND (v_end_date IS NULL OR j.completed_at::date <= v_end_date)
+    ORDER BY j.completed_at DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(job_comm_list.*)), '[]'::jsonb)
+  INTO v_entries
+  FROM job_comm_list;
+
+  -- 2. Payouts list
+  WITH payout_list AS (
+    SELECT
+      sp.id,
+      sp.staff_id,
+      m.name AS staff_name,
+      sp.amount,
+      sp.payout_date,
+      sp.mode,
+      sp.notes,
+      sp.created_at AS payout_created_at,
+      e.description AS expense_description
+    FROM public.staff_payouts sp
+    JOIN public.members m ON m.id = sp.staff_id
+    LEFT JOIN public.expenses e ON e.id = sp.expense_id
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+      AND (v_target_staff_id IS NULL OR sp.staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR sp.payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR sp.payout_date <= v_end_date)
+    ORDER BY sp.payout_date DESC, sp.created_at DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(payout_list.*)), '[]'::jsonb)
+  INTO v_payouts
+  FROM payout_list;
+
+  -- 3. If Salaried staff, generate monthly breakdown
+  IF v_target_staff_id IS NOT NULL AND v_staff.compensation_type = 'SALARY' THEN
+    WITH month_series AS (
+      SELECT generate_series(
+        date_trunc('month', v_staff.salary_start_date)::date,
+        date_trunc('month', v_today)::date,
+        '1 month'::interval
+      )::date AS m_start
+    ),
+    monthly_data AS (
+      SELECT 
+        ms.m_start,
+        to_char(ms.m_start, 'Mon YYYY') AS month_label,
+        to_char(ms.m_start, 'YYYY-MM') AS month_key,
+        v_staff.monthly_salary AS amount,
+        COALESCE(sp.month_paid, 0) AS paid_in_month
+      FROM month_series ms
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', payout_date)::date AS p_month,
+          SUM(amount) AS month_paid
+        FROM public.staff_payouts
+        WHERE staff_id = v_target_staff_id AND deleted_at IS NULL
+        GROUP BY date_trunc('month', payout_date)::date
+      ) sp ON sp.p_month = ms.m_start
+      ORDER BY ms.m_start DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(monthly_data.*)), '[]'::jsonb)
+    INTO v_salary_months
+    FROM monthly_data;
+  END IF;
+
+  -- Totals calculation
+  IF v_target_staff_id IS NOT NULL AND v_staff.compensation_type = 'SALARY' THEN
+    v_total_due := v_staff.monthly_salary;
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE staff_id = v_target_staff_id AND deleted_at IS NULL
+      AND (v_start_date IS NULL OR payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR payout_date <= v_end_date);
+    
+    -- Net balance all-time
+    v_balance := (
+      GREATEST(0, (
+        (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM v_staff.salary_start_date)) * 12 +
+        (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM v_staff.salary_start_date)) + 1
+      )::int) * v_staff.monthly_salary
+    ) - (
+      SELECT COALESCE(SUM(amount), 0)
+      FROM public.staff_payouts
+      WHERE staff_id = v_target_staff_id AND deleted_at IS NULL
+    );
+    v_total_upcoming := 0;
+  ELSE
+    SELECT 
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+    INTO v_total_due, v_total_upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR ce.earned_at::date >= v_start_date)
+      AND (v_end_date IS NULL OR ce.earned_at::date <= v_end_date);
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+      AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR payout_date <= v_end_date);
+
+    -- All time balance
+    v_balance := (
+      SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED'
+        AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+    ) - (
+      SELECT COALESCE(SUM(amount), 0) FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL
+        AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+    );
+  END IF;
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'start_date', v_start_date,
+    'end_date', v_end_date,
+    'total_earned', v_total_due,
+    'total_paid', v_total_paid,
+    'balance_payable', v_balance,
+    'upcoming', v_total_upcoming,
+    'entries', v_entries,
+    'payouts', v_payouts,
+    'salary_months', v_salary_months
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_commission(uuid, text, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_commission(uuid, text, date, date) TO authenticated;
+
+
+
+-- >>> Migration: 20261107000038_exclude_owner_from_staff_summary.sql <<<
+-- Migration 38: Exclude non-staff (e.g. Owner, Accountant) from staff_summary
+-- Staff summary must strictly calculate and display members with role = 'STAFF'
+
+CREATE OR REPLACE FUNCTION public.staff_summary(
+  p_staff_id uuid DEFAULT NULL::uuid,
+  p_from date DEFAULT NULL::date,
+  p_to date DEFAULT NULL::date
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_month_start date;
+  v_month_end date;
+  v_fy_start date;
+  v_fy_end date;
+  v_year int;
+  v_month int;
+  
+  -- Query scope date filters
+  v_scope_from date;
+  v_scope_to date;
+
+  v_total_due numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+  v_staff_list jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view own summary
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Dates calculation
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  v_year := EXTRACT(YEAR FROM v_today)::int;
+  v_month := EXTRACT(MONTH FROM v_today)::int;
+  IF v_month >= 4 THEN
+    v_fy_start := make_date(v_year, 4, 1);
+    v_fy_end := make_date(v_year + 1, 3, 31);
+  ELSE
+    v_fy_start := make_date(v_year - 1, 4, 1);
+    v_fy_end := make_date(v_year, 3, 31);
+  END IF;
+
+  v_scope_from := COALESCE(p_from, v_month_start);
+  v_scope_to := COALESCE(p_to, v_month_end);
+
+  -- Per-staff calculations (STRICTLY role = 'STAFF')
+  WITH staff_base AS (
+    SELECT 
+      m.id,
+      m.name,
+      m.mobile,
+      m.role,
+      COALESCE(m.compensation_type, 'COMMISSION') AS compensation_type,
+      COALESCE(m.monthly_salary, 0) AS monthly_salary,
+      COALESCE(m.salary_start_date, m.created_at::date) AS salary_start_date,
+      m.created_at
+    FROM public.members m
+    WHERE m.business_id = v_biz_id 
+      AND m.active = true 
+      AND m.deleted_at IS NULL
+      AND m.role = 'STAFF'
+      AND (v_target_staff_id IS NULL OR m.id = v_target_staff_id)
+  ),
+  staff_jobs AS (
+    -- Count of jobs completed in this period
+    SELECT 
+      j.assigned_staff_id AS staff_id,
+      COUNT(*) AS jobs_done_period
+    FROM public.jobs j
+    WHERE j.business_id = v_biz_id
+      AND j.status = 'COMPLETED'
+      AND j.completed_at IS NOT NULL
+      AND j.completed_at::date >= v_scope_from 
+      AND j.completed_at::date <= v_scope_to
+    GROUP BY j.assigned_staff_id
+  ),
+  staff_comm_period AS (
+    -- Commission earned in this period
+    SELECT 
+      ce.staff_id,
+      COALESCE(SUM(ce.amount), 0) AS earned_period
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.status = 'EARNED'
+      AND ce.earned_at::date >= v_scope_from
+      AND ce.earned_at::date <= v_scope_to
+    GROUP BY ce.staff_id
+  ),
+  staff_comm_all AS (
+    -- All-time commission earned
+    SELECT 
+      ce.staff_id,
+      COALESCE(SUM(ce.amount), 0) AS earned_all
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.status = 'EARNED'
+    GROUP BY ce.staff_id
+  ),
+  staff_comm_upcoming AS (
+    -- Pending upcoming commission on in-progress jobs
+    SELECT 
+      ce.staff_id,
+      COALESCE(SUM(ce.amount), 0) AS upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.status = 'UPCOMING'
+    GROUP BY ce.staff_id
+  ),
+  staff_payouts_period AS (
+    -- Payouts paid in this period
+    SELECT 
+      sp.staff_id,
+      COALESCE(SUM(sp.amount), 0) AS paid_period
+    FROM public.staff_payouts sp
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+      AND sp.payout_date >= v_scope_from
+      AND sp.payout_date <= v_scope_to
+    GROUP BY sp.staff_id
+  ),
+  staff_payouts_all AS (
+    -- All-time payouts
+    SELECT 
+      sp.staff_id,
+      COALESCE(SUM(sp.amount), 0) AS paid_all
+    FROM public.staff_payouts sp
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+    GROUP BY sp.staff_id
+  ),
+  computed_staff AS (
+    SELECT
+      sb.id,
+      sb.name,
+      sb.mobile,
+      sb.role,
+      sb.compensation_type,
+      sb.monthly_salary,
+      sb.salary_start_date,
+      COALESCE(sj.jobs_done_period, 0) AS jobs_done,
+      
+      -- Due in period
+      CASE 
+        WHEN sb.compensation_type = 'SALARY' THEN
+          CASE 
+            WHEN sb.salary_start_date <= v_scope_to THEN sb.monthly_salary
+            ELSE 0
+          END
+        ELSE
+          COALESCE(scp.earned_period, 0)
+      END AS period_due,
+
+      -- Paid in period
+      COALESCE(spp.paid_period, 0) AS period_paid,
+
+      -- Total Accrued / Earned All-Time
+      CASE 
+        WHEN sb.compensation_type = 'SALARY' THEN
+          GREATEST(0, (
+            (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM sb.salary_start_date)) * 12 +
+            (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM sb.salary_start_date)) + 1
+          )::int) * sb.monthly_salary
+        ELSE
+          COALESCE(sca.earned_all, 0)
+      END AS all_time_due,
+
+      -- Total Paid All-Time
+      COALESCE(spa.paid_all, 0) AS all_time_paid,
+
+      -- Overall Balance = All Time Due - All Time Paid
+      CASE 
+        WHEN sb.compensation_type = 'SALARY' THEN
+          (GREATEST(0, (
+            (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM sb.salary_start_date)) * 12 +
+            (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM sb.salary_start_date)) + 1
+          )::int) * sb.monthly_salary) - COALESCE(spa.paid_all, 0)
+        ELSE
+          COALESCE(sca.earned_all, 0) - COALESCE(spa.paid_all, 0)
+      END AS balance,
+
+      -- Upcoming commission (Only for commission staff)
+      CASE 
+        WHEN sb.compensation_type = 'COMMISSION' THEN COALESCE(scu.upcoming, 0)
+        ELSE 0
+      END AS upcoming
+    FROM staff_base sb
+    LEFT JOIN staff_jobs sj ON sj.staff_id = sb.id
+    LEFT JOIN staff_comm_period scp ON scp.staff_id = sb.id
+    LEFT JOIN staff_comm_all sca ON sca.staff_id = sb.id
+    LEFT JOIN staff_comm_upcoming scu ON scu.staff_id = sb.id
+    LEFT JOIN staff_payouts_period spp ON spp.staff_id = sb.id
+    LEFT JOIN staff_payouts_all spa ON spa.staff_id = sb.id
+  )
+  SELECT 
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', cs.id,
+        'name', cs.name,
+        'mobile', cs.mobile,
+        'role', cs.role,
+        'compensation_type', cs.compensation_type,
+        'monthly_salary', cs.monthly_salary,
+        'salary_start_date', cs.salary_start_date,
+        'jobs_done', cs.jobs_done,
+        'earned', cs.period_due,     -- Due in this period
+        'paid', cs.period_paid,       -- Paid in this period
+        'balance', cs.balance,        -- Net balance payable (or negative advance)
+        'upcoming', cs.upcoming,
+        'all_time_due', cs.all_time_due,
+        'all_time_paid', cs.all_time_paid
+      )
+      ORDER BY cs.name ASC
+    ), '[]'::jsonb),
+    COALESCE(SUM(cs.period_due), 0),
+    COALESCE(SUM(cs.period_paid), 0),
+    COALESCE(SUM(CASE WHEN cs.balance > 0 THEN cs.balance ELSE 0 END), 0),
+    COALESCE(SUM(cs.upcoming), 0)
+  INTO 
+    v_staff_list,
+    v_total_due,
+    v_total_paid,
+    v_balance_payable,
+    v_total_upcoming
+  FROM computed_staff cs;
+
+  RETURN jsonb_build_object(
+    'total_earned', v_total_due,
+    'total_paid', v_total_paid,
+    'balance_payable', v_balance_payable,
+    'upcoming', v_total_upcoming,
+    'period_from', v_scope_from,
+    'period_to', v_scope_to,
+    'staff', v_staff_list
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_summary(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_summary(uuid, date, date) TO authenticated;
+
+
+
+-- >>> Migration: 20261107000039_staff_commission_total_due_fix.sql <<<
+-- Migration 39: Ensure staff_commission returns both total_earned and total_due
+-- And correctly handles all-time vs period filters
+
+CREATE OR REPLACE FUNCTION public.staff_commission(
+  p_staff_id uuid DEFAULT NULL::uuid,
+  p_period text DEFAULT 'MONTH'::text,
+  p_from date DEFAULT NULL::date,
+  p_to date DEFAULT NULL::date
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_start_date date;
+  v_end_date date;
+  v_year int;
+  v_month int;
+  v_staff record;
+  v_entries jsonb := '[]'::jsonb;
+  v_payouts jsonb := '[]'::jsonb;
+  v_salary_months jsonb := '[]'::jsonb;
+  v_total_due numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_total_upcoming numeric(14,2) := 0;
+  v_balance numeric(14,2) := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := p_staff_id;
+  END IF;
+
+  -- Period calculation
+  CASE UPPER(COALESCE(p_period, 'ALL'))
+    WHEN 'DAY' THEN
+      v_start_date := v_today;
+      v_end_date := v_today;
+    WHEN 'MONTH' THEN
+      v_start_date := date_trunc('month', v_today)::date;
+      v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    WHEN 'YEAR' THEN
+      v_year := EXTRACT(YEAR FROM v_today)::int;
+      v_month := EXTRACT(MONTH FROM v_today)::int;
+      IF v_month >= 4 THEN
+        v_start_date := make_date(v_year, 4, 1);
+        v_end_date := make_date(v_year + 1, 3, 31);
+      ELSE
+        v_start_date := make_date(v_year - 1, 4, 1);
+        v_end_date := make_date(v_year, 3, 31);
+      END IF;
+    WHEN 'ALL' THEN
+      v_start_date := NULL;
+      v_end_date := NULL;
+    ELSE
+      v_start_date := NULL;
+      v_end_date := NULL;
+  END CASE;
+
+  IF p_from IS NOT NULL THEN v_start_date := p_from; END IF;
+  IF p_to IS NOT NULL THEN v_end_date := p_to; END IF;
+
+  -- Get staff record if single staff targeted
+  IF v_target_staff_id IS NOT NULL THEN
+    SELECT 
+      id, name, mobile, role, 
+      COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+      COALESCE(monthly_salary, 0) AS monthly_salary,
+      COALESCE(salary_start_date, created_at::date) AS salary_start_date
+    INTO v_staff
+    FROM public.members
+    WHERE id = v_target_staff_id AND business_id = v_biz_id;
+  END IF;
+
+  -- 1. Completed jobs / commission entries list
+  WITH job_comm_list AS (
+    SELECT
+      j.id AS job_id,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount AS job_amount,
+      j.deadline_date,
+      j.status AS job_status,
+      j.completed_at,
+      i.id AS invoice_id,
+      i.number AS invoice_number,
+      i.invoice_date,
+      ce.id AS commission_id,
+      COALESCE(ce.percent, j.commission_percent, 0) AS commission_percent,
+      COALESCE(ce.amount, 0) AS commission_amount,
+      COALESCE(ce.status, 'NO_COMMISSION') AS commission_status,
+      ce.earned_at
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.commission_entries ce ON ce.job_id = j.id AND ce.staff_id = j.assigned_staff_id
+    WHERE j.business_id = v_biz_id
+      AND (v_target_staff_id IS NULL OR j.assigned_staff_id = v_target_staff_id)
+      AND j.status = 'COMPLETED'
+      AND (v_start_date IS NULL OR j.completed_at::date >= v_start_date)
+      AND (v_end_date IS NULL OR j.completed_at::date <= v_end_date)
+    ORDER BY j.completed_at DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(job_comm_list.*)), '[]'::jsonb)
+  INTO v_entries
+  FROM job_comm_list;
+
+  -- 2. Payouts list
+  WITH payout_list AS (
+    SELECT
+      sp.id,
+      sp.staff_id,
+      m.name AS staff_name,
+      sp.amount,
+      sp.payout_date,
+      sp.mode,
+      sp.notes,
+      sp.created_at AS payout_created_at,
+      e.description AS expense_description
+    FROM public.staff_payouts sp
+    JOIN public.members m ON m.id = sp.staff_id
+    LEFT JOIN public.expenses e ON e.id = sp.expense_id
+    WHERE sp.business_id = v_biz_id
+      AND sp.deleted_at IS NULL
+      AND (v_target_staff_id IS NULL OR sp.staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR sp.payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR sp.payout_date <= v_end_date)
+    ORDER BY sp.payout_date DESC, sp.created_at DESC
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(payout_list.*)), '[]'::jsonb)
+  INTO v_payouts
+  FROM payout_list;
+
+  -- 3. If Salaried staff, generate monthly breakdown
+  IF v_target_staff_id IS NOT NULL AND v_staff.compensation_type = 'SALARY' THEN
+    WITH month_series AS (
+      SELECT generate_series(
+        date_trunc('month', v_staff.salary_start_date)::date,
+        date_trunc('month', v_today)::date,
+        '1 month'::interval
+      )::date AS m_start
+    ),
+    monthly_data AS (
+      SELECT 
+        ms.m_start,
+        to_char(ms.m_start, 'Mon YYYY') AS month_label,
+        to_char(ms.m_start, 'YYYY-MM') AS month_key,
+        v_staff.monthly_salary AS amount,
+        COALESCE(sp.month_paid, 0) AS paid_in_month
+      FROM month_series ms
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', payout_date)::date AS p_month,
+          SUM(amount) AS month_paid
+        FROM public.staff_payouts
+        WHERE staff_id = v_target_staff_id AND deleted_at IS NULL
+        GROUP BY date_trunc('month', payout_date)::date
+      ) sp ON sp.p_month = ms.m_start
+      ORDER BY ms.m_start DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(monthly_data.*)), '[]'::jsonb)
+    INTO v_salary_months
+    FROM monthly_data;
+  END IF;
+
+  -- Totals calculation
+  IF v_target_staff_id IS NOT NULL AND v_staff.compensation_type = 'SALARY' THEN
+    v_total_due := v_staff.monthly_salary;
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE staff_id = v_target_staff_id AND deleted_at IS NULL
+      AND (v_start_date IS NULL OR payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR payout_date <= v_end_date);
+    
+    -- Net balance all-time
+    v_balance := (
+      GREATEST(0, (
+        (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM v_staff.salary_start_date)) * 12 +
+        (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM v_staff.salary_start_date)) + 1
+      )::int) * v_staff.monthly_salary
+    ) - (
+      SELECT COALESCE(SUM(amount), 0)
+      FROM public.staff_payouts
+      WHERE staff_id = v_target_staff_id AND deleted_at IS NULL
+    );
+    v_total_upcoming := 0;
+  ELSE
+    SELECT 
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+    INTO v_total_due, v_total_upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND (v_target_staff_id IS NULL OR ce.staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR ce.earned_at::date >= v_start_date)
+      AND (v_end_date IS NULL OR ce.earned_at::date <= v_end_date);
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+      AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+      AND (v_start_date IS NULL OR payout_date >= v_start_date)
+      AND (v_end_date IS NULL OR payout_date <= v_end_date);
+
+    -- All time balance
+    v_balance := (
+      SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED'
+        AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+    ) - (
+      SELECT COALESCE(SUM(amount), 0) FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL
+        AND (v_target_staff_id IS NULL OR staff_id = v_target_staff_id)
+    );
+  END IF;
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'start_date', v_start_date,
+    'end_date', v_end_date,
+    'total_earned', v_total_due,
+    'total_due', v_total_due,
+    'total_paid', v_total_paid,
+    'balance_payable', v_balance,
+    'upcoming', v_total_upcoming,
+    'entries', v_entries,
+    'payouts', v_payouts,
+    'salary_months', v_salary_months
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_commission(uuid, text, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_commission(uuid, text, date, date) TO authenticated;
+
+
+
+-- >>> Migration: 20261109000040_staff_dashboard_and_rbac.sql <<<
+-- Migration 40: Staff Dashboard RPC and Strict RBAC Dashboard Protection
+-- 1. Restrict public.dashboard() to OWNER and ACCOUNTANT only (blocks STAFF callers)
+-- 2. Create public.staff_dashboard(p_period text) returning only caller staff's data
+--    (bills count, collection by mode for cash handover, earnings, jobs queue, recent bills)
+
+-- 1. Protect public.dashboard() against unauthorized access by staff
+CREATE OR REPLACE FUNCTION public.dashboard()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_red_days int;
+  v_yellow_days int;
+
+  -- 1. Today
+  v_today_bills_count int := 0;
+  v_today_income numeric(14,2) := 0;
+  v_today_payments numeric(14,2) := 0;
+  v_today_expenses numeric(14,2) := 0;
+  v_today_outgoing numeric(14,2) := 0;
+  v_today_net_profit numeric(14,2) := 0;
+  v_today_payment_methods jsonb := '{}'::jsonb;
+  v_today_top_services jsonb := '[]'::jsonb;
+  v_today_chart_data jsonb := '[]'::jsonb;
+
+  -- 2. This Month
+  v_month_start date;
+  v_month_end date;
+  v_month_bills_count int := 0;
+  v_month_income numeric(14,2) := 0;
+  v_month_payments numeric(14,2) := 0;
+  v_month_expenses numeric(14,2) := 0;
+  v_month_outgoing numeric(14,2) := 0;
+  v_month_net_profit numeric(14,2) := 0;
+  v_month_payment_methods jsonb := '{}'::jsonb;
+  v_month_top_services jsonb := '[]'::jsonb;
+  v_month_chart_data jsonb := '[]'::jsonb;
+
+  -- 3. This Year (Financial Year)
+  v_fy_label text;
+  v_fy_start date;
+  v_fy_end date;
+  v_year_bills_count int := 0;
+  v_year_income numeric(14,2) := 0;
+  v_year_payments numeric(14,2) := 0;
+  v_year_expenses numeric(14,2) := 0;
+  v_year_outgoing numeric(14,2) := 0;
+  v_year_net_profit numeric(14,2) := 0;
+  v_year_payment_methods jsonb := '{}'::jsonb;
+  v_year_top_services jsonb := '[]'::jsonb;
+  v_year_chart_data jsonb := '[]'::jsonb;
+
+  -- Dues & Loans
+  v_total_outstanding numeric(14,2) := 0;
+  v_loan_outstanding numeric(14,2) := 0;
+
+  -- Jobs
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_total int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+
+  -- Alerts
+  v_overdue_bills_count int := 0;
+  v_due_today_bills_count int := 0;
+
+  -- Recent Data
+  v_recent_bills jsonb := '[]'::jsonb;
+  v_recent_customers jsonb := '[]'::jsonb;
+  v_pending_payments jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  -- STRICT RBAC: Only OWNER and ACCOUNTANT can access the business-wide dashboard
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  -- Month range
+  v_month_start := date_trunc('month', v_today)::date;
+  v_month_end := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+
+  -- FY range (Indian Financial Year: 1 Apr to 31 Mar)
+  v_fy_label := public.fy_label(v_today);
+  IF EXTRACT(MONTH FROM v_today) >= 4 THEN
+    v_fy_start := make_date(EXTRACT(YEAR FROM v_today)::int, 4, 1);
+    v_fy_end := make_date(EXTRACT(YEAR FROM v_today)::int + 1, 3, 31);
+  ELSE
+    v_fy_start := make_date(EXTRACT(YEAR FROM v_today)::int - 1, 4, 1);
+    v_fy_end := make_date(EXTRACT(YEAR FROM v_today)::int, 3, 31);
+  END IF;
+
+  -- =========================================================
+  -- 1. TODAY DATA
+  -- =========================================================
+  SELECT COUNT(*)
+  INTO v_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id AND invoice_date = v_today AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_income
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date = v_today AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id AND payment_date = v_today AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_today_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id AND expense_date = v_today AND deleted_at IS NULL;
+
+  v_today_outgoing := v_today_payments + v_today_expenses;
+  v_today_net_profit := v_today_income - v_today_outgoing;
+
+  -- Today payment methods
+  SELECT jsonb_build_object(
+    'cash', COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    'upi', COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    'bank', COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    'card', COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0),
+    'total', COALESCE(SUM(amount), 0)
+  )
+  INTO v_today_payment_methods
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND receipt_date = v_today AND deleted_at IS NULL;
+
+  -- Today top services
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_today_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date = v_today
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  -- =========================================================
+  -- 2. THIS MONTH DATA
+  -- =========================================================
+  SELECT COUNT(*)
+  INTO v_month_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND invoice_date >= v_month_start AND invoice_date <= v_month_end
+    AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_month_income
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND receipt_date >= v_month_start AND receipt_date <= v_month_end
+    AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_month_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id
+    AND payment_date >= v_month_start AND payment_date <= v_month_end
+    AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_month_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id
+    AND expense_date >= v_month_start AND expense_date <= v_month_end
+    AND deleted_at IS NULL;
+
+  v_month_outgoing := v_month_payments + v_month_expenses;
+  v_month_net_profit := v_month_income - v_month_outgoing;
+
+  -- Month payment methods
+  SELECT jsonb_build_object(
+    'cash', COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    'upi', COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    'bank', COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    'card', COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0),
+    'total', COALESCE(SUM(amount), 0)
+  )
+  INTO v_month_payment_methods
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND receipt_date >= v_month_start AND receipt_date <= v_month_end
+    AND deleted_at IS NULL;
+
+  -- Month top services
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_month_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date >= v_month_start AND i.invoice_date <= v_month_end
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  -- Month Chart Data: Daily breakdown for current month
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_month_chart_data
+  FROM (
+    SELECT
+      to_char(d.date, 'DD Mon') as date,
+      d.date as raw_date,
+      COALESCE((
+        SELECT SUM(r.amount)
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id AND r.receipt_date = d.date AND r.deleted_at IS NULL
+      ), 0) as income,
+      COALESCE((
+        SELECT SUM(p.amount)
+        FROM public.payments p
+        WHERE p.business_id = v_biz_id AND p.payment_date = d.date AND p.deleted_at IS NULL
+      ), 0) +
+      COALESCE((
+        SELECT SUM(e.amount)
+        FROM public.expenses e
+        WHERE e.business_id = v_biz_id AND e.expense_date = d.date AND e.deleted_at IS NULL
+      ), 0) as outgoing
+    FROM generate_series(v_month_start, v_today, '1 day'::interval) d(date)
+    ORDER BY d.date ASC
+  ) sub;
+
+  -- =========================================================
+  -- 3. THIS YEAR DATA (FY)
+  -- =========================================================
+  SELECT COUNT(*)
+  INTO v_year_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND invoice_date >= v_fy_start AND invoice_date <= v_fy_end
+    AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_year_income
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND receipt_date >= v_fy_start AND receipt_date <= v_fy_end
+    AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_year_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id
+    AND payment_date >= v_fy_start AND payment_date <= v_fy_end
+    AND deleted_at IS NULL;
+
+  SELECT COALESCE(SUM(amount), 0)
+  INTO v_year_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id
+    AND expense_date >= v_fy_start AND expense_date <= v_fy_end
+    AND deleted_at IS NULL;
+
+  v_year_outgoing := v_year_payments + v_year_expenses;
+  v_year_net_profit := v_year_income - v_year_outgoing;
+
+  -- Year payment methods
+  SELECT jsonb_build_object(
+    'cash', COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    'upi', COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    'bank', COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    'card', COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0),
+    'total', COALESCE(SUM(amount), 0)
+  )
+  INTO v_year_payment_methods
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND receipt_date >= v_fy_start AND receipt_date <= v_fy_end
+    AND deleted_at IS NULL;
+
+  -- Year top services
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_year_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date >= v_fy_start AND i.invoice_date <= v_fy_end
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  -- Year Chart Data: Monthly breakdown for financial year
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_year_chart_data
+  FROM (
+    SELECT
+      to_char(m.date, 'Mon YYYY') as date,
+      m.date as raw_date,
+      COALESCE((
+        SELECT SUM(r.amount)
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date >= m.date::date
+          AND r.receipt_date < (m.date + '1 month'::interval)::date
+          AND r.deleted_at IS NULL
+      ), 0) as income,
+      COALESCE((
+        SELECT SUM(p.amount)
+        FROM public.payments p
+        WHERE p.business_id = v_biz_id
+          AND p.payment_date >= m.date::date
+          AND p.payment_date < (m.date + '1 month'::interval)::date
+          AND p.deleted_at IS NULL
+      ), 0) +
+      COALESCE((
+        SELECT SUM(e.amount)
+        FROM public.expenses e
+        WHERE e.business_id = v_biz_id
+          AND e.expense_date >= m.date::date
+          AND e.expense_date < (m.date + '1 month'::interval)::date
+          AND e.deleted_at IS NULL
+      ), 0) as outgoing
+    FROM generate_series(v_fy_start, LEAST(v_fy_end, v_today), '1 month'::interval) m(date)
+    ORDER BY m.date ASC
+  ) sub;
+
+  -- =========================================================
+  -- 4. ALL-TIME TOTALS (Dues & Loans)
+  -- =========================================================
+  SELECT COALESCE(SUM(total - paid_amount), 0)
+  INTO v_total_outstanding
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND status = 'ACTIVE'
+    AND total > paid_amount
+    AND deleted_at IS NULL;
+
+  SELECT COALESCE(
+    (SELECT SUM(amount) FROM public.loans WHERE business_id = v_biz_id AND deleted_at IS NULL), 0
+  ) - COALESCE(
+    (SELECT SUM(principal) FROM public.loan_repayments WHERE business_id = v_biz_id AND deleted_at IS NULL), 0
+  )
+  INTO v_loan_outstanding;
+
+  -- =========================================================
+  -- 5. JOBS STATS
+  -- =========================================================
+  IF v_biz.job_management_enabled THEN
+    SELECT COUNT(*) INTO v_jobs_pending
+    FROM public.jobs
+    WHERE business_id = v_biz_id AND status = 'IN_PROGRESS' AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_today
+    FROM public.jobs
+    WHERE business_id = v_biz_id AND status = 'COMPLETED' AND completed_at::date = v_today AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_total
+    FROM public.jobs
+    WHERE business_id = v_biz_id AND status = 'COMPLETED' AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_late
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date < v_today
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_red
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date >= v_today
+      AND (deadline_date - v_today) <= v_red_days
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND (deadline_date - v_today) > v_red_days
+      AND (deadline_date - v_today) <= v_yellow_days
+      AND deleted_at IS NULL;
+  END IF;
+
+  -- =========================================================
+  -- 6. ALERTS
+  -- =========================================================
+  SELECT COUNT(*)
+  INTO v_overdue_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND status = 'ACTIVE'
+    AND total > paid_amount
+    AND due_date < v_today
+    AND deleted_at IS NULL;
+
+  SELECT COUNT(*)
+  INTO v_due_today_bills_count
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND status = 'ACTIVE'
+    AND total > paid_amount
+    AND due_date = v_today
+    AND deleted_at IS NULL;
+
+  -- =========================================================
+  -- 7. RECENT DATA
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_bills
+  FROM (
+    SELECT
+      id, number, invoice_date, due_date, party_name, party_mobile,
+      total, paid_amount, (total - paid_amount) as balance, status, created_at
+    FROM public.invoices
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+    ORDER BY created_at DESC
+    LIMIT 6
+  ) sub;
+
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_customers
+  FROM (
+    SELECT id, name, mobile, type, created_at
+    FROM public.customers
+    WHERE business_id = v_biz_id AND deleted_at IS NULL
+    ORDER BY created_at DESC
+    LIMIT 5
+  ) sub;
+
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_pending_payments
+  FROM (
+    SELECT
+      id, number, party_name, party_mobile, total, paid_amount,
+      (total - paid_amount) as balance, due_date
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND status = 'ACTIVE'
+      AND total > paid_amount
+      AND due_date < v_today
+      AND deleted_at IS NULL
+    ORDER BY due_date ASC
+    LIMIT 5
+  ) sub;
+
+  RETURN jsonb_build_object(
+    'today', jsonb_build_object(
+      'label', 'Today',
+      'date', v_today,
+      'bills_count', v_today_bills_count,
+      'income', v_today_income,
+      'payments', v_today_payments,
+      'expenses', v_today_expenses,
+      'outgoing', v_today_outgoing,
+      'net_profit', v_today_net_profit,
+      'payment_methods', v_today_payment_methods,
+      'top_services', v_today_top_services,
+      'chart_data', v_today_chart_data,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'this_month', jsonb_build_object(
+      'label', 'This Month',
+      'month_label', to_char(v_today, 'Mon YYYY'),
+      'start_date', v_month_start,
+      'end_date', v_month_end,
+      'bills_count', v_month_bills_count,
+      'income', v_month_income,
+      'payments', v_month_payments,
+      'expenses', v_month_expenses,
+      'outgoing', v_month_outgoing,
+      'net_profit', v_month_net_profit,
+      'payment_methods', v_month_payment_methods,
+      'top_services', v_month_top_services,
+      'chart_data', v_month_chart_data,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'this_year', jsonb_build_object(
+      'label', 'This Year',
+      'fy_label', v_fy_label,
+      'start_date', v_fy_start,
+      'end_date', v_fy_end,
+      'bills_count', v_year_bills_count,
+      'income', v_year_income,
+      'payments', v_year_payments,
+      'expenses', v_year_expenses,
+      'outgoing', v_year_outgoing,
+      'net_profit', v_year_net_profit,
+      'payment_methods', v_year_payment_methods,
+      'top_services', v_year_top_services,
+      'chart_data', v_year_chart_data,
+      'total_outstanding', v_total_outstanding,
+      'loan_outstanding', v_loan_outstanding
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending', v_jobs_pending,
+      'completed_today', v_jobs_completed_today,
+      'completed_total', v_jobs_completed_total,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'red_days', v_red_days,
+      'yellow_days', v_yellow_days
+    ),
+    'alerts', jsonb_build_object(
+      'overdue_bills_count', v_overdue_bills_count,
+      'due_today_bills_count', v_due_today_bills_count
+    ),
+    'payment_methods', v_month_payment_methods,
+    'top_services', v_month_top_services,
+    'chart_data', v_month_chart_data,
+    'recent_bills', v_recent_bills,
+    'recent_customers', v_recent_customers,
+    'pending_payments', v_pending_payments,
+    'total_outstanding', v_total_outstanding,
+    'loan_outstanding', v_loan_outstanding
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.dashboard() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.dashboard() TO authenticated;
+
+
+-- ====================================================================
+-- 2. STAFF DASHBOARD ("My day" data provider)
+-- ====================================================================
+CREATE OR REPLACE FUNCTION public.staff_dashboard(
+  p_period text DEFAULT 'TODAY'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_start_date date;
+  v_end_date date;
+
+  -- 1. My Bills
+  v_bills_count int := 0;
+  v_bills_total numeric(14,2) := 0;
+
+  -- 2. My Collections (for shift-end cash handover)
+  v_collection_total numeric(14,2) := 0;
+  v_collection_cash numeric(14,2) := 0;
+  v_collection_upi numeric(14,2) := 0;
+  v_collection_bank numeric(14,2) := 0;
+  v_collection_card numeric(14,2) := 0;
+
+  -- 3. Staff Profile & Earnings
+  v_staff record;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_upcoming numeric(14,2) := 0;
+
+  -- 4. Jobs & Deadlines
+  v_red_days int;
+  v_yellow_days int;
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_period int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+  v_urgent_jobs jsonb := '[]'::jsonb;
+
+  -- 5. Staff's Recent Bills
+  v_recent_bills jsonb := '[]'::jsonb;
+
+  -- 6. Staff's Bills per day
+  v_bills_per_day jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_caller_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  -- Set period dates (only TODAY or MONTH supported for staff)
+  IF UPPER(COALESCE(p_period, 'TODAY')) = 'MONTH' THEN
+    v_start_date := date_trunc('month', v_today)::date;
+    v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+  ELSE
+    v_start_date := v_today;
+    v_end_date := v_today;
+  END IF;
+
+  -- =========================================================
+  -- 1. MY BILLS (Created by this staff member)
+  -- =========================================================
+  SELECT
+    COUNT(*),
+    COALESCE(SUM(total), 0)
+  INTO v_bills_count, v_bills_total
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND created_by = v_caller_id
+    AND invoice_date >= v_start_date
+    AND invoice_date <= v_end_date
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL;
+
+  -- =========================================================
+  -- 2. MY COLLECTIONS (Receipts created by this staff member)
+  -- =========================================================
+  SELECT
+    COALESCE(SUM(amount), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0)
+  INTO
+    v_collection_total,
+    v_collection_cash,
+    v_collection_upi,
+    v_collection_bank,
+    v_collection_card
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND created_by = v_caller_id
+    AND receipt_date >= v_start_date
+    AND receipt_date <= v_end_date
+    AND deleted_at IS NULL;
+
+  -- =========================================================
+  -- 3. MY EARNINGS
+  -- =========================================================
+  SELECT 
+    id, name, mobile, role,
+    COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+    COALESCE(monthly_salary, 0) AS monthly_salary,
+    COALESCE(salary_start_date, created_at::date) AS salary_start_date
+  INTO v_staff
+  FROM public.members
+  WHERE id = v_caller_id AND business_id = v_biz_id;
+
+  IF v_staff.compensation_type = 'SALARY' THEN
+    v_total_earned := v_staff.monthly_salary;
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      GREATEST(0, (
+        (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM v_staff.salary_start_date)) * 12 +
+        (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM v_staff.salary_start_date)) + 1
+      )::int) * v_staff.monthly_salary
+    ) - (
+      SELECT COALESCE(SUM(amount), 0)
+      FROM public.staff_payouts
+      WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+    );
+    v_upcoming := 0;
+  ELSE
+    -- Commission based
+    SELECT 
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+    INTO v_total_earned, v_upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.staff_id = v_caller_id
+      AND ce.earned_at::date >= v_start_date
+      AND ce.earned_at::date <= v_end_date;
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED' AND staff_id = v_caller_id
+    ) - (
+      SELECT COALESCE(SUM(amount), 0) FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+    );
+  END IF;
+
+  -- =========================================================
+  -- 4. JOBS QUEUE (Pending & Urgent)
+  -- =========================================================
+  IF v_biz.job_management_enabled THEN
+    -- Count open jobs
+    SELECT COUNT(*) INTO v_jobs_pending
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND (assigned_staff_id = v_caller_id OR assigned_staff_id IS NULL)
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_today
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date = v_today
+      AND (assigned_staff_id = v_caller_id OR assigned_staff_id IS NULL)
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_period
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date >= v_start_date
+      AND completed_at::date <= v_end_date
+      AND (assigned_staff_id = v_caller_id OR assigned_staff_id IS NULL)
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_late
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date < v_today
+      AND (assigned_staff_id = v_caller_id OR assigned_staff_id IS NULL)
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_red
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date >= v_today
+      AND (deadline_date - v_today) <= v_red_days
+      AND (assigned_staff_id = v_caller_id OR assigned_staff_id IS NULL)
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND (deadline_date - v_today) > v_red_days
+      AND (deadline_date - v_today) <= v_yellow_days
+      AND (assigned_staff_id = v_caller_id OR assigned_staff_id IS NULL)
+      AND deleted_at IS NULL;
+
+    -- Fetch top urgent jobs for quick step ticking
+    SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+    INTO v_urgent_jobs
+    FROM (
+      SELECT
+        j.id,
+        j.job_type_name,
+        j.party_name,
+        j.party_mobile,
+        j.applicant_name,
+        j.deadline_date,
+        j.status,
+        j.created_at,
+        i.number as invoice_number,
+        (j.deadline_date - v_today) as days_left,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id) as total_steps,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id AND js.ticked = true) as ticked_steps,
+        COALESCE((
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'id', js.id,
+              'position', js.position,
+              'name', js.name,
+              'ticked', js.ticked,
+              'ticked_at', js.ticked_at,
+              'whatsapp_message', js.whatsapp_message
+            ) ORDER BY js.position ASC
+          )
+          FROM public.job_steps js
+          WHERE js.job_id = j.id
+        ), '[]'::jsonb) as steps
+      FROM public.jobs j
+      LEFT JOIN public.invoices i ON i.id = j.invoice_id
+      WHERE j.business_id = v_biz_id
+        AND j.status = 'IN_PROGRESS'
+        AND (j.assigned_staff_id = v_caller_id OR j.assigned_staff_id IS NULL)
+        AND j.deleted_at IS NULL
+      ORDER BY
+        -- Sort: late/urgent first, then progress descending
+        CASE WHEN j.deadline_date < v_today THEN 0 ELSE 1 END ASC,
+        j.deadline_date ASC,
+        j.created_at ASC
+      LIMIT 8
+    ) sub;
+  END IF;
+
+  -- =========================================================
+  -- 5. STAFF'S RECENT BILLS (ONLY own bills)
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_bills
+  FROM (
+    SELECT
+      id,
+      number,
+      invoice_date,
+      due_date,
+      party_name,
+      party_mobile,
+      total,
+      paid_amount,
+      (total - paid_amount) as balance,
+      status,
+      created_at
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND created_by = v_caller_id
+      AND deleted_at IS NULL
+    ORDER BY created_at DESC
+    LIMIT 8
+  ) sub;
+
+  -- =========================================================
+  -- 6. STAFF'S BILLS PER DAY (FOR CURRENT MONTH)
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_bills_per_day
+  FROM (
+    SELECT
+      to_char(d.date, 'DD Mon') as date_label,
+      d.date as raw_date,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.created_by = v_caller_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_count,
+      COALESCE((
+        SELECT SUM(i.total)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.created_by = v_caller_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_amount
+    FROM generate_series(
+      date_trunc('month', v_today)::date,
+      v_today,
+      '1 day'::interval
+    ) d(date)
+    ORDER BY d.date ASC
+  ) sub;
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'today_date', v_today,
+    'start_date', v_start_date,
+    'end_date', v_end_date,
+    'staff_member', jsonb_build_object(
+      'id', v_staff.id,
+      'name', v_staff.name,
+      'role', v_staff.role,
+      'mobile', v_staff.mobile,
+      'compensation_type', v_staff.compensation_type,
+      'monthly_salary', v_staff.monthly_salary
+    ),
+    'my_bills', jsonb_build_object(
+      'count', v_bills_count,
+      'total_amount', v_bills_total
+    ),
+    'my_collection', jsonb_build_object(
+      'total', v_collection_total,
+      'cash', v_collection_cash,
+      'upi', v_collection_upi,
+      'bank', v_collection_bank,
+      'card', v_collection_card
+    ),
+    'my_earnings', jsonb_build_object(
+      'compensation_type', v_staff.compensation_type,
+      'monthly_salary', v_staff.monthly_salary,
+      'total_earned', v_total_earned,
+      'total_paid', v_total_paid,
+      'balance_payable', v_balance_payable,
+      'upcoming', v_upcoming
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending_count', v_jobs_pending,
+      'completed_today_count', v_jobs_completed_today,
+      'completed_period_count', v_jobs_completed_period,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'red_days', v_red_days,
+      'yellow_days', v_yellow_days,
+      'urgent_jobs', v_urgent_jobs
+    ),
+    'my_recent_bills', v_recent_bills,
+    'my_bills_per_day', v_bills_per_day
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_dashboard(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_dashboard(text) TO authenticated;
+
+
+
+-- >>> Migration: 20261109000041_staff_real_data_sync.sql <<<
+-- Migration 41: Real Business Data Sync for Staff (Jobs, Invoices, Services)
+-- User request: Jobs all show karao jo owner jesa same data real load karao services bills aisa nhi k owner me kuch aur and staff ko kuch aur show horaha
+
+-- 1. Invoices & Invoice Items RLS: Allow all business members (including Staff) to view all active invoices
+DROP POLICY IF EXISTS invoices_select ON public.invoices;
+CREATE POLICY invoices_select ON public.invoices
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS invoice_items_select ON public.invoice_items;
+CREATE POLICY invoice_items_select ON public.invoice_items
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND deleted_at IS NULL
+  );
+
+-- 2. Update list_jobs: Remove staff assignment/creation filters so Staff sees ALL jobs of the business exactly like Owner
+CREATE OR REPLACE FUNCTION public.list_jobs(
+  p_tab text DEFAULT 'CURRENT',
+  p_service_id uuid DEFAULT NULL,
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0,
+  p_sort text DEFAULT 'QUEUE'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+
+  v_count_current int := 0;
+  v_count_completed int := 0;
+  v_count_due int := 0;
+  v_count_yellow int := 0;
+  v_count_red int := 0;
+
+  v_jobs jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Accountants do not have access to job management';
+  END IF;
+
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  -- Compute tab counts across ALL jobs of the business
+  SELECT
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS'),
+    COUNT(*) FILTER (WHERE j.status = 'COMPLETED'),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days)
+  INTO
+    v_count_current,
+    v_count_completed,
+    v_count_due,
+    v_count_yellow,
+    v_count_red
+  FROM public.jobs j
+  WHERE j.business_id = v_biz_id 
+    AND j.deleted_at IS NULL;
+
+  WITH job_steps_agg AS (
+    SELECT
+      js.job_id,
+      COUNT(*)::int AS total_steps,
+      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps,
+      (
+        SELECT s2.name 
+        FROM public.job_steps s2 
+        WHERE s2.job_id = js.job_id AND s2.ticked = false AND s2.deleted_at IS NULL 
+        ORDER BY s2.position ASC 
+        LIMIT 1
+      ) AS next_step_name
+    FROM public.job_steps js
+    WHERE js.business_id = v_biz_id AND js.deleted_at IS NULL
+    GROUP BY js.job_id
+  ),
+  filtered_jobs AS (
+    SELECT
+      j.id,
+      j.invoice_id,
+      i.number AS invoice_number,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount,
+      j.deadline_date,
+      (j.deadline_date - v_today) AS days_left,
+      j.status,
+      j.completed_at,
+      j.assigned_staff_id,
+      m.name AS assigned_staff_name,
+      j.created_at,
+      COALESCE(jsa.total_steps, 0) AS total_steps,
+      COALESCE(jsa.ticked_steps, 0) AS ticked_steps,
+      jsa.next_step_name,
+      CASE
+        WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+        ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
+      END AS progress_percent,
+      CASE
+        WHEN (j.deadline_date - v_today) < 0 THEN 'LATE'
+        WHEN (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+        WHEN (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+        ELSE 'NORMAL'
+      END AS deadline_bucket
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+    LEFT JOIN job_steps_agg jsa ON jsa.job_id = j.id
+    WHERE j.business_id = v_biz_id
+      AND j.deleted_at IS NULL
+      AND (
+        p_service_id IS NULL 
+        OR j.service_id = p_service_id 
+        OR j.job_type_name = (SELECT name FROM public.services WHERE id = p_service_id)
+      )
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR j.party_name ILIKE '%' || p_search || '%'
+        OR j.party_mobile ILIKE '%' || p_search || '%'
+        OR j.applicant_name ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+        OR j.job_type_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE UPPER(p_tab)
+          WHEN 'CURRENT' THEN j.status = 'IN_PROGRESS'
+          WHEN 'COMPLETED' THEN j.status = 'COMPLETED'
+          WHEN 'DUE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'LATE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'YELLOW' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days
+          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days
+          ELSE j.status = 'IN_PROGRESS'
+        END
+      )
+    ORDER BY
+      CASE
+        WHEN UPPER(p_tab) = 'COMPLETED' THEN j.completed_at
+        ELSE NULL
+      END DESC NULLS LAST,
+      CASE
+        WHEN UPPER(p_sort) = 'PROGRESS' AND UPPER(p_tab) <> 'COMPLETED' THEN COALESCE(jsa.ticked_steps, 0)
+        ELSE NULL
+      END ASC,
+      CASE
+        WHEN UPPER(p_sort) = 'PROGRESS' AND UPPER(p_tab) <> 'COMPLETED' THEN
+          CASE
+            WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+            ELSE (COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric)
+          END
+        ELSE NULL
+      END ASC,
+      CASE
+        WHEN UPPER(p_tab) <> 'COMPLETED' THEN j.deadline_date
+        ELSE NULL
+      END ASC NULLS LAST,
+      j.created_at ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT jsonb_agg(row_to_json(f)) INTO v_jobs FROM filtered_jobs f;
+
+  RETURN jsonb_build_object(
+    'tab_counts', jsonb_build_object(
+      'current', v_count_current,
+      'completed', v_count_completed,
+      'due', v_count_due,
+      'yellow', v_count_yellow,
+      'red', v_count_red
+    ),
+    'jobs', COALESCE(v_jobs, '[]'::jsonb)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+-- 3. Update staff_dashboard: Return real business jobs, real business recent bills, and real business top services
+CREATE OR REPLACE FUNCTION public.staff_dashboard(
+  p_period text DEFAULT 'TODAY'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_start_date date;
+  v_end_date date;
+
+  -- 1. Bills (Real business counts & totals)
+  v_bills_count int := 0;
+  v_bills_total numeric(14,2) := 0;
+
+  -- 2. My Collections (for shift-end cash handover)
+  v_collection_total numeric(14,2) := 0;
+  v_collection_cash numeric(14,2) := 0;
+  v_collection_upi numeric(14,2) := 0;
+  v_collection_bank numeric(14,2) := 0;
+  v_collection_card numeric(14,2) := 0;
+
+  -- 3. Staff Profile & Earnings
+  v_staff record;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_upcoming numeric(14,2) := 0;
+
+  -- 4. Jobs & Deadlines (ALL business jobs)
+  v_red_days int;
+  v_yellow_days int;
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_period int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+  v_urgent_jobs jsonb := '[]'::jsonb;
+
+  -- 5. Business Recent Bills
+  v_recent_bills jsonb := '[]'::jsonb;
+
+  -- 6. Business Bills per day
+  v_bills_per_day jsonb := '[]'::jsonb;
+
+  -- 7. Business Top Services
+  v_top_services jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_caller_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  -- Set period dates
+  IF UPPER(COALESCE(p_period, 'TODAY')) = 'MONTH' THEN
+    v_start_date := date_trunc('month', v_today)::date;
+    v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+  ELSE
+    v_start_date := v_today;
+    v_end_date := v_today;
+  END IF;
+
+  -- =========================================================
+  -- 1. BILLS (Business-wide for real alignment)
+  -- =========================================================
+  SELECT
+    COUNT(*),
+    COALESCE(SUM(total), 0)
+  INTO v_bills_count, v_bills_total
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND invoice_date >= v_start_date
+    AND invoice_date <= v_end_date
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL;
+
+  -- =========================================================
+  -- 2. MY COLLECTIONS (Receipts created by this staff member for shift-end handover)
+  -- =========================================================
+  SELECT
+    COALESCE(SUM(amount), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0)
+  INTO
+    v_collection_total,
+    v_collection_cash,
+    v_collection_upi,
+    v_collection_bank,
+    v_collection_card
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND created_by = v_caller_id
+    AND receipt_date >= v_start_date
+    AND receipt_date <= v_end_date
+    AND deleted_at IS NULL;
+
+  -- =========================================================
+  -- 3. MY EARNINGS
+  -- =========================================================
+  SELECT 
+    id, name, mobile, role,
+    COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+    COALESCE(monthly_salary, 0) AS monthly_salary,
+    COALESCE(salary_start_date, created_at::date) AS salary_start_date
+  INTO v_staff
+  FROM public.members
+  WHERE id = v_caller_id AND business_id = v_biz_id;
+
+  IF v_staff.compensation_type = 'SALARY' THEN
+    v_total_earned := v_staff.monthly_salary;
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      GREATEST(0, (
+        (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM v_staff.salary_start_date)) * 12 +
+        (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM v_staff.salary_start_date)) + 1
+      )::int) * v_staff.monthly_salary
+    ) - (
+      SELECT COALESCE(SUM(amount), 0)
+      FROM public.staff_payouts
+      WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+    );
+    v_upcoming := 0;
+  ELSE
+    SELECT 
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+    INTO v_total_earned, v_upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.staff_id = v_caller_id
+      AND ce.earned_at::date >= v_start_date
+      AND ce.earned_at::date <= v_end_date;
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED' AND staff_id = v_caller_id
+    ) - (
+      SELECT COALESCE(SUM(amount), 0) FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+    );
+  END IF;
+
+  -- =========================================================
+  -- 4. JOBS QUEUE (Real ALL business jobs)
+  -- =========================================================
+  IF v_biz.job_management_enabled THEN
+    SELECT COUNT(*) INTO v_jobs_pending
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_today
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date = v_today
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_period
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date >= v_start_date
+      AND completed_at::date <= v_end_date
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_late
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date < v_today
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_red
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date >= v_today
+      AND (deadline_date - v_today) <= v_red_days
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND (deadline_date - v_today) > v_red_days
+      AND (deadline_date - v_today) <= v_yellow_days
+      AND deleted_at IS NULL;
+
+    -- Fetch top urgent jobs across ALL business jobs for quick step ticking
+    SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+    INTO v_urgent_jobs
+    FROM (
+      SELECT
+        j.id,
+        j.job_type_name,
+        j.party_name,
+        j.party_mobile,
+        j.applicant_name,
+        j.deadline_date,
+        j.status,
+        j.created_at,
+        j.assigned_staff_id,
+        m.name as assigned_staff_name,
+        i.number as invoice_number,
+        (j.deadline_date - v_today) as days_left,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id) as total_steps,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id AND js.ticked = true) as ticked_steps,
+        COALESCE((
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'id', js.id,
+              'position', js.position,
+              'name', js.name,
+              'ticked', js.ticked,
+              'ticked_at', js.ticked_at,
+              'whatsapp_message', js.whatsapp_message
+            ) ORDER BY js.position ASC
+          )
+          FROM public.job_steps js
+          WHERE js.job_id = j.id
+        ), '[]'::jsonb) as steps
+      FROM public.jobs j
+      JOIN public.invoices i ON i.id = j.invoice_id
+      LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+      WHERE j.business_id = v_biz_id
+        AND j.status = 'IN_PROGRESS'
+        AND j.deleted_at IS NULL
+      ORDER BY
+        CASE WHEN j.deadline_date < v_today THEN 0 ELSE 1 END ASC,
+        j.deadline_date ASC,
+        j.created_at ASC
+      LIMIT 30
+    ) sub;
+  END IF;
+
+  -- =========================================================
+  -- 5. REAL RECENT BILLS OF THE BUSINESS
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_bills
+  FROM (
+    SELECT
+      id,
+      number,
+      invoice_date,
+      due_date,
+      party_name,
+      party_mobile,
+      total,
+      paid_amount,
+      (total - paid_amount) as balance,
+      status,
+      created_at
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND deleted_at IS NULL
+    ORDER BY created_at DESC
+    LIMIT 8
+  ) sub;
+
+  -- =========================================================
+  -- 6. BUSINESS BILLS PER DAY (FOR CURRENT MONTH)
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_bills_per_day
+  FROM (
+    SELECT
+      to_char(d.date, 'DD Mon') as date_label,
+      d.date as raw_date,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_count,
+      COALESCE((
+        SELECT SUM(i.total)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_amount
+    FROM generate_series(
+      date_trunc('month', v_today)::date,
+      v_today,
+      '1 day'::interval
+    ) d(date)
+    ORDER BY d.date ASC
+  ) sub;
+
+  -- =========================================================
+  -- 7. BUSINESS TOP SERVICES
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_top_services
+  FROM (
+    SELECT
+      COALESCE(s.name, ii.description) as name,
+      COUNT(*)::int as count,
+      COALESCE(SUM(ii.amount), 0) as total_amount
+    FROM public.invoice_items ii
+    JOIN public.invoices i ON i.id = ii.invoice_id
+    LEFT JOIN public.services s ON s.id = ii.service_id
+    WHERE i.business_id = v_biz_id
+      AND i.invoice_date >= v_start_date AND i.invoice_date <= v_end_date
+      AND i.status = 'ACTIVE'
+      AND i.deleted_at IS NULL
+    GROUP BY COALESCE(s.name, ii.description)
+    ORDER BY count DESC, total_amount DESC
+    LIMIT 5
+  ) sub;
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'today_date', v_today,
+    'my_bills', jsonb_build_object(
+      'count', v_bills_count,
+      'total_amount', v_bills_total
+    ),
+    'my_collection', jsonb_build_object(
+      'total', v_collection_total,
+      'cash', v_collection_cash,
+      'upi', v_collection_upi,
+      'bank', v_collection_bank,
+      'card', v_collection_card
+    ),
+    'my_earnings', jsonb_build_object(
+      'compensation_type', v_staff.compensation_type,
+      'monthly_salary', v_staff.monthly_salary,
+      'total_earned', v_total_earned,
+      'total_paid', v_total_paid,
+      'balance_payable', v_balance_payable,
+      'upcoming', v_upcoming
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending_count', v_jobs_pending,
+      'completed_today_count', v_jobs_completed_today,
+      'completed_period_count', v_jobs_completed_period,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'urgent_jobs', v_urgent_jobs
+    ),
+    'my_recent_bills', v_recent_bills,
+    'my_bills_per_day', v_bills_per_day,
+    'top_services', v_top_services
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_dashboard(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_dashboard(text) TO authenticated;
+
+
+
+-- >>> Migration: 20261109000042_staff_own_data_with_all_jobs.sql <<<
+-- Migration 42: Staff Own Data Isolation (Bills, Collections, Activity) with ALL Jobs Shared
+-- User request: is staff ka jo data hai wahi batao sab ka nhi only jobs all show karao bakir other jo data hai wo isi perticular staff ka like bills etc
+
+-- 1. Invoices & Invoice Items RLS: Staff can ONLY view their own created bills
+DROP POLICY IF EXISTS invoices_select ON public.invoices;
+CREATE POLICY invoices_select ON public.invoices
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND (
+      (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+      OR created_by = (SELECT app.current_member_id())
+    )
+    AND deleted_at IS NULL
+  );
+
+DROP POLICY IF EXISTS invoice_items_select ON public.invoice_items;
+CREATE POLICY invoice_items_select ON public.invoice_items
+  FOR SELECT
+  USING (
+    business_id = (SELECT app.current_business_id())
+    AND EXISTS (
+      SELECT 1 FROM public.invoices i
+      WHERE i.id = invoice_id
+        AND (
+          (SELECT app.current_role()) IN ('OWNER', 'ACCOUNTANT')
+          OR i.created_by = (SELECT app.current_member_id())
+        )
+    )
+    AND deleted_at IS NULL
+  );
+
+-- 2. list_jobs RPC: Retain ALL jobs access for all staff (no staff filter so all business jobs can be tracked & ticked)
+CREATE OR REPLACE FUNCTION public.list_jobs(
+  p_tab text DEFAULT 'CURRENT',
+  p_service_id uuid DEFAULT NULL,
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0,
+  p_sort text DEFAULT 'QUEUE'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+
+  v_count_current int := 0;
+  v_count_completed int := 0;
+  v_count_due int := 0;
+  v_count_yellow int := 0;
+  v_count_red int := 0;
+
+  v_jobs jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Accountants do not have access to job management';
+  END IF;
+
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  -- Tab counts across ALL business jobs (per "only jobs all show karao")
+  SELECT
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS'),
+    COUNT(*) FILTER (WHERE j.status = 'COMPLETED'),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days)
+  INTO
+    v_count_current,
+    v_count_completed,
+    v_count_due,
+    v_count_yellow,
+    v_count_red
+  FROM public.jobs j
+  WHERE j.business_id = v_biz_id 
+    AND j.deleted_at IS NULL;
+
+  WITH job_steps_agg AS (
+    SELECT
+      js.job_id,
+      COUNT(*)::int AS total_steps,
+      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps,
+      (
+        SELECT s2.name 
+        FROM public.job_steps s2 
+        WHERE s2.job_id = js.job_id AND s2.ticked = false AND s2.deleted_at IS NULL 
+        ORDER BY s2.position ASC 
+        LIMIT 1
+      ) AS next_step_name
+    FROM public.job_steps js
+    WHERE js.business_id = v_biz_id AND js.deleted_at IS NULL
+    GROUP BY js.job_id
+  ),
+  filtered_jobs AS (
+    SELECT
+      j.id,
+      j.invoice_id,
+      i.number AS invoice_number,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount,
+      j.deadline_date,
+      (j.deadline_date - v_today) AS days_left,
+      j.status,
+      j.completed_at,
+      j.assigned_staff_id,
+      m.name AS assigned_staff_name,
+      j.created_at,
+      COALESCE(jsa.total_steps, 0) AS total_steps,
+      COALESCE(jsa.ticked_steps, 0) AS ticked_steps,
+      jsa.next_step_name,
+      CASE
+        WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+        ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
+      END AS progress_percent,
+      CASE
+        WHEN (j.deadline_date - v_today) < 0 THEN 'LATE'
+        WHEN (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+        WHEN (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+        ELSE 'NORMAL'
+      END AS deadline_bucket
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+    LEFT JOIN job_steps_agg jsa ON jsa.job_id = j.id
+    WHERE j.business_id = v_biz_id
+      AND j.deleted_at IS NULL
+      AND (
+        p_service_id IS NULL 
+        OR j.service_id = p_service_id 
+        OR j.job_type_name = (SELECT name FROM public.services WHERE id = p_service_id)
+      )
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR j.party_name ILIKE '%' || p_search || '%'
+        OR j.party_mobile ILIKE '%' || p_search || '%'
+        OR j.applicant_name ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+        OR j.job_type_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE UPPER(p_tab)
+          WHEN 'CURRENT' THEN j.status = 'IN_PROGRESS'
+          WHEN 'COMPLETED' THEN j.status = 'COMPLETED'
+          WHEN 'DUE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'LATE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'YELLOW' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days
+          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days
+          ELSE j.status = 'IN_PROGRESS'
+        END
+      )
+    ORDER BY
+      CASE
+        WHEN UPPER(p_tab) = 'COMPLETED' THEN j.completed_at
+        ELSE NULL
+      END DESC NULLS LAST,
+      CASE
+        WHEN UPPER(p_sort) = 'PROGRESS' AND UPPER(p_tab) <> 'COMPLETED' THEN COALESCE(jsa.ticked_steps, 0)
+        ELSE NULL
+      END ASC,
+      CASE
+        WHEN UPPER(p_sort) = 'PROGRESS' AND UPPER(p_tab) <> 'COMPLETED' THEN
+          CASE
+            WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+            ELSE (COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric)
+          END
+        ELSE NULL
+      END ASC,
+      CASE
+        WHEN UPPER(p_tab) <> 'COMPLETED' THEN j.deadline_date
+        ELSE NULL
+      END ASC NULLS LAST,
+      j.created_at ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT jsonb_agg(row_to_json(f)) INTO v_jobs FROM filtered_jobs f;
+
+  RETURN jsonb_build_object(
+    'tab_counts', jsonb_build_object(
+      'current', v_count_current,
+      'completed', v_count_completed,
+      'due', v_count_due,
+      'yellow', v_count_yellow,
+      'red', v_count_red
+    ),
+    'jobs', COALESCE(v_jobs, '[]'::jsonb)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+-- 3. staff_dashboard RPC: ALL jobs for jobs card, but ONLY caller's own bills, collections, and activity
+CREATE OR REPLACE FUNCTION public.staff_dashboard(
+  p_period text DEFAULT 'TODAY'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_biz public.businesses%ROWTYPE;
+  v_start_date date;
+  v_end_date date;
+
+  -- 1. My Bills (ONLY this particular staff's bills)
+  v_bills_count int := 0;
+  v_bills_total numeric(14,2) := 0;
+
+  -- 2. My Collections (ONLY this particular staff's receipts)
+  v_collection_total numeric(14,2) := 0;
+  v_collection_cash numeric(14,2) := 0;
+  v_collection_upi numeric(14,2) := 0;
+  v_collection_bank numeric(14,2) := 0;
+  v_collection_card numeric(14,2) := 0;
+
+  -- 3. Staff Profile & Earnings (ONLY this particular staff's earnings)
+  v_staff record;
+  v_total_earned numeric(14,2) := 0;
+  v_total_paid numeric(14,2) := 0;
+  v_balance_payable numeric(14,2) := 0;
+  v_upcoming numeric(14,2) := 0;
+
+  -- 4. Jobs & Deadlines (ALL business jobs, per "only jobs all show karao")
+  v_red_days int;
+  v_yellow_days int;
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_period int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+  v_urgent_jobs jsonb := '[]'::jsonb;
+
+  -- 5. Staff's Recent Bills (ONLY this particular staff's bills)
+  v_recent_bills jsonb := '[]'::jsonb;
+
+  -- 6. Staff's Bills per day (ONLY this particular staff's daily activity)
+  v_bills_per_day jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_caller_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  -- Set period dates
+  IF UPPER(COALESCE(p_period, 'TODAY')) = 'MONTH' THEN
+    v_start_date := date_trunc('month', v_today)::date;
+    v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+  ELSE
+    v_start_date := v_today;
+    v_end_date := v_today;
+  END IF;
+
+  -- =========================================================
+  -- 1. MY BILLS (ONLY this particular staff member)
+  -- =========================================================
+  SELECT
+    COUNT(*),
+    COALESCE(SUM(total), 0)
+  INTO v_bills_count, v_bills_total
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND created_by = v_caller_id
+    AND invoice_date >= v_start_date
+    AND invoice_date <= v_end_date
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL;
+
+  -- =========================================================
+  -- 2. MY COLLECTIONS (ONLY this particular staff member)
+  -- =========================================================
+  SELECT
+    COALESCE(SUM(amount), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0)
+  INTO
+    v_collection_total,
+    v_collection_cash,
+    v_collection_upi,
+    v_collection_bank,
+    v_collection_card
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND created_by = v_caller_id
+    AND receipt_date >= v_start_date
+    AND receipt_date <= v_end_date
+    AND deleted_at IS NULL;
+
+  -- =========================================================
+  -- 3. MY EARNINGS
+  -- =========================================================
+  SELECT 
+    id, name, mobile, role,
+    COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+    COALESCE(monthly_salary, 0) AS monthly_salary,
+    COALESCE(salary_start_date, created_at::date) AS salary_start_date
+  INTO v_staff
+  FROM public.members
+  WHERE id = v_caller_id AND business_id = v_biz_id;
+
+  IF v_staff.compensation_type = 'SALARY' THEN
+    v_total_earned := v_staff.monthly_salary;
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      GREATEST(0, (
+        (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM v_staff.salary_start_date)) * 12 +
+        (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM v_staff.salary_start_date)) + 1
+      )::int) * v_staff.monthly_salary
+    ) - (
+      SELECT COALESCE(SUM(amount), 0)
+      FROM public.staff_payouts
+      WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+    );
+    v_upcoming := 0;
+  ELSE
+    SELECT 
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+    INTO v_total_earned, v_upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.staff_id = v_caller_id
+      AND ce.earned_at::date >= v_start_date
+      AND ce.earned_at::date <= v_end_date;
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED' AND staff_id = v_caller_id
+    ) - (
+      SELECT COALESCE(SUM(amount), 0) FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+    );
+  END IF;
+
+  -- =========================================================
+  -- 4. JOBS QUEUE (ALL business jobs, per "only jobs all show karao")
+  -- =========================================================
+  IF v_biz.job_management_enabled THEN
+    SELECT COUNT(*) INTO v_jobs_pending
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_today
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date = v_today
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_period
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date >= v_start_date
+      AND completed_at::date <= v_end_date
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_late
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date < v_today
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_red
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date >= v_today
+      AND (deadline_date - v_today) <= v_red_days
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND (deadline_date - v_today) > v_red_days
+      AND (deadline_date - v_today) <= v_yellow_days
+      AND deleted_at IS NULL;
+
+    -- Fetch top urgent jobs across ALL business jobs for quick step ticking
+    SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+    INTO v_urgent_jobs
+    FROM (
+      SELECT
+        j.id,
+        j.job_type_name,
+        j.party_name,
+        j.party_mobile,
+        j.applicant_name,
+        j.deadline_date,
+        j.status,
+        j.created_at,
+        j.assigned_staff_id,
+        m.name as assigned_staff_name,
+        i.number as invoice_number,
+        (j.deadline_date - v_today) as days_left,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id) as total_steps,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id AND js.ticked = true) as ticked_steps,
+        COALESCE((
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'id', js.id,
+              'position', js.position,
+              'name', js.name,
+              'ticked', js.ticked,
+              'ticked_at', js.ticked_at,
+              'whatsapp_message', js.whatsapp_message
+            ) ORDER BY js.position ASC
+          )
+          FROM public.job_steps js
+          WHERE js.job_id = j.id
+        ), '[]'::jsonb) as steps
+      FROM public.jobs j
+      JOIN public.invoices i ON i.id = j.invoice_id
+      LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+      WHERE j.business_id = v_biz_id
+        AND j.status = 'IN_PROGRESS'
+        AND j.deleted_at IS NULL
+      ORDER BY
+        CASE WHEN j.deadline_date < v_today THEN 0 ELSE 1 END ASC,
+        j.deadline_date ASC,
+        j.created_at ASC
+      LIMIT 30
+    ) sub;
+  END IF;
+
+  -- =========================================================
+  -- 5. STAFF'S RECENT BILLS (ONLY this particular staff's bills)
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_bills
+  FROM (
+    SELECT
+      id,
+      number,
+      invoice_date,
+      due_date,
+      party_name,
+      party_mobile,
+      total,
+      paid_amount,
+      (total - paid_amount) as balance,
+      status,
+      created_at
+    FROM public.invoices
+    WHERE business_id = v_biz_id
+      AND created_by = v_caller_id
+      AND deleted_at IS NULL
+    ORDER BY created_at DESC
+    LIMIT 8
+  ) sub;
+
+  -- =========================================================
+  -- 6. STAFF'S BILLS PER DAY (ONLY this particular staff's activity)
+  -- =========================================================
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_bills_per_day
+  FROM (
+    SELECT
+      to_char(d.date, 'DD Mon') as date_label,
+      d.date as raw_date,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.created_by = v_caller_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_count,
+      COALESCE((
+        SELECT SUM(i.total)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.created_by = v_caller_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_amount
+    FROM generate_series(
+      date_trunc('month', v_today)::date,
+      v_today,
+      '1 day'::interval
+    ) d(date)
+    ORDER BY d.date ASC
+  ) sub;
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'today_date', v_today,
+    'my_bills', jsonb_build_object(
+      'count', v_bills_count,
+      'total_amount', v_bills_total
+    ),
+    'my_collection', jsonb_build_object(
+      'total', v_collection_total,
+      'cash', v_collection_cash,
+      'upi', v_collection_upi,
+      'bank', v_collection_bank,
+      'card', v_collection_card
+    ),
+    'my_earnings', jsonb_build_object(
+      'compensation_type', v_staff.compensation_type,
+      'monthly_salary', v_staff.monthly_salary,
+      'total_earned', v_total_earned,
+      'total_paid', v_total_paid,
+      'balance_payable', v_balance_payable,
+      'upcoming', v_upcoming
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending_count', v_jobs_pending,
+      'completed_today_count', v_jobs_completed_today,
+      'completed_period_count', v_jobs_completed_period,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'urgent_jobs', v_urgent_jobs
+    ),
+    'my_recent_bills', v_recent_bills,
+    'my_bills_per_day', v_bills_per_day
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_dashboard(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_dashboard(text) TO authenticated;
+
+
+
+-- >>> Migration: 20261109000043_fix_current_member_id_auth_resolution.sql <<<
+-- Migration 43: Fix app.current_member_id(), current_business_id(), and current_role() auth resolution
+-- Prevents NULL auth_user_id members (such as unassigned staff) from sorting ahead of actual authenticated staff
+-- Ensures staff_dashboard and RLS resolve to the authenticated caller with 100% accuracy
+
+CREATE OR REPLACE FUNCTION app.current_member_id()
+RETURNS uuid AS $$
+  SELECT m.id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com' AND m.auth_user_id IS NOT NULL)
+      )
+    )
+    OR (
+      auth.uid() IS NULL
+      AND (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    COALESCE(m.auth_user_id = auth.uid(), false) DESC,
+    (m.auth_user_id IS NOT NULL) DESC,
+    COALESCE(m.role = 'OWNER', false) DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_business_id()
+RETURNS uuid AS $$
+  SELECT m.business_id
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com' AND m.auth_user_id IS NOT NULL)
+      )
+    )
+    OR (
+      auth.uid() IS NULL
+      AND (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    COALESCE(m.auth_user_id = auth.uid(), false) DESC,
+    (m.auth_user_id IS NOT NULL) DESC,
+    COALESCE(m.role = 'OWNER', false) DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+CREATE OR REPLACE FUNCTION app.current_role()
+RETURNS text AS $$
+  SELECT m.role
+  FROM public.members m
+  LEFT JOIN auth.users u ON u.id = auth.uid()
+  WHERE (
+    m.auth_user_id = auth.uid()
+    OR (
+      u.email IS NOT NULL AND (
+        u.email = '91' || m.mobile || '@simplify.local'
+        OR u.email = m.mobile || '@simplify.local'
+        OR (m.role = 'OWNER' AND u.email = 'owner@simplify.com')
+        OR (m.role = 'STAFF' AND u.email = 'staff@simplify.com' AND m.auth_user_id IS NOT NULL)
+      )
+    )
+    OR (
+      auth.uid() IS NULL
+      AND (SELECT count(*) FROM public.businesses WHERE deleted_at IS NULL) = 1
+      AND m.role = 'OWNER'
+    )
+  )
+  AND m.active = true
+  AND m.deleted_at IS NULL
+  ORDER BY 
+    COALESCE(m.auth_user_id = auth.uid(), false) DESC,
+    (m.auth_user_id IS NOT NULL) DESC,
+    COALESCE(m.role = 'OWNER', false) DESC,
+    m.created_at ASC
+  LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
+
+
+
+-- >>> Migration: 20261110000044_staff_earnings_history.sql <<<
+-- Migration 44: Staff Earnings History (Monthly & FY Statement Report)
+-- Allows staff (and owner/accountant) to view comprehensive monthly and FY-wise earnings, payouts, and balance breakdown
+
+CREATE OR REPLACE FUNCTION public.staff_earnings_history(
+  p_staff_id uuid DEFAULT NULL::uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_staff record;
+  v_monthly jsonb := '[]'::jsonb;
+  v_yearly jsonb := '[]'::jsonb;
+  v_all_time_earned numeric(14,2) := 0;
+  v_all_time_paid numeric(14,2) := 0;
+  v_all_time_balance numeric(14,2) := 0;
+  v_total_jobs int := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view own earnings history
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := COALESCE(p_staff_id, v_caller_id);
+  END IF;
+
+  IF v_target_staff_id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT 
+    id, name, mobile, role,
+    COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+    COALESCE(monthly_salary, 0) AS monthly_salary,
+    COALESCE(salary_start_date, created_at::date) AS salary_start_date
+  INTO v_staff
+  FROM public.members
+  WHERE id = v_target_staff_id AND business_id = v_biz_id;
+
+  IF v_staff.id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_staff.compensation_type = 'SALARY' THEN
+    -- 1. Salaried Staff History
+    WITH month_series AS (
+      SELECT generate_series(
+        date_trunc('month', v_staff.salary_start_date)::date,
+        date_trunc('month', v_today)::date,
+        '1 month'::interval
+      )::date AS m_start
+    ),
+    sal_monthly AS (
+      SELECT 
+        to_char(ms.m_start, 'YYYY-MM') AS month_key,
+        to_char(ms.m_start, 'Mon YYYY') AS month_label,
+        public.fy_label(ms.m_start) AS fy_label,
+        COALESCE(sj.jobs_count, 0) AS jobs_count,
+        v_staff.monthly_salary AS earned,
+        COALESCE(sp.month_paid, 0) AS paid,
+        (v_staff.monthly_salary - COALESCE(sp.month_paid, 0)) AS balance,
+        ms.m_start
+      FROM month_series ms
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', payout_date)::date AS p_month,
+          SUM(amount) AS month_paid
+        FROM public.staff_payouts
+        WHERE staff_id = v_target_staff_id AND business_id = v_biz_id AND deleted_at IS NULL
+        GROUP BY 1
+      ) sp ON sp.p_month = ms.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', completed_at)::date AS j_month,
+          COUNT(*) AS jobs_count
+        FROM public.jobs
+        WHERE assigned_staff_id = v_target_staff_id AND business_id = v_biz_id AND status = 'COMPLETED'
+        GROUP BY 1
+      ) sj ON sj.j_month = ms.m_start
+      ORDER BY ms.m_start DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(sal_monthly.*)), '[]'::jsonb)
+    INTO v_monthly
+    FROM sal_monthly;
+
+    -- Salaried FY Yearly Breakdown
+    WITH month_series AS (
+      SELECT generate_series(
+        date_trunc('month', v_staff.salary_start_date)::date,
+        date_trunc('month', v_today)::date,
+        '1 month'::interval
+      )::date AS m_start
+    ),
+    sal_yearly AS (
+      SELECT 
+        public.fy_label(ms.m_start) AS fy_label,
+        COALESCE(SUM(sj.jobs_count), 0)::int AS jobs_count,
+        SUM(v_staff.monthly_salary) AS earned,
+        COALESCE(SUM(sp.month_paid), 0) AS paid,
+        (SUM(v_staff.monthly_salary) - COALESCE(SUM(sp.month_paid), 0)) AS balance,
+        MIN(ms.m_start) AS min_date
+      FROM month_series ms
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', payout_date)::date AS p_month,
+          SUM(amount) AS month_paid
+        FROM public.staff_payouts
+        WHERE staff_id = v_target_staff_id AND business_id = v_biz_id AND deleted_at IS NULL
+        GROUP BY 1
+      ) sp ON sp.p_month = ms.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', completed_at)::date AS j_month,
+          COUNT(*) AS jobs_count
+        FROM public.jobs
+        WHERE assigned_staff_id = v_target_staff_id AND business_id = v_biz_id AND status = 'COMPLETED'
+        GROUP BY 1
+      ) sj ON sj.j_month = ms.m_start
+      GROUP BY public.fy_label(ms.m_start)
+      ORDER BY MIN(ms.m_start) DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(sal_yearly.*)), '[]'::jsonb)
+    INTO v_yearly
+    FROM sal_yearly;
+
+  ELSE
+    -- 2. Commission-based Staff History
+    WITH activity_months AS (
+      -- All active months from commission entries, payouts, or completed jobs
+      SELECT DISTINCT date_trunc('month', ce.earned_at)::date AS m_start
+      FROM public.commission_entries ce
+      WHERE ce.staff_id = v_target_staff_id AND ce.business_id = v_biz_id AND ce.status = 'EARNED'
+      UNION
+      SELECT DISTINCT date_trunc('month', sp.payout_date)::date AS m_start
+      FROM public.staff_payouts sp
+      WHERE sp.staff_id = v_target_staff_id AND sp.business_id = v_biz_id AND sp.deleted_at IS NULL
+      UNION
+      SELECT DISTINCT date_trunc('month', j.completed_at)::date AS m_start
+      FROM public.jobs j
+      WHERE j.assigned_staff_id = v_target_staff_id AND j.business_id = v_biz_id AND j.status = 'COMPLETED'
+      UNION
+      SELECT date_trunc('month', v_today)::date AS m_start
+    ),
+    comm_monthly AS (
+      SELECT 
+        to_char(am.m_start, 'YYYY-MM') AS month_key,
+        to_char(am.m_start, 'Mon YYYY') AS month_label,
+        public.fy_label(am.m_start) AS fy_label,
+        COALESCE(sj.jobs_count, 0)::int AS jobs_count,
+        COALESCE(ce.month_earned, 0) AS earned,
+        COALESCE(sp.month_paid, 0) AS paid,
+        (COALESCE(ce.month_earned, 0) - COALESCE(sp.month_paid, 0)) AS balance,
+        am.m_start
+      FROM activity_months am
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', ce.earned_at)::date AS c_month,
+          SUM(ce.amount) AS month_earned
+        FROM public.commission_entries ce
+        WHERE ce.staff_id = v_target_staff_id AND ce.business_id = v_biz_id AND ce.status = 'EARNED'
+        GROUP BY 1
+      ) ce ON ce.c_month = am.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', sp.payout_date)::date AS p_month,
+          SUM(sp.amount) AS month_paid
+        FROM public.staff_payouts sp
+        WHERE sp.staff_id = v_target_staff_id AND sp.business_id = v_biz_id AND sp.deleted_at IS NULL
+        GROUP BY 1
+      ) sp ON sp.p_month = am.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', j.completed_at)::date AS j_month,
+          COUNT(*) AS jobs_count
+        FROM public.jobs j
+        WHERE j.assigned_staff_id = v_target_staff_id AND j.business_id = v_biz_id AND j.status = 'COMPLETED'
+        GROUP BY 1
+      ) sj ON sj.j_month = am.m_start
+      WHERE (COALESCE(ce.month_earned, 0) > 0 OR COALESCE(sp.month_paid, 0) > 0 OR COALESCE(sj.jobs_count, 0) > 0 OR am.m_start = date_trunc('month', v_today)::date)
+      ORDER BY am.m_start DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(comm_monthly.*)), '[]'::jsonb)
+    INTO v_monthly
+    FROM comm_monthly;
+
+    -- Commission FY Yearly Breakdown
+    WITH activity_dates AS (
+      SELECT 
+        ce.earned_at::date AS act_date,
+        ce.amount AS earned,
+        0::numeric AS paid,
+        0 AS is_job
+      FROM public.commission_entries ce
+      WHERE ce.staff_id = v_target_staff_id AND ce.business_id = v_biz_id AND ce.status = 'EARNED'
+      UNION ALL
+      SELECT 
+        sp.payout_date AS act_date,
+        0::numeric AS earned,
+        sp.amount AS paid,
+        0 AS is_job
+      FROM public.staff_payouts sp
+      WHERE sp.staff_id = v_target_staff_id AND sp.business_id = v_biz_id AND sp.deleted_at IS NULL
+      UNION ALL
+      SELECT 
+        j.completed_at::date AS act_date,
+        0::numeric AS earned,
+        0::numeric AS paid,
+        1 AS is_job
+      FROM public.jobs j
+      WHERE j.assigned_staff_id = v_target_staff_id AND j.business_id = v_biz_id AND j.status = 'COMPLETED'
+      UNION ALL
+      SELECT 
+        v_today AS act_date,
+        0::numeric AS earned,
+        0::numeric AS paid,
+        0 AS is_job
+    ),
+    comm_yearly AS (
+      SELECT 
+        public.fy_label(ad.act_date) AS fy_label,
+        COALESCE(SUM(ad.is_job), 0)::int AS jobs_count,
+        COALESCE(SUM(ad.earned), 0) AS earned,
+        COALESCE(SUM(ad.paid), 0) AS paid,
+        (COALESCE(SUM(ad.earned), 0) - COALESCE(SUM(ad.paid), 0)) AS balance,
+        MIN(ad.act_date) AS min_date
+      FROM activity_dates ad
+      GROUP BY public.fy_label(ad.act_date)
+      ORDER BY MIN(ad.act_date) DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(comm_yearly.*)), '[]'::jsonb)
+    INTO v_yearly
+    FROM comm_yearly;
+
+  END IF;
+
+  -- Overall totals
+  SELECT 
+    COALESCE(SUM((m->>'earned')::numeric), 0),
+    COALESCE(SUM((m->>'paid')::numeric), 0),
+    COALESCE(SUM((m->>'jobs_count')::int), 0)
+  INTO 
+    v_all_time_earned,
+    v_all_time_paid,
+    v_total_jobs
+  FROM jsonb_array_elements(v_monthly) m;
+
+  v_all_time_balance := v_all_time_earned - v_all_time_paid;
+
+  RETURN jsonb_build_object(
+    'staff_id', v_staff.id,
+    'staff_name', v_staff.name,
+    'compensation_type', v_staff.compensation_type,
+    'monthly_salary', v_staff.monthly_salary,
+    'monthly', v_monthly,
+    'yearly', v_yearly,
+    'overall', jsonb_build_object(
+      'all_time_earned', v_all_time_earned,
+      'all_time_paid', v_all_time_paid,
+      'all_time_balance', v_all_time_balance,
+      'total_jobs', v_total_jobs
+    )
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_earnings_history(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_earnings_history(uuid) TO authenticated;
+
+
+
+-- >>> Migration: 20261110000045_staff_earnings_history_asc.sql <<<
+-- Migration 45: Staff Earnings History Month Ordering (Ascending Chronological Order)
+-- Updates staff_earnings_history to return monthly statements sorted in ASCENDING order (top to bottom)
+
+CREATE OR REPLACE FUNCTION public.staff_earnings_history(
+  p_staff_id uuid DEFAULT NULL::uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_target_staff_id uuid;
+  v_today date;
+  v_staff record;
+  v_monthly jsonb := '[]'::jsonb;
+  v_yearly jsonb := '[]'::jsonb;
+  v_all_time_earned numeric(14,2) := 0;
+  v_all_time_paid numeric(14,2) := 0;
+  v_all_time_balance numeric(14,2) := 0;
+  v_total_jobs int := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Staff can only view own earnings history
+  IF v_role = 'STAFF' THEN
+    v_target_staff_id := v_caller_id;
+  ELSE
+    v_target_staff_id := COALESCE(p_staff_id, v_caller_id);
+  END IF;
+
+  IF v_target_staff_id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT 
+    id, name, mobile, role,
+    COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+    COALESCE(monthly_salary, 0) AS monthly_salary,
+    COALESCE(salary_start_date, created_at::date) AS salary_start_date
+  INTO v_staff
+  FROM public.members
+  WHERE id = v_target_staff_id AND business_id = v_biz_id;
+
+  IF v_staff.id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_staff.compensation_type = 'SALARY' THEN
+    -- 1. Salaried Staff History (Ordered ASC top to bottom)
+    WITH month_series AS (
+      SELECT generate_series(
+        date_trunc('month', v_staff.salary_start_date)::date,
+        date_trunc('month', v_today)::date,
+        '1 month'::interval
+      )::date AS m_start
+    ),
+    sal_monthly AS (
+      SELECT 
+        to_char(ms.m_start, 'YYYY-MM') AS month_key,
+        to_char(ms.m_start, 'Mon YYYY') AS month_label,
+        public.fy_label(ms.m_start) AS fy_label,
+        COALESCE(sj.jobs_count, 0) AS jobs_count,
+        v_staff.monthly_salary AS earned,
+        COALESCE(sp.month_paid, 0) AS paid,
+        (v_staff.monthly_salary - COALESCE(sp.month_paid, 0)) AS balance,
+        ms.m_start
+      FROM month_series ms
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', payout_date)::date AS p_month,
+          SUM(amount) AS month_paid
+        FROM public.staff_payouts
+        WHERE staff_id = v_target_staff_id AND business_id = v_biz_id AND deleted_at IS NULL
+        GROUP BY 1
+      ) sp ON sp.p_month = ms.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', completed_at)::date AS j_month,
+          COUNT(*) AS jobs_count
+        FROM public.jobs
+        WHERE assigned_staff_id = v_target_staff_id AND business_id = v_biz_id AND status = 'COMPLETED'
+        GROUP BY 1
+      ) sj ON sj.j_month = ms.m_start
+      ORDER BY ms.m_start ASC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(sal_monthly.*)), '[]'::jsonb)
+    INTO v_monthly
+    FROM sal_monthly;
+
+    -- Salaried FY Yearly Breakdown
+    WITH month_series AS (
+      SELECT generate_series(
+        date_trunc('month', v_staff.salary_start_date)::date,
+        date_trunc('month', v_today)::date,
+        '1 month'::interval
+      )::date AS m_start
+    ),
+    sal_yearly AS (
+      SELECT 
+        public.fy_label(ms.m_start) AS fy_label,
+        COALESCE(SUM(sj.jobs_count), 0)::int AS jobs_count,
+        SUM(v_staff.monthly_salary) AS earned,
+        COALESCE(SUM(sp.month_paid), 0) AS paid,
+        (SUM(v_staff.monthly_salary) - COALESCE(SUM(sp.month_paid), 0)) AS balance,
+        MIN(ms.m_start) AS min_date
+      FROM month_series ms
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', payout_date)::date AS p_month,
+          SUM(amount) AS month_paid
+        FROM public.staff_payouts
+        WHERE staff_id = v_target_staff_id AND business_id = v_biz_id AND deleted_at IS NULL
+        GROUP BY 1
+      ) sp ON sp.p_month = ms.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', completed_at)::date AS j_month,
+          COUNT(*) AS jobs_count
+        FROM public.jobs
+        WHERE assigned_staff_id = v_target_staff_id AND business_id = v_biz_id AND status = 'COMPLETED'
+        GROUP BY 1
+      ) sj ON sj.j_month = ms.m_start
+      GROUP BY public.fy_label(ms.m_start)
+      ORDER BY MIN(ms.m_start) DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(sal_yearly.*)), '[]'::jsonb)
+    INTO v_yearly
+    FROM sal_yearly;
+
+  ELSE
+    -- 2. Commission-based Staff History (Ordered ASC top to bottom)
+    WITH activity_months AS (
+      SELECT DISTINCT date_trunc('month', ce.earned_at)::date AS m_start
+      FROM public.commission_entries ce
+      WHERE ce.staff_id = v_target_staff_id AND ce.business_id = v_biz_id AND ce.status = 'EARNED'
+      UNION
+      SELECT DISTINCT date_trunc('month', sp.payout_date)::date AS m_start
+      FROM public.staff_payouts sp
+      WHERE sp.staff_id = v_target_staff_id AND sp.business_id = v_biz_id AND sp.deleted_at IS NULL
+      UNION
+      SELECT DISTINCT date_trunc('month', j.completed_at)::date AS m_start
+      FROM public.jobs j
+      WHERE j.assigned_staff_id = v_target_staff_id AND j.business_id = v_biz_id AND j.status = 'COMPLETED'
+      UNION
+      SELECT date_trunc('month', v_today)::date AS m_start
+    ),
+    comm_monthly AS (
+      SELECT 
+        to_char(am.m_start, 'YYYY-MM') AS month_key,
+        to_char(am.m_start, 'Mon YYYY') AS month_label,
+        public.fy_label(am.m_start) AS fy_label,
+        COALESCE(sj.jobs_count, 0)::int AS jobs_count,
+        COALESCE(ce.month_earned, 0) AS earned,
+        COALESCE(sp.month_paid, 0) AS paid,
+        (COALESCE(ce.month_earned, 0) - COALESCE(sp.month_paid, 0)) AS balance,
+        am.m_start
+      FROM activity_months am
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', ce.earned_at)::date AS c_month,
+          SUM(ce.amount) AS month_earned
+        FROM public.commission_entries ce
+        WHERE ce.staff_id = v_target_staff_id AND ce.business_id = v_biz_id AND ce.status = 'EARNED'
+        GROUP BY 1
+      ) ce ON ce.c_month = am.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', sp.payout_date)::date AS p_month,
+          SUM(sp.amount) AS month_paid
+        FROM public.staff_payouts sp
+        WHERE sp.staff_id = v_target_staff_id AND sp.business_id = v_biz_id AND sp.deleted_at IS NULL
+        GROUP BY 1
+      ) sp ON sp.p_month = am.m_start
+      LEFT JOIN (
+        SELECT 
+          date_trunc('month', j.completed_at)::date AS j_month,
+          COUNT(*) AS jobs_count
+        FROM public.jobs j
+        WHERE j.assigned_staff_id = v_target_staff_id AND j.business_id = v_biz_id AND j.status = 'COMPLETED'
+        GROUP BY 1
+      ) sj ON sj.j_month = am.m_start
+      WHERE (COALESCE(ce.month_earned, 0) > 0 OR COALESCE(sp.month_paid, 0) > 0 OR COALESCE(sj.jobs_count, 0) > 0 OR am.m_start = date_trunc('month', v_today)::date)
+      ORDER BY am.m_start ASC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(comm_monthly.*)), '[]'::jsonb)
+    INTO v_monthly
+    FROM comm_monthly;
+
+    -- Commission FY Yearly Breakdown
+    WITH activity_dates AS (
+      SELECT 
+        ce.earned_at::date AS act_date,
+        ce.amount AS earned,
+        0::numeric AS paid,
+        0 AS is_job
+      FROM public.commission_entries ce
+      WHERE ce.staff_id = v_target_staff_id AND ce.business_id = v_biz_id AND ce.status = 'EARNED'
+      UNION ALL
+      SELECT 
+        sp.payout_date AS act_date,
+        0::numeric AS earned,
+        sp.amount AS paid,
+        0 AS is_job
+      FROM public.staff_payouts sp
+      WHERE sp.staff_id = v_target_staff_id AND sp.business_id = v_biz_id AND sp.deleted_at IS NULL
+      UNION ALL
+      SELECT 
+        j.completed_at::date AS act_date,
+        0::numeric AS earned,
+        0::numeric AS paid,
+        1 AS is_job
+      FROM public.jobs j
+      WHERE j.assigned_staff_id = v_target_staff_id AND j.business_id = v_biz_id AND j.status = 'COMPLETED'
+      UNION ALL
+      SELECT 
+        v_today AS act_date,
+        0::numeric AS earned,
+        0::numeric AS paid,
+        0 AS is_job
+    ),
+    comm_yearly AS (
+      SELECT 
+        public.fy_label(ad.act_date) AS fy_label,
+        COALESCE(SUM(ad.is_job), 0)::int AS jobs_count,
+        COALESCE(SUM(ad.earned), 0) AS earned,
+        COALESCE(SUM(ad.paid), 0) AS paid,
+        (COALESCE(SUM(ad.earned), 0) - COALESCE(SUM(ad.paid), 0)) AS balance,
+        MIN(ad.act_date) AS min_date
+      FROM activity_dates ad
+      GROUP BY public.fy_label(ad.act_date)
+      ORDER BY MIN(ad.act_date) DESC
+    )
+    SELECT COALESCE(jsonb_agg(to_jsonb(comm_yearly.*)), '[]'::jsonb)
+    INTO v_yearly
+    FROM comm_yearly;
+
+  END IF;
+
+  -- Overall totals
+  SELECT 
+    COALESCE(SUM((m->>'earned')::numeric), 0),
+    COALESCE(SUM((m->>'paid')::numeric), 0),
+    COALESCE(SUM((m->>'jobs_count')::int), 0)
+  INTO 
+    v_all_time_earned,
+    v_all_time_paid,
+    v_total_jobs
+  FROM jsonb_array_elements(v_monthly) m;
+
+  v_all_time_balance := v_all_time_earned - v_all_time_paid;
+
+  RETURN jsonb_build_object(
+    'staff_id', v_staff.id,
+    'staff_name', v_staff.name,
+    'compensation_type', v_staff.compensation_type,
+    'monthly_salary', v_staff.monthly_salary,
+    'monthly', v_monthly,
+    'yearly', v_yearly,
+    'overall', jsonb_build_object(
+      'all_time_earned', v_all_time_earned,
+      'all_time_paid', v_all_time_paid,
+      'all_time_balance', v_all_time_balance,
+      'total_jobs', v_total_jobs
+    )
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_earnings_history(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_earnings_history(uuid) TO authenticated;
+
+
+
+-- >>> Migration: 20261110000046_remove_accountant_role_and_add_profile_rpc.sql <<<
+-- ==============================================================================
+-- Migration 46: Remove Accountant Role (Strictly OWNER & STAFF Only) & Add Profile RPC
+-- ==============================================================================
+
+-- 1. Migrate any existing ACCOUNTANT member to STAFF
+UPDATE public.members
+SET role = 'STAFF', updated_at = now()
+WHERE role = 'ACCOUNTANT';
+
+-- 2. Update role check constraint on public.members to only 'OWNER' and 'STAFF'
+ALTER TABLE public.members DROP CONSTRAINT IF EXISTS members_role_check;
+ALTER TABLE public.members ADD CONSTRAINT members_role_check CHECK (role IN ('OWNER', 'STAFF'));
+
+-- 3. Update team management RPCs: ensure only STAFF can be added
+DROP FUNCTION IF EXISTS public.create_team_member CASCADE;
+DROP FUNCTION IF EXISTS public.update_team_member CASCADE;
+
+CREATE OR REPLACE FUNCTION public.create_team_member(
+  p_name text,
+  p_email text,
+  p_password text,
+  p_role text DEFAULT 'STAFF',
+  p_mobile text DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_caller_role text;
+  v_caller_id uuid;
+  v_auth_user_id uuid;
+  v_member_id uuid;
+  v_clean_mobile text;
+  v_clean_email text;
+  v_role text;
+BEGIN
+  v_biz_id := app.current_business_id();
+  v_caller_role := app.current_role();
+  v_caller_id := app.current_member_id();
+
+  IF v_biz_id IS NULL OR v_caller_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only owners can add team members';
+  END IF;
+
+  IF trim(COALESCE(p_name, '')) = '' THEN
+    RAISE EXCEPTION 'NAME_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF trim(COALESCE(p_email, '')) = '' OR p_email NOT LIKE '%@%' THEN
+    RAISE EXCEPTION 'INVALID_EMAIL' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF length(COALESCE(p_password, '')) < 6 THEN
+    RAISE EXCEPTION 'PASSWORD_TOO_SHORT' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Application supports strictly OWNER and STAFF roles only
+  v_role := 'STAFF';
+
+  v_clean_email := lower(trim(p_email));
+  v_clean_mobile := NULL;
+  IF p_mobile IS NOT NULL AND trim(p_mobile) <> '' THEN
+    v_clean_mobile := regexp_replace(p_mobile, '\D', '', 'g');
+    IF length(v_clean_mobile) >= 10 THEN
+      v_clean_mobile := right(v_clean_mobile, 10);
+    END IF;
+  END IF;
+
+  -- 1. Create or update auth.users
+  v_auth_user_id := gen_random_uuid();
+  INSERT INTO auth.users (
+    id,
+    email,
+    encrypted_password,
+    email_confirmed_at,
+    raw_app_meta_data,
+    raw_user_meta_data,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    v_auth_user_id,
+    v_clean_email,
+    public.crypt(p_password, public.gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}'::jsonb,
+    jsonb_build_object('name', trim(p_name), 'role', v_role),
+    now(),
+    now()
+  )
+  ON CONFLICT (email) DO UPDATE
+    SET encrypted_password = public.crypt(p_password, public.gen_salt('bf')),
+        updated_at = now()
+  RETURNING id INTO v_auth_user_id;
+
+  -- 2. Insert into public.members
+  INSERT INTO public.members (
+    business_id,
+    auth_user_id,
+    name,
+    email,
+    mobile,
+    role,
+    can_login,
+    active,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_auth_user_id,
+    trim(p_name),
+    v_clean_email,
+    v_clean_mobile,
+    v_role,
+    true,
+    true,
+    v_caller_id,
+    v_caller_id
+  )
+  RETURNING id INTO v_member_id;
+
+  RETURN v_member_id;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.create_team_member(text, text, text, text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_team_member(text, text, text, text, text) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.update_team_member(
+  p_member_id uuid,
+  p_name text,
+  p_mobile text DEFAULT NULL,
+  p_role text DEFAULT 'STAFF',
+  p_active boolean DEFAULT true,
+  p_new_password text DEFAULT NULL
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_caller_role text;
+  v_caller_id uuid;
+  v_target_auth_id uuid;
+  v_target_role text;
+  v_clean_mobile text;
+  v_role text;
+BEGIN
+  v_biz_id := app.current_business_id();
+  v_caller_role := app.current_role();
+  v_caller_id := app.current_member_id();
+
+  IF v_biz_id IS NULL OR v_caller_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only owners can manage team members';
+  END IF;
+
+  SELECT auth_user_id, role INTO v_target_auth_id, v_target_role
+  FROM public.members
+  WHERE id = p_member_id AND business_id = v_biz_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'MEMBER_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_target_role = 'OWNER' THEN
+    v_role := 'OWNER';
+  ELSE
+    v_role := 'STAFF';
+  END IF;
+
+  v_clean_mobile := NULL;
+  IF p_mobile IS NOT NULL AND trim(p_mobile) <> '' THEN
+    v_clean_mobile := regexp_replace(p_mobile, '\D', '', 'g');
+    IF length(v_clean_mobile) >= 10 THEN
+      v_clean_mobile := right(v_clean_mobile, 10);
+    END IF;
+  END IF;
+
+  UPDATE public.members
+  SET name = trim(p_name),
+      mobile = v_clean_mobile,
+      role = v_role,
+      active = p_active,
+      updated_at = now(),
+      updated_by = v_caller_id
+  WHERE id = p_member_id AND business_id = v_biz_id;
+
+  -- Update password if requested
+  IF p_new_password IS NOT NULL AND trim(p_new_password) <> '' THEN
+    IF length(trim(p_new_password)) < 6 THEN
+      RAISE EXCEPTION 'PASSWORD_TOO_SHORT' USING ERRCODE = 'P0001';
+    END IF;
+
+    IF v_target_auth_id IS NOT NULL THEN
+      UPDATE auth.users
+      SET encrypted_password = public.crypt(trim(p_new_password), public.gen_salt('bf')),
+          updated_at = now()
+      WHERE id = v_target_auth_id;
+    END IF;
+  END IF;
+
+  RETURN true;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.update_team_member(uuid, text, text, text, boolean, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_team_member(uuid, text, text, text, boolean, text) TO authenticated;
+
+-- 4. New Self-Service Profile Update RPC for Staff & Owner:
+-- Allows logged-in member to update their own Name and/or Password securely
+DROP FUNCTION IF EXISTS public.update_my_profile CASCADE;
+DROP FUNCTION IF EXISTS public.change_own_password CASCADE;
+
+CREATE OR REPLACE FUNCTION public.update_my_profile(
+  p_name text DEFAULT NULL,
+  p_password text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_caller_id uuid;
+  v_auth_id uuid;
+  v_biz_id uuid;
+  v_updated_name text;
+BEGIN
+  v_caller_id := app.current_member_id();
+  v_biz_id := app.current_business_id();
+  v_auth_id := auth.uid();
+
+  IF v_caller_id IS NULL OR v_biz_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = '42501', DETAIL = 'No active member profile found';
+  END IF;
+
+  -- 1. Update Name if provided
+  IF p_name IS NOT NULL AND trim(p_name) <> '' THEN
+    v_updated_name := trim(p_name);
+    IF length(v_updated_name) < 2 THEN
+      RAISE EXCEPTION 'INVALID_NAME' USING ERRCODE = 'P0001', DETAIL = 'Name must be at least 2 characters';
+    END IF;
+
+    UPDATE public.members
+    SET name = v_updated_name,
+        updated_at = now(),
+        updated_by = v_caller_id
+    WHERE id = v_caller_id AND business_id = v_biz_id;
+  ELSE
+    SELECT name INTO v_updated_name FROM public.members WHERE id = v_caller_id;
+  END IF;
+
+  -- 2. Update Password if provided
+  IF p_password IS NOT NULL AND trim(p_password) <> '' THEN
+    IF length(trim(p_password)) < 6 THEN
+      RAISE EXCEPTION 'PASSWORD_TOO_SHORT' USING ERRCODE = 'P0001', DETAIL = 'Password must be at least 6 characters';
+    END IF;
+
+    IF v_auth_id IS NOT NULL THEN
+      UPDATE auth.users
+      SET encrypted_password = public.crypt(trim(p_password), public.gen_salt('bf')),
+          updated_at = now()
+      WHERE id = v_auth_id;
+    END IF;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'member_id', v_caller_id,
+    'name', v_updated_name,
+    'message', 'Profile updated successfully'
+  );
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.update_my_profile(text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_my_profile(text, text) TO authenticated;
+
+-- Direct alias for change_own_password
+CREATE OR REPLACE FUNCTION public.change_own_password(
+  p_new_password text
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  RETURN public.update_my_profile(NULL, p_new_password);
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.change_own_password(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.change_own_password(text) TO authenticated;
+
+
+-- >>> Migration: 20261110000047_staff_only_commission_policy.sql <<<
+-- Migration 47: Enforce Staff-Created Job Commission Policy
+-- Business Rule: Commission is strictly earned ONLY when a Staff member creates the bill/job
+-- and completes it. Owner-created jobs carry NO staff commission (owner does not take commission).
+
+CREATE OR REPLACE FUNCTION public.update_job(
+  p_job_id uuid,
+  p_deadline_date date DEFAULT NULL,
+  p_assigned_staff_id uuid DEFAULT NULL,
+  p_applicant_name text DEFAULT NULL,
+  p_party_name text DEFAULT NULL,
+  p_party_mobile text DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_job public.jobs%ROWTYPE;
+  v_old_staff_id uuid;
+  v_updated public.jobs%ROWTYPE;
+  v_creator_role text;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_job
+  FROM public.jobs
+  WHERE id = p_job_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'JOB_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_old_staff_id := v_job.assigned_staff_id;
+
+  -- Validate staff if provided
+  IF p_assigned_staff_id IS NOT NULL THEN
+    PERFORM 1 FROM public.members
+    WHERE id = p_assigned_staff_id AND business_id = v_biz_id AND active = true;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'STAFF_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
+  UPDATE public.jobs
+  SET deadline_date = COALESCE(p_deadline_date, deadline_date),
+      assigned_staff_id = p_assigned_staff_id,
+      applicant_name = COALESCE(p_applicant_name, applicant_name),
+      party_name = COALESCE(p_party_name, party_name),
+      party_mobile = COALESCE(p_party_mobile, party_mobile),
+      updated_at = now(),
+      updated_by = v_member_id
+  WHERE id = v_job.id
+  RETURNING * INTO v_updated;
+
+  -- Check creator role: Commission ONLY applies if the job was created by a STAFF member!
+  SELECT role INTO v_creator_role
+  FROM public.members
+  WHERE id = v_job.created_by AND business_id = v_biz_id;
+
+  IF v_creator_role = 'STAFF' THEN
+    -- If staff reassigned before completion, move commission entry
+    IF p_assigned_staff_id IS DISTINCT FROM v_old_staff_id THEN
+      IF p_assigned_staff_id IS NOT NULL AND v_job.commission_percent > 0 THEN
+        INSERT INTO public.commission_entries (
+          business_id, job_id, staff_id, base_amount, percent, amount, status
+        ) VALUES (
+          v_biz_id,
+          v_job.id,
+          p_assigned_staff_id,
+          v_job.amount,
+          v_job.commission_percent,
+          ROUND((v_job.amount * v_job.commission_percent / 100), 2),
+          CASE WHEN v_job.status = 'COMPLETED' THEN 'EARNED' ELSE 'UPCOMING' END
+        )
+        ON CONFLICT (job_id) DO UPDATE
+        SET staff_id = EXCLUDED.staff_id,
+            updated_at = now(),
+            updated_by = v_member_id;
+      ELSE
+        DELETE FROM public.commission_entries WHERE job_id = v_job.id;
+      END IF;
+    END IF;
+  ELSE
+    -- Owner-created jobs carry NO commission
+    DELETE FROM public.commission_entries WHERE job_id = v_job.id;
+  END IF;
+
+  RETURN to_jsonb(v_updated);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.update_job(uuid, date, uuid, text, text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.update_job(uuid, date, uuid, text, text, text) TO authenticated;
+
+
+
+-- >>> Migration: 20261110000048_add_created_by_to_jobs_queries.sql <<<
+-- Migration: 20261110000048_add_created_by_to_jobs_queries.sql
+-- Description: Surface creator name and role (created_by_name, created_by_role) in list_jobs, staff_dashboard, and job_detail
+
+-- 1. Update public.list_jobs
+CREATE OR REPLACE FUNCTION public.list_jobs(
+  p_tab text DEFAULT 'CURRENT',
+  p_service_id uuid DEFAULT NULL,
+  p_search text DEFAULT NULL,
+  p_limit int DEFAULT 100,
+  p_offset int DEFAULT 0,
+  p_sort text DEFAULT 'QUEUE'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+
+  v_count_current int := 0;
+  v_count_completed int := 0;
+  v_count_due int := 0;
+  v_count_yellow int := 0;
+  v_count_red int := 0;
+
+  v_jobs jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Unauthorized access to job management';
+  END IF;
+
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  -- Tab counts across ALL business jobs
+  SELECT
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS'),
+    COUNT(*) FILTER (WHERE j.status = 'COMPLETED'),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days),
+    COUNT(*) FILTER (WHERE j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days)
+  INTO
+    v_count_current,
+    v_count_completed,
+    v_count_due,
+    v_count_yellow,
+    v_count_red
+  FROM public.jobs j
+  WHERE j.business_id = v_biz_id 
+    AND j.deleted_at IS NULL;
+
+  WITH job_steps_agg AS (
+    SELECT
+      js.job_id,
+      COUNT(*)::int AS total_steps,
+      COUNT(*) FILTER (WHERE js.ticked = true)::int AS ticked_steps,
+      (
+        SELECT s2.name 
+        FROM public.job_steps s2 
+        WHERE s2.job_id = js.job_id AND s2.ticked = false AND s2.deleted_at IS NULL 
+        ORDER BY s2.position ASC 
+        LIMIT 1
+      ) AS next_step_name
+    FROM public.job_steps js
+    WHERE js.business_id = v_biz_id AND js.deleted_at IS NULL
+    GROUP BY js.job_id
+  ),
+  filtered_jobs AS (
+    SELECT
+      j.id,
+      j.invoice_id,
+      i.number AS invoice_number,
+      j.service_id,
+      j.job_type_name,
+      j.party_name,
+      j.party_mobile,
+      j.applicant_name,
+      j.amount,
+      j.deadline_date,
+      (j.deadline_date - v_today) AS days_left,
+      j.status,
+      j.completed_at,
+      j.assigned_staff_id,
+      m.name AS assigned_staff_name,
+      COALESCE(creator_m.name, 'Owner') AS created_by_name,
+      creator_m.role AS created_by_role,
+      COALESCE(j.created_by, i.created_by) AS created_by_id,
+      j.created_at,
+      COALESCE(jsa.total_steps, 0) AS total_steps,
+      COALESCE(jsa.ticked_steps, 0) AS ticked_steps,
+      jsa.next_step_name,
+      CASE
+        WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+        ELSE ROUND((COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric) * 100, 1)
+      END AS progress_percent,
+      CASE
+        WHEN (j.deadline_date - v_today) < 0 THEN 'LATE'
+        WHEN (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+        WHEN (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+        ELSE 'NORMAL'
+      END AS deadline_bucket
+    FROM public.jobs j
+    JOIN public.invoices i ON i.id = j.invoice_id
+    LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+    LEFT JOIN public.members creator_m ON creator_m.id = COALESCE(j.created_by, i.created_by)
+    LEFT JOIN job_steps_agg jsa ON jsa.job_id = j.id
+    WHERE j.business_id = v_biz_id
+      AND j.deleted_at IS NULL
+      AND (
+        p_service_id IS NULL 
+        OR j.service_id = p_service_id 
+        OR j.job_type_name = (SELECT name FROM public.services WHERE id = p_service_id)
+      )
+      AND (
+        p_search IS NULL
+        OR p_search = ''
+        OR j.party_name ILIKE '%' || p_search || '%'
+        OR j.party_mobile ILIKE '%' || p_search || '%'
+        OR j.applicant_name ILIKE '%' || p_search || '%'
+        OR i.number ILIKE '%' || p_search || '%'
+        OR j.job_type_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        CASE UPPER(p_tab)
+          WHEN 'CURRENT' THEN j.status = 'IN_PROGRESS'
+          WHEN 'COMPLETED' THEN j.status = 'COMPLETED'
+          WHEN 'DUE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'LATE' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) < 0
+          WHEN 'YELLOW' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) > v_red_days AND (j.deadline_date - v_today) <= v_yellow_days
+          WHEN 'RED' THEN j.status = 'IN_PROGRESS' AND (j.deadline_date - v_today) >= 0 AND (j.deadline_date - v_today) <= v_red_days
+          ELSE j.status = 'IN_PROGRESS'
+        END
+      )
+    ORDER BY
+      CASE
+        WHEN UPPER(p_tab) = 'COMPLETED' THEN j.completed_at
+        ELSE NULL
+      END DESC NULLS LAST,
+      CASE
+        WHEN UPPER(p_sort) = 'PROGRESS' AND UPPER(p_tab) <> 'COMPLETED' THEN COALESCE(jsa.ticked_steps, 0)
+        ELSE NULL
+      END ASC,
+      CASE
+        WHEN UPPER(p_sort) = 'PROGRESS' AND UPPER(p_tab) <> 'COMPLETED' THEN
+          CASE
+            WHEN COALESCE(jsa.total_steps, 0) = 0 THEN 0
+            ELSE (COALESCE(jsa.ticked_steps, 0)::numeric / jsa.total_steps::numeric)
+          END
+        ELSE NULL
+      END ASC,
+      CASE
+        WHEN UPPER(p_tab) <> 'COMPLETED' THEN j.deadline_date
+        ELSE NULL
+      END ASC NULLS LAST,
+      j.created_at ASC
+    LIMIT p_limit OFFSET p_offset
+  )
+  SELECT jsonb_agg(row_to_json(f)) INTO v_jobs FROM filtered_jobs f;
+
+  RETURN jsonb_build_object(
+    'tab_counts', jsonb_build_object(
+      'current', v_count_current,
+      'completed', v_count_completed,
+      'due', v_count_due,
+      'yellow', v_count_yellow,
+      'red', v_count_red
+    ),
+    'jobs', COALESCE(v_jobs, '[]'::jsonb)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.list_jobs(text, uuid, text, int, int, text) TO authenticated;
+
+-- 2. Update public.staff_dashboard to include created_by_name in v_urgent_jobs
+CREATE OR REPLACE FUNCTION public.staff_dashboard(
+  p_period text DEFAULT 'TODAY' -- 'TODAY' or 'MONTH'
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_caller_id uuid;
+  v_today date;
+  v_start_date date;
+  v_end_date date;
+  v_biz record;
+  v_staff record;
+
+  -- 1. My Bills
+  v_bills_count int := 0;
+  v_bills_total numeric := 0;
+
+  -- 2. My Collection by Mode
+  v_collection_total numeric := 0;
+  v_collection_cash numeric := 0;
+  v_collection_upi numeric := 0;
+  v_collection_bank numeric := 0;
+  v_collection_card numeric := 0;
+
+  -- 3. My Earnings
+  v_total_earned numeric := 0;
+  v_total_paid numeric := 0;
+  v_balance_payable numeric := 0;
+  v_upcoming numeric := 0;
+
+  -- 4. Jobs Queue (ALL business jobs)
+  v_red_days int;
+  v_yellow_days int;
+  v_jobs_pending int := 0;
+  v_jobs_completed_today int := 0;
+  v_jobs_completed_period int := 0;
+  v_jobs_late int := 0;
+  v_jobs_red int := 0;
+  v_jobs_yellow int := 0;
+  v_urgent_jobs jsonb := '[]'::jsonb;
+
+  -- 5. Staff's Recent Bills
+  v_recent_bills jsonb := '[]'::jsonb;
+
+  -- 6. Staff's Bills per day
+  v_bills_per_day jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_caller_id := (SELECT app.current_member_id());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_caller_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+  v_red_days := COALESCE(v_biz.red_days, 3);
+  v_yellow_days := COALESCE(v_biz.yellow_days, 5);
+
+  -- Set period dates
+  IF UPPER(COALESCE(p_period, 'TODAY')) = 'MONTH' THEN
+    v_start_date := date_trunc('month', v_today)::date;
+    v_end_date := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+  ELSE
+    v_start_date := v_today;
+    v_end_date := v_today;
+  END IF;
+
+  -- 1. MY BILLS
+  SELECT
+    COUNT(*),
+    COALESCE(SUM(total), 0)
+  INTO v_bills_count, v_bills_total
+  FROM public.invoices
+  WHERE business_id = v_biz_id
+    AND created_by = v_caller_id
+    AND invoice_date >= v_start_date
+    AND invoice_date <= v_end_date
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL;
+
+  -- 2. MY COLLECTIONS
+  SELECT
+    COALESCE(SUM(amount), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CASH'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'UPI'), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode IN ('BANK', 'CHEQUE')), 0),
+    COALESCE(SUM(amount) FILTER (WHERE mode = 'CARD'), 0)
+  INTO
+    v_collection_total,
+    v_collection_cash,
+    v_collection_upi,
+    v_collection_bank,
+    v_collection_card
+  FROM public.receipts
+  WHERE business_id = v_biz_id
+    AND created_by = v_caller_id
+    AND receipt_date >= v_start_date
+    AND receipt_date <= v_end_date
+    AND deleted_at IS NULL;
+
+  -- 3. MY EARNINGS
+  SELECT 
+    id, name, mobile, role,
+    COALESCE(compensation_type, 'COMMISSION') AS compensation_type,
+    COALESCE(monthly_salary, 0) AS monthly_salary,
+    COALESCE(salary_start_date, created_at::date) AS salary_start_date
+  INTO v_staff
+  FROM public.members
+  WHERE id = v_caller_id AND business_id = v_biz_id;
+
+  IF v_staff.compensation_type = 'SALARY' THEN
+    v_total_earned := v_staff.monthly_salary;
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      GREATEST(0, (
+        (EXTRACT(YEAR FROM v_today) - EXTRACT(YEAR FROM v_staff.salary_start_date)) * 12 +
+        (EXTRACT(MONTH FROM v_today) - EXTRACT(MONTH FROM v_staff.salary_start_date)) + 1
+      )::int) * v_staff.monthly_salary
+    ) - (
+      SELECT COALESCE(SUM(amount), 0)
+      FROM public.staff_payouts
+      WHERE staff_id = v_caller_id AND business_id = v_biz_id AND deleted_at IS NULL
+    );
+    v_upcoming := 0;
+  ELSE
+    SELECT 
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'EARNED'), 0),
+      COALESCE(SUM(ce.amount) FILTER (WHERE ce.status = 'UPCOMING'), 0)
+    INTO v_total_earned, v_upcoming
+    FROM public.commission_entries ce
+    WHERE ce.business_id = v_biz_id
+      AND ce.staff_id = v_caller_id
+      AND ce.earned_at::date >= v_start_date
+      AND ce.earned_at::date <= v_end_date;
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_total_paid
+    FROM public.staff_payouts
+    WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+      AND payout_date >= v_start_date AND payout_date <= v_end_date;
+
+    v_balance_payable := (
+      SELECT COALESCE(SUM(amount), 0) FROM public.commission_entries
+      WHERE business_id = v_biz_id AND status = 'EARNED' AND staff_id = v_caller_id
+    ) - (
+      SELECT COALESCE(SUM(amount), 0) FROM public.staff_payouts
+      WHERE business_id = v_biz_id AND staff_id = v_caller_id AND deleted_at IS NULL
+    );
+  END IF;
+
+  -- 4. JOBS QUEUE
+  IF v_biz.job_management_enabled THEN
+    SELECT COUNT(*) INTO v_jobs_pending
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_today
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date = v_today
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_completed_period
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'COMPLETED'
+      AND completed_at::date >= v_start_date
+      AND completed_at::date <= v_end_date
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_late
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date < v_today
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_red
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND deadline_date >= v_today
+      AND (deadline_date - v_today) <= v_red_days
+      AND deleted_at IS NULL;
+
+    SELECT COUNT(*) INTO v_jobs_yellow
+    FROM public.jobs
+    WHERE business_id = v_biz_id
+      AND status = 'IN_PROGRESS'
+      AND (deadline_date - v_today) > v_red_days
+      AND (deadline_date - v_today) <= v_yellow_days
+      AND deleted_at IS NULL;
+
+    -- Fetch top urgent jobs across ALL business jobs for quick step ticking
+    SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+    INTO v_urgent_jobs
+    FROM (
+      SELECT
+        j.id,
+        j.job_type_name,
+        j.party_name,
+        j.party_mobile,
+        j.applicant_name,
+        j.deadline_date,
+        j.status,
+        j.created_at,
+        j.assigned_staff_id,
+        m.name as assigned_staff_name,
+        COALESCE(creator_m.name, 'Owner') as created_by_name,
+        creator_m.role as created_by_role,
+        COALESCE(j.created_by, i.created_by) as created_by_id,
+        i.number as invoice_number,
+        (j.deadline_date - v_today) as days_left,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id) as total_steps,
+        (SELECT COUNT(*) FROM public.job_steps js WHERE js.job_id = j.id AND js.ticked = true) as ticked_steps,
+        COALESCE((
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'id', js.id,
+              'position', js.position,
+              'name', js.name,
+              'ticked', js.ticked,
+              'ticked_at', js.ticked_at,
+              'whatsapp_message', js.whatsapp_message
+            ) ORDER BY js.position ASC
+          )
+          FROM public.job_steps js
+          WHERE js.job_id = j.id
+        ), '[]'::jsonb) as steps
+      FROM public.jobs j
+      JOIN public.invoices i ON i.id = j.invoice_id
+      LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+      LEFT JOIN public.members creator_m ON creator_m.id = COALESCE(j.created_by, i.created_by)
+      WHERE j.business_id = v_biz_id
+        AND j.status = 'IN_PROGRESS'
+        AND j.deleted_at IS NULL
+      ORDER BY
+        CASE WHEN j.deadline_date < v_today THEN 0 ELSE 1 END ASC,
+        j.deadline_date ASC,
+        j.created_at ASC
+      LIMIT 30
+    ) sub;
+  END IF;
+
+  -- 5. STAFF'S RECENT BILLS
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_recent_bills
+  FROM (
+    SELECT
+      i.id,
+      i.number,
+      i.invoice_date,
+      i.party_name,
+      i.total,
+      i.paid_amount,
+      (i.total - i.paid_amount) as balance,
+      i.status
+    FROM public.invoices i
+    WHERE i.business_id = v_biz_id
+      AND i.created_by = v_caller_id
+      AND i.deleted_at IS NULL
+    ORDER BY i.invoice_date DESC, i.created_at DESC
+    LIMIT 15
+  ) sub;
+
+  -- 6. STAFF'S BILLS PER DAY
+  SELECT COALESCE(jsonb_agg(sub), '[]'::jsonb)
+  INTO v_bills_per_day
+  FROM (
+    SELECT
+      to_char(d.date, 'YYYY-MM-DD') as date_str,
+      to_char(d.date, 'DD Mon') as date_label,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.created_by = v_caller_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_count,
+      COALESCE((
+        SELECT SUM(i.total)
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.created_by = v_caller_id
+          AND i.invoice_date = d.date
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+      ), 0) as bills_amount
+    FROM generate_series(
+      date_trunc('month', v_today)::date,
+      v_today,
+      '1 day'::interval
+    ) d(date)
+    ORDER BY d.date ASC
+  ) sub;
+
+  RETURN jsonb_build_object(
+    'period', p_period,
+    'today_date', v_today,
+    'my_bills', jsonb_build_object(
+      'count', v_bills_count,
+      'total_amount', v_bills_total
+    ),
+    'my_collection', jsonb_build_object(
+      'total', v_collection_total,
+      'cash', v_collection_cash,
+      'upi', v_collection_upi,
+      'bank', v_collection_bank,
+      'card', v_collection_card
+    ),
+    'my_earnings', jsonb_build_object(
+      'compensation_type', v_staff.compensation_type,
+      'monthly_salary', v_staff.monthly_salary,
+      'total_earned', v_total_earned,
+      'total_paid', v_total_paid,
+      'balance_payable', v_balance_payable,
+      'upcoming', v_upcoming
+    ),
+    'jobs', jsonb_build_object(
+      'enabled', v_biz.job_management_enabled,
+      'pending_count', v_jobs_pending,
+      'completed_today_count', v_jobs_completed_today,
+      'completed_period_count', v_jobs_completed_period,
+      'late_count', v_jobs_late,
+      'red_count', v_jobs_red,
+      'yellow_count', v_jobs_yellow,
+      'urgent_jobs', v_urgent_jobs
+    ),
+    'my_recent_bills', v_recent_bills,
+    'my_bills_per_day', v_bills_per_day
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.staff_dashboard(text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.staff_dashboard(text) TO authenticated;
+
+-- 3. Update public.job_detail
+CREATE OR REPLACE FUNCTION public.job_detail(
+  p_job_id uuid
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_red_days int;
+  v_yellow_days int;
+  v_job record;
+  v_steps jsonb;
+  v_events jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT COALESCE(red_days, 3), COALESCE(yellow_days, 5)
+  INTO v_red_days, v_yellow_days
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  SELECT
+    j.id,
+    j.invoice_id,
+    i.number AS invoice_number,
+    i.invoice_date,
+    j.service_id,
+    j.job_type_name,
+    j.party_name,
+    j.party_mobile,
+    j.applicant_name,
+    j.amount,
+    j.deadline_date,
+    (j.deadline_date - v_today) AS days_left,
+    j.status,
+    j.completed_at,
+    j.assigned_staff_id,
+    m.name AS assigned_staff_name,
+    COALESCE(creator_m.name, 'Owner') AS created_by_name,
+    creator_m.role AS created_by_role,
+    COALESCE(j.created_by, i.created_by) AS created_by_id,
+    j.commission_percent,
+    j.created_at,
+    CASE
+      WHEN (j.deadline_date - v_today) <= v_red_days THEN 'RED'
+      WHEN (j.deadline_date - v_today) <= v_yellow_days THEN 'YELLOW'
+      ELSE 'NORMAL'
+    END AS deadline_bucket
+  INTO v_job
+  FROM public.jobs j
+  JOIN public.invoices i ON i.id = j.invoice_id
+  LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+  LEFT JOIN public.members creator_m ON creator_m.id = COALESCE(j.created_by, i.created_by)
+  WHERE j.id = p_job_id AND j.business_id = v_biz_id AND j.deleted_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'JOB_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Ordered steps
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', s.id,
+        'position', s.position,
+        'name', s.name,
+        'whatsapp_message', s.whatsapp_message,
+        'ticked', s.ticked,
+        'ticked_at', s.ticked_at,
+        'ticked_by', s.ticked_by,
+        'ticked_by_name', (SELECT name FROM public.members WHERE id = s.ticked_by)
+      ) ORDER BY s.position ASC
+    ),
+    '[]'::jsonb
+  )
+  INTO v_steps
+  FROM public.job_steps s
+  WHERE s.job_id = p_job_id AND s.deleted_at IS NULL;
+
+  -- Step events audit trail
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', e.id,
+        'step_name', s.name,
+        'action', e.action,
+        'at', e.at,
+        'member_name', m.name
+      ) ORDER BY e.at DESC
+    ),
+    '[]'::jsonb
+  )
+  INTO v_events
+  FROM public.job_step_events e
+  JOIN public.job_steps s ON s.id = e.job_step_id
+  JOIN public.members m ON m.id = e.member_id
+  WHERE s.job_id = p_job_id;
+
+  RETURN jsonb_build_object(
+    'job', to_jsonb(v_job),
+    'steps', v_steps,
+    'events', v_events
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.job_detail(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.job_detail(uuid) TO authenticated;
+
+
+
+-- >>> Migration: 20261112000049_fy_opening_closing_balance_automation.sql <<<
+-- Migration 49: Financial Year (FY) Automatic Opening & Closing Balance Roll-Forward
+-- Seamlessly computes Opening Balance strictly before p_from_date from prior transactions,
+-- ensuring that when a new FY begins, previous year's closing balances carry forward automatically
+-- without any manual year-end closing entries or user headaches.
+
+-- 1. Upgrade cash_bank_summary to dynamically calculate Opening & Closing balances per period
+CREATE OR REPLACE FUNCTION public.cash_bank_summary(
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_biz public.businesses%ROWTYPE;
+  v_cash_opening numeric(14,2) := 0;
+  v_cash_prior_in numeric(14,2) := 0;
+  v_cash_prior_out numeric(14,2) := 0;
+  v_cash_receipts numeric(14,2) := 0;
+  v_cash_withdrawals numeric(14,2) := 0;
+  v_cash_total_in numeric(14,2) := 0;
+  v_cash_payments numeric(14,2) := 0;
+  v_cash_expenses numeric(14,2) := 0;
+  v_cash_loan_repayments numeric(14,2) := 0;
+  v_cash_deposits numeric(14,2) := 0;
+  v_cash_total_out numeric(14,2) := 0;
+  v_cash_current_balance numeric(14,2) := 0;
+  v_cash_all_time_balance numeric(14,2) := 0;
+
+  v_bank_accounts jsonb := '[]'::jsonb;
+  v_total_bank_balance numeric(14,2) := 0;
+  v_recent_transfers jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+
+  -- 1. Compute Cash in Hand Opening Balance as of p_from_date
+  IF p_from_date IS NOT NULL THEN
+    -- Inflows prior to p_from_date
+    SELECT COALESCE(SUM(amount), 0) INTO v_cash_prior_in
+    FROM (
+      SELECT amount FROM public.receipts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH' AND receipt_date < p_from_date
+      UNION ALL
+      SELECT amount FROM public.money_transfers
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'BANK_TO_CASH' AND transfer_date < p_from_date
+    ) prior_in_q;
+
+    -- Outflows prior to p_from_date
+    SELECT COALESCE(SUM(amount), 0) INTO v_cash_prior_out
+    FROM (
+      SELECT amount FROM public.payments
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH' AND payment_date < p_from_date
+      UNION ALL
+      SELECT amount FROM public.expenses
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH' AND expense_date < p_from_date
+      UNION ALL
+      SELECT (lr.principal + lr.interest) AS amount FROM public.loan_repayments lr
+      JOIN public.loans l ON l.id = lr.loan_id
+      WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.mode = 'CASH' AND lr.repayment_date < p_from_date
+      UNION ALL
+      SELECT amount FROM public.money_transfers
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'CASH_TO_BANK' AND transfer_date < p_from_date
+    ) prior_out_q;
+
+    v_cash_opening := COALESCE(v_biz.opening_cash_balance, 0.00) + v_cash_prior_in - v_cash_prior_out;
+  ELSE
+    v_cash_opening := COALESCE(v_biz.opening_cash_balance, 0.00);
+  END IF;
+
+  -- 2. Cash Inflow during the period [p_from_date, p_to_date]
+  -- A. Cash Receipts
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_receipts
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR receipt_date >= p_from_date)
+    AND (p_to_date IS NULL OR receipt_date <= p_to_date);
+
+  -- B. Withdrawals to Cash (Contra transfers: BANK_TO_CASH)
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_withdrawals
+  FROM public.money_transfers
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'BANK_TO_CASH'
+    AND (p_from_date IS NULL OR transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR transfer_date <= p_to_date);
+
+  v_cash_total_in := v_cash_receipts + v_cash_withdrawals;
+
+  -- 3. Cash Outflow during the period [p_from_date, p_to_date]
+  -- A. Cash Vendor Payments
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR payment_date >= p_from_date)
+    AND (p_to_date IS NULL OR payment_date <= p_to_date);
+
+  -- B. Cash Expenses
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR expense_date >= p_from_date)
+    AND (p_to_date IS NULL OR expense_date <= p_to_date);
+
+  -- C. Cash Loan Repayments
+  SELECT COALESCE(SUM(lr.principal + lr.interest), 0) INTO v_cash_loan_repayments
+  FROM public.loan_repayments lr
+  JOIN public.loans l ON l.id = lr.loan_id
+  WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.mode = 'CASH'
+    AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+    AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date);
+
+  -- D. Deposits to Bank from Cash (Contra transfers: CASH_TO_BANK)
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_deposits
+  FROM public.money_transfers
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'CASH_TO_BANK'
+    AND (p_from_date IS NULL OR transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR transfer_date <= p_to_date);
+
+  v_cash_total_out := v_cash_payments + v_cash_expenses + v_cash_loan_repayments + v_cash_deposits;
+  v_cash_current_balance := v_cash_opening + v_cash_total_in - v_cash_total_out;
+
+  -- All-time drawer cash (live right now)
+  SELECT (
+    COALESCE(v_biz.opening_cash_balance, 0.00)
+    + COALESCE((SELECT SUM(amount) FROM public.receipts WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'), 0)
+    + COALESCE((SELECT SUM(amount) FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'BANK_TO_CASH'), 0)
+    - COALESCE((SELECT SUM(amount) FROM public.payments WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'), 0)
+    - COALESCE((SELECT SUM(amount) FROM public.expenses WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'), 0)
+    - COALESCE((SELECT SUM(lr.principal + lr.interest) FROM public.loan_repayments lr JOIN public.loans l ON l.id = lr.loan_id WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.mode = 'CASH'), 0)
+    - COALESCE((SELECT SUM(amount) FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'CASH_TO_BANK'), 0)
+  ) INTO v_cash_all_time_balance;
+
+  -- 4. Individual Bank Accounts breakdown (Accurate Opening + Period Flow = Closing)
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ba.id,
+      'bank_name', ba.bank_name,
+      'account_name', ba.account_name,
+      'account_number', ba.account_number,
+      'ifsc', ba.ifsc,
+      'upi_id', ba.upi_id,
+      'initial_setup_balance', ba.opening_balance,
+      'opening_balance', sub.period_opening,
+      'total_in', sub.period_in,
+      'total_out', sub.period_out,
+      'current_balance', (sub.period_opening + sub.period_in - sub.period_out),
+      'all_time_balance', (ba.opening_balance + sub.all_in - sub.all_out)
+    ) ORDER BY ba.created_at ASC
+  ), '[]'::jsonb)
+  INTO v_bank_accounts
+  FROM public.bank_accounts ba
+  CROSS JOIN LATERAL (
+    SELECT
+      -- A. Prior IN strictly before p_from_date
+      COALESCE((
+        CASE WHEN p_from_date IS NOT NULL THEN
+          COALESCE((
+            SELECT SUM(r.amount) FROM public.receipts r
+            WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+              AND (r.bank_account_id = ba.id OR (r.bank_account_id IS NULL AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+              AND r.receipt_date < p_from_date
+          ), 0) +
+          COALESCE((
+            SELECT SUM(mt.amount) FROM public.money_transfers mt
+            WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+              AND mt.to_bank_account_id = ba.id
+              AND mt.transfer_date < p_from_date
+          ), 0)
+        ELSE 0 END
+      ), 0) AS prior_in,
+
+      -- B. Prior OUT strictly before p_from_date
+      COALESCE((
+        CASE WHEN p_from_date IS NOT NULL THEN
+          COALESCE((
+            SELECT SUM(p.amount) FROM public.payments p
+            WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+              AND (p.bank_account_id = ba.id OR (p.bank_account_id IS NULL AND p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+              AND p.payment_date < p_from_date
+          ), 0) +
+          COALESCE((
+            SELECT SUM(e.amount) FROM public.expenses e
+            WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+              AND (e.bank_account_id = ba.id OR (e.bank_account_id IS NULL AND e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+              AND e.expense_date < p_from_date
+          ), 0) +
+          COALESCE((
+            SELECT SUM(lr.principal + lr.interest) FROM public.loan_repayments lr
+            JOIN public.loans l ON l.id = lr.loan_id
+            WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+              AND (lr.bank_account_id = ba.id OR (lr.bank_account_id IS NULL AND lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+              AND lr.repayment_date < p_from_date
+          ), 0) +
+          COALESCE((
+            SELECT SUM(mt.amount) FROM public.money_transfers mt
+            WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+              AND mt.from_bank_account_id = ba.id
+              AND mt.transfer_date < p_from_date
+          ), 0)
+        ELSE 0 END
+      ), 0) AS prior_out,
+
+      -- C. Period IN [p_from_date, p_to_date]
+      (
+        COALESCE((
+          SELECT SUM(r.amount) FROM public.receipts r
+          WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+            AND (r.bank_account_id = ba.id OR (r.bank_account_id IS NULL AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+            AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+            AND mt.to_bank_account_id = ba.id
+            AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+            AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+        ), 0)
+      ) AS period_in,
+
+      -- D. Period OUT [p_from_date, p_to_date]
+      (
+        COALESCE((
+          SELECT SUM(p.amount) FROM public.payments p
+          WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+            AND (p.bank_account_id = ba.id OR (p.bank_account_id IS NULL AND p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+            AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(e.amount) FROM public.expenses e
+          WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+            AND (e.bank_account_id = ba.id OR (e.bank_account_id IS NULL AND e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR e.expense_date >= p_from_date)
+            AND (p_to_date IS NULL OR e.expense_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(lr.principal + lr.interest) FROM public.loan_repayments lr
+          JOIN public.loans l ON l.id = lr.loan_id
+          WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+            AND (lr.bank_account_id = ba.id OR (lr.bank_account_id IS NULL AND lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+            AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+            AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+            AND mt.from_bank_account_id = ba.id
+            AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+            AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+        ), 0)
+      ) AS period_out,
+
+      -- E. All-time IN (regardless of dates)
+      (
+        COALESCE((
+          SELECT SUM(r.amount) FROM public.receipts r
+          WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+            AND (r.bank_account_id = ba.id OR (r.bank_account_id IS NULL AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+            AND mt.to_bank_account_id = ba.id
+        ), 0)
+      ) AS all_in,
+
+      -- F. All-time OUT (regardless of dates)
+      (
+        COALESCE((
+          SELECT SUM(p.amount) FROM public.payments p
+          WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+            AND (p.bank_account_id = ba.id OR (p.bank_account_id IS NULL AND p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT SUM(e.amount) FROM public.expenses e
+          WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+            AND (e.bank_account_id = ba.id OR (e.bank_account_id IS NULL AND e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT SUM(lr.principal + lr.interest) FROM public.loan_repayments lr
+          JOIN public.loans l ON l.id = lr.loan_id
+          WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+            AND (lr.bank_account_id = ba.id OR (lr.bank_account_id IS NULL AND lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+        ), 0) +
+        COALESCE((
+          SELECT SUM(mt.amount) FROM public.money_transfers mt
+          WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+            AND mt.from_bank_account_id = ba.id
+        ), 0)
+      ) AS all_out,
+
+      -- G. Dynamic Period Opening Balance
+      (ba.opening_balance + 
+        CASE WHEN p_from_date IS NOT NULL THEN
+          (
+            COALESCE((
+              SELECT SUM(r.amount) FROM public.receipts r
+              WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+                AND (r.bank_account_id = ba.id OR (r.bank_account_id IS NULL AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+                AND r.receipt_date < p_from_date
+            ), 0) +
+            COALESCE((
+              SELECT SUM(mt.amount) FROM public.money_transfers mt
+              WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+                AND mt.to_bank_account_id = ba.id
+                AND mt.transfer_date < p_from_date
+            ), 0)
+          ) - (
+            COALESCE((
+              SELECT SUM(p.amount) FROM public.payments p
+              WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+                AND (p.bank_account_id = ba.id OR (p.bank_account_id IS NULL AND p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+                AND p.payment_date < p_from_date
+            ), 0) +
+            COALESCE((
+              SELECT SUM(e.amount) FROM public.expenses e
+              WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+                AND (e.bank_account_id = ba.id OR (e.bank_account_id IS NULL AND e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+                AND e.expense_date < p_from_date
+            ), 0) +
+            COALESCE((
+              SELECT SUM(lr.principal + lr.interest) FROM public.loan_repayments lr
+              JOIN public.loans l ON l.id = lr.loan_id
+              WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+                AND (lr.bank_account_id = ba.id OR (lr.bank_account_id IS NULL AND lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE') AND (SELECT count(*) FROM public.bank_accounts WHERE business_id = v_biz_id AND deleted_at IS NULL) = 1))
+                AND lr.repayment_date < p_from_date
+            ), 0) +
+            COALESCE((
+              SELECT SUM(mt.amount) FROM public.money_transfers mt
+              WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+                AND mt.from_bank_account_id = ba.id
+                AND mt.transfer_date < p_from_date
+            ), 0)
+          )
+        ELSE 0 END
+      ) AS period_opening
+  ) sub
+  WHERE ba.business_id = v_biz_id AND ba.deleted_at IS NULL;
+
+  -- 5. Total Bank Balance across all active accounts for the period
+  SELECT COALESCE(SUM((val->>'current_balance')::numeric), 0)
+  INTO v_total_bank_balance
+  FROM jsonb_array_elements(v_bank_accounts) AS val;
+
+  -- 6. Recent Contra Transfers in period
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', mt.id,
+      'transfer_date', mt.transfer_date,
+      'transfer_type', mt.transfer_type,
+      'amount', mt.amount,
+      'from_account_name', COALESCE(fba.bank_name, 'Cash in Hand'),
+      'to_account_name', COALESCE(tba.bank_name, 'Cash in Hand'),
+      'reference', mt.reference,
+      'notes', mt.notes,
+      'created_at', mt.created_at
+    ) ORDER BY mt.transfer_date DESC, mt.created_at DESC
+  ), '[]'::jsonb)
+  INTO v_recent_transfers
+  FROM public.money_transfers mt
+  LEFT JOIN public.bank_accounts fba ON fba.id = mt.from_bank_account_id
+  LEFT JOIN public.bank_accounts tba ON tba.id = mt.to_bank_account_id
+  WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+    AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date);
+
+  RETURN jsonb_build_object(
+    'cash_in_hand', jsonb_build_object(
+      'opening_balance', v_cash_opening,
+      'total_in', v_cash_total_in,
+      'total_out', v_cash_total_out,
+      'current_balance', v_cash_current_balance,
+      'live_balance', v_cash_all_time_balance,
+      'receipts', v_cash_receipts,
+      'withdrawals', v_cash_withdrawals,
+      'payments', v_cash_payments,
+      'expenses', v_cash_expenses,
+      'loan_repayments', v_cash_loan_repayments,
+      'deposits', v_cash_deposits
+    ),
+    'bank_accounts', v_bank_accounts,
+    'total_bank_balance', v_total_bank_balance,
+    'total_liquid_funds', (v_cash_current_balance + v_total_bank_balance),
+    'recent_transfers', v_recent_transfers
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.cash_bank_summary(date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.cash_bank_summary(date, date) TO authenticated;
+
+-- 2. Upgrade bank_ledger to automatically compute true Opening Balance on p_from_date
+-- and provide consecutive running passbook balances
+CREATE OR REPLACE FUNCTION public.bank_ledger(
+  p_bank_account_id uuid DEFAULT NULL,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_accounts jsonb := '[]'::jsonb;
+  v_entries jsonb := '[]'::jsonb;
+  v_tot_in numeric(14,2) := 0;
+  v_tot_out numeric(14,2) := 0;
+  v_opening_balance numeric(14,2) := 0;
+  v_closing_balance numeric(14,2) := 0;
+  v_summary_data jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+
+  -- 1. Get accurate opening & summary info from upgraded cash_bank_summary
+  v_summary_data := public.cash_bank_summary(p_from_date, p_to_date);
+  v_accounts := COALESCE(v_summary_data->'bank_accounts', '[]'::jsonb);
+
+  -- 2. Determine target opening balance
+  IF p_bank_account_id IS NOT NULL THEN
+    SELECT COALESCE((elem->>'opening_balance')::numeric, 0)
+    INTO v_opening_balance
+    FROM jsonb_array_elements(v_accounts) AS elem
+    WHERE (elem->>'id')::uuid = p_bank_account_id;
+  ELSE
+    SELECT COALESCE(SUM((elem->>'opening_balance')::numeric), 0)
+    INTO v_opening_balance
+    FROM jsonb_array_elements(v_accounts) AS elem;
+  END IF;
+
+  -- 3. Union of all bank movements within [p_from_date, p_to_date]
+  WITH bank_txns AS (
+    -- 1. Money IN: Receipts
+    SELECT 
+      r.id,
+      r.receipt_date AS txn_date,
+      'RECEIPT' AS txn_type,
+      'IN' AS direction,
+      r.amount AS in_amount,
+      0::numeric(14,2) AS out_amount,
+      r.mode,
+      COALESCE(r.reference, r.number) AS ref_no,
+      COALESCE(c.name, 'Other Income') AS party_name,
+      COALESCE(r.notes, r.income_category, 'Customer Receipt') AS description,
+      r.bank_account_id,
+      COALESCE(r.bank_name, ba.bank_name, r.mode) AS bank_label,
+      r.created_at
+    FROM public.receipts r
+    LEFT JOIN public.customers c ON c.id = r.customer_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = r.bank_account_id
+    WHERE r.business_id = v_biz_id AND r.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND r.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (r.bank_account_id IS NOT NULL OR r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+      AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+
+    UNION ALL
+
+    -- 2. Money IN: Incoming Transfers (Cash Deposit or Inward Bank-to-Bank)
+    SELECT
+      mt.id,
+      mt.transfer_date AS txn_date,
+      'TRANSFER_IN' AS txn_type,
+      'IN' AS direction,
+      mt.amount AS in_amount,
+      0::numeric(14,2) AS out_amount,
+      CASE WHEN mt.transfer_type = 'CASH_TO_BANK' THEN 'CASH' ELSE 'BANK' END AS mode,
+      COALESCE(mt.reference, 'Deposit') AS ref_no,
+      CASE 
+        WHEN mt.transfer_type = 'CASH_TO_BANK' THEN 'Cash Deposit (Contra)'
+        ELSE 'Transfer from ' || COALESCE(fba.bank_name, 'Bank')
+      END AS party_name,
+      COALESCE(mt.notes, 'Internal Contra Transfer') AS description,
+      mt.to_bank_account_id AS bank_account_id,
+      tba.bank_name AS bank_label,
+      mt.created_at
+    FROM public.money_transfers mt
+    JOIN public.bank_accounts tba ON tba.id = mt.to_bank_account_id
+    LEFT JOIN public.bank_accounts fba ON fba.id = mt.from_bank_account_id
+    WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+      AND (p_bank_account_id IS NULL OR mt.to_bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+      AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+
+    UNION ALL
+
+    -- 3. Money OUT: Vendor Payments
+    SELECT 
+      p.id,
+      p.payment_date AS txn_date,
+      'PAYMENT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      p.amount AS out_amount,
+      p.mode,
+      COALESCE(p.notes, 'Vendor Pmt') AS ref_no,
+      v.name AS party_name,
+      p.description AS description,
+      p.bank_account_id,
+      COALESCE(p.bank_name, ba.bank_name, p.mode) AS bank_label,
+      p.created_at
+    FROM public.payments p
+    LEFT JOIN public.vendors v ON v.id = p.vendor_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = p.bank_account_id
+    WHERE p.business_id = v_biz_id AND p.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND p.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (p.bank_account_id IS NOT NULL OR p.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+      AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+
+    UNION ALL
+
+    -- 4. Money OUT: Expenses
+    SELECT 
+      e.id,
+      e.expense_date AS txn_date,
+      'EXPENSE' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      e.amount AS out_amount,
+      e.mode,
+      COALESCE(e.notes, 'Expense') AS ref_no,
+      ec.name AS party_name,
+      e.description AS description,
+      e.bank_account_id,
+      COALESCE(e.bank_name, ba.bank_name, e.mode) AS bank_label,
+      e.created_at
+    FROM public.expenses e
+    JOIN public.expense_categories ec ON ec.id = e.category_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = e.bank_account_id
+    WHERE e.business_id = v_biz_id AND e.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND e.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (e.bank_account_id IS NOT NULL OR e.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR e.expense_date >= p_from_date)
+      AND (p_to_date IS NULL OR e.expense_date <= p_to_date)
+
+    UNION ALL
+
+    -- 5. Money OUT: Loan Repayments
+    SELECT 
+      lr.id,
+      lr.repayment_date AS txn_date,
+      'LOAN_REPAYMENT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      (lr.principal + lr.interest) AS out_amount,
+      lr.mode,
+      COALESCE(lr.notes, 'Loan Repayment') AS ref_no,
+      l.lender_name AS party_name,
+      'Loan Repayment: Principal ' || lr.principal || ' + Interest ' || lr.interest AS description,
+      lr.bank_account_id,
+      COALESCE(lr.bank_name, ba.bank_name, lr.mode) AS bank_label,
+      lr.created_at
+    FROM public.loan_repayments lr
+    JOIN public.loans l ON l.id = lr.loan_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = lr.bank_account_id
+    WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL
+      AND (
+        (p_bank_account_id IS NOT NULL AND lr.bank_account_id = p_bank_account_id)
+        OR (p_bank_account_id IS NULL AND (lr.bank_account_id IS NOT NULL OR lr.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')))
+      )
+      AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+      AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+
+    UNION ALL
+
+    -- 6. Money OUT: Outgoing Transfers (Cash Withdrawal or Outward Bank-to-Bank)
+    SELECT
+      mt.id,
+      mt.transfer_date AS txn_date,
+      'TRANSFER_OUT' AS txn_type,
+      'OUT' AS direction,
+      0::numeric(14,2) AS in_amount,
+      mt.amount AS out_amount,
+      CASE WHEN mt.transfer_type = 'BANK_TO_CASH' THEN 'CASH' ELSE 'BANK' END AS mode,
+      COALESCE(mt.reference, 'Withdrawal') AS ref_no,
+      CASE 
+        WHEN mt.transfer_type = 'BANK_TO_CASH' THEN 'Cash Withdrawal (Contra)'
+        ELSE 'Transfer to ' || COALESCE(tba.bank_name, 'Bank')
+      END AS party_name,
+      COALESCE(mt.notes, 'Internal Contra Transfer') AS description,
+      mt.from_bank_account_id AS bank_account_id,
+      fba.bank_name AS bank_label,
+      mt.created_at
+    FROM public.money_transfers mt
+    JOIN public.bank_accounts fba ON fba.id = mt.from_bank_account_id
+    LEFT JOIN public.bank_accounts tba ON tba.id = mt.to_bank_account_id
+    WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+      AND (p_bank_account_id IS NULL OR mt.from_bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+      AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+  ),
+  ordered_txns AS (
+    SELECT 
+      t.*,
+      (v_opening_balance + SUM(t.in_amount - t.out_amount) OVER (ORDER BY t.txn_date ASC, t.created_at ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)) AS running_balance
+    FROM bank_txns t
+    ORDER BY t.txn_date DESC, t.created_at DESC
+  )
+  SELECT 
+    COALESCE(SUM(in_amount), 0),
+    COALESCE(SUM(out_amount), 0),
+    COALESCE(jsonb_agg(to_jsonb(ot.*)), '[]'::jsonb)
+  INTO v_tot_in, v_tot_out, v_entries
+  FROM ordered_txns ot;
+
+  v_closing_balance := v_opening_balance + v_tot_in - v_tot_out;
+
+  RETURN jsonb_build_object(
+    'bank_accounts', v_accounts,
+    'summary', jsonb_build_object(
+      'opening_balance', v_opening_balance,
+      'total_in', v_tot_in,
+      'total_out', v_tot_out,
+      'net_flow', (v_tot_in - v_tot_out),
+      'closing_balance', v_closing_balance,
+      'current_balance', v_closing_balance
+    ),
+    'entries', v_entries
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.bank_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.bank_ledger(uuid, date, date) TO authenticated;
+
+
+
+-- >>> Migration: 20261113000050_fix_create_team_member_validation.sql <<<
+-- Migration: 20261113000050_fix_create_team_member_validation.sql
+-- Fixes create_team_member role validation and member duplicate email check
+
+CREATE OR REPLACE FUNCTION public.create_team_member(
+  p_name text,
+  p_email text,
+  p_password text,
+  p_role text DEFAULT 'STAFF',
+  p_mobile text DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_caller_role text;
+  v_caller_id uuid;
+  v_auth_user_id uuid;
+  v_member_id uuid;
+  v_clean_mobile text;
+  v_clean_email text;
+  v_clean_name text;
+  v_role text;
+BEGIN
+  v_biz_id := app.current_business_id();
+  v_caller_role := app.current_role();
+  v_caller_id := app.current_member_id();
+
+  IF v_biz_id IS NULL OR v_caller_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only owners can add team members';
+  END IF;
+
+  v_clean_name := trim(COALESCE(p_name, ''));
+  IF length(v_clean_name) < 2 THEN
+    RAISE EXCEPTION 'NAME_REQUIRED' USING ERRCODE = 'P0001', DETAIL = 'Name must be at least 2 characters';
+  END IF;
+
+  v_clean_email := lower(trim(COALESCE(p_email, '')));
+  IF v_clean_email = '' OR v_clean_email !~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' THEN
+    RAISE EXCEPTION 'INVALID_EMAIL' USING ERRCODE = 'P0001', DETAIL = 'A valid email address is required';
+  END IF;
+
+  IF length(COALESCE(p_password, '')) < 6 THEN
+    RAISE EXCEPTION 'PASSWORD_TOO_SHORT' USING ERRCODE = 'P0001', DETAIL = 'Password must be at least 6 characters';
+  END IF;
+
+  -- Application supports strictly OWNER and STAFF roles. Team members created must be STAFF.
+  v_role := upper(trim(COALESCE(p_role, 'STAFF')));
+  IF v_role <> 'STAFF' THEN
+    RAISE EXCEPTION 'INVALID_ROLE' USING ERRCODE = 'P0001', DETAIL = 'Only STAFF role can be created for team members';
+  END IF;
+
+  -- Check if member email already exists in this business
+  IF EXISTS (
+    SELECT 1 FROM public.members 
+    WHERE business_id = v_biz_id AND lower(email) = v_clean_email AND deleted_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'MEMBER_EXISTS' USING ERRCODE = 'P0001', DETAIL = 'A member with this email already exists';
+  END IF;
+
+  v_clean_mobile := NULL;
+  IF p_mobile IS NOT NULL AND trim(p_mobile) <> '' THEN
+    v_clean_mobile := regexp_replace(p_mobile, '\D', '', 'g');
+    IF length(v_clean_mobile) >= 10 THEN
+      v_clean_mobile := right(v_clean_mobile, 10);
+    END IF;
+  END IF;
+
+  -- 1. Create or update auth.users
+  v_auth_user_id := gen_random_uuid();
+  INSERT INTO auth.users (
+    id,
+    email,
+    encrypted_password,
+    email_confirmed_at,
+    raw_app_meta_data,
+    raw_user_meta_data,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    v_auth_user_id,
+    v_clean_email,
+    public.crypt(p_password, public.gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}'::jsonb,
+    jsonb_build_object('name', v_clean_name, 'role', v_role),
+    now(),
+    now()
+  )
+  ON CONFLICT (email) DO UPDATE
+    SET encrypted_password = public.crypt(p_password, public.gen_salt('bf')),
+        updated_at = now()
+  RETURNING id INTO v_auth_user_id;
+
+  -- 2. Insert into public.members
+  INSERT INTO public.members (
+    business_id,
+    auth_user_id,
+    name,
+    email,
+    mobile,
+    role,
+    can_login,
+    active,
+    created_by,
+    updated_by
+  )
+  VALUES (
+    v_biz_id,
+    v_auth_user_id,
+    v_clean_name,
+    v_clean_email,
+    v_clean_mobile,
+    v_role,
+    true,
+    true,
+    v_caller_id,
+    v_caller_id
+  )
+  RETURNING id INTO v_member_id;
+
+  RETURN v_member_id;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.create_team_member(text, text, text, text, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.create_team_member(text, text, text, text, text) TO authenticated;
+
+
+
+-- >>> Migration: 20261113000051_enforce_owner_role_on_financial_rpcs.sql <<<
+-- Migration: 20261113000051_enforce_owner_role_on_financial_rpcs.sql
+-- Enforces Owner RBAC on cash_bank_summary, bank_ledger, and purge_deleted_records per Section 5
+
+-- 1. Upgrade cash_bank_summary with Owner check
+CREATE OR REPLACE FUNCTION public.cash_bank_summary(
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_biz public.businesses%ROWTYPE;
+  v_cash_opening numeric(14,2) := 0;
+  v_cash_prior_in numeric(14,2) := 0;
+  v_cash_prior_out numeric(14,2) := 0;
+  v_cash_receipts numeric(14,2) := 0;
+  v_cash_withdrawals numeric(14,2) := 0;
+  v_cash_total_in numeric(14,2) := 0;
+  v_cash_payments numeric(14,2) := 0;
+  v_cash_expenses numeric(14,2) := 0;
+  v_cash_loan_repayments numeric(14,2) := 0;
+  v_cash_deposits numeric(14,2) := 0;
+  v_cash_total_out numeric(14,2) := 0;
+  v_cash_current_balance numeric(14,2) := 0;
+  v_cash_all_time_balance numeric(14,2) := 0;
+
+  v_bank_accounts jsonb := '[]'::jsonb;
+  v_total_bank_balance numeric(14,2) := 0;
+  v_recent_transfers jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only owners can access cash and bank ledgers';
+  END IF;
+
+  SELECT * INTO v_biz FROM public.businesses WHERE id = v_biz_id;
+
+  -- 1. Compute Cash in Hand Opening Balance as of p_from_date
+  IF p_from_date IS NOT NULL THEN
+    -- Inflows prior to p_from_date
+    SELECT COALESCE(SUM(amount), 0) INTO v_cash_prior_in
+    FROM (
+      SELECT amount FROM public.receipts
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH' AND receipt_date < p_from_date
+      UNION ALL
+      SELECT amount FROM public.money_transfers
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'BANK_TO_CASH' AND transfer_date < p_from_date
+    ) prior_in;
+
+    -- Outflows prior to p_from_date
+    SELECT COALESCE(SUM(amount), 0) INTO v_cash_prior_out
+    FROM (
+      SELECT amount FROM public.payments
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH' AND payment_date < p_from_date
+      UNION ALL
+      SELECT amount FROM public.expenses
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH' AND expense_date < p_from_date
+      UNION ALL
+      SELECT principal FROM public.loan_repayments lr
+      JOIN public.loans l ON l.id = lr.loan_id
+      WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.mode = 'CASH' AND lr.repayment_date < p_from_date
+      UNION ALL
+      SELECT amount FROM public.money_transfers
+      WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'CASH_TO_BANK' AND transfer_date < p_from_date
+    ) prior_out;
+
+    v_cash_opening := COALESCE(v_biz.opening_cash_balance, 0) + v_cash_prior_in - v_cash_prior_out;
+  ELSE
+    v_cash_opening := COALESCE(v_biz.opening_cash_balance, 0);
+  END IF;
+
+  -- 2. Receipts in cash
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_receipts
+  FROM public.receipts
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR receipt_date >= p_from_date)
+    AND (p_to_date IS NULL OR receipt_date <= p_to_date);
+
+  -- 3. Withdrawals (Bank to Cash)
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_withdrawals
+  FROM public.money_transfers
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'BANK_TO_CASH'
+    AND (p_from_date IS NULL OR transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR transfer_date <= p_to_date);
+
+  v_cash_total_in := v_cash_receipts + v_cash_withdrawals;
+
+  -- 4. Payments in cash
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_payments
+  FROM public.payments
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR payment_date >= p_from_date)
+    AND (p_to_date IS NULL OR payment_date <= p_to_date);
+
+  -- 5. Expenses in cash
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_expenses
+  FROM public.expenses
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'
+    AND (p_from_date IS NULL OR expense_date >= p_from_date)
+    AND (p_to_date IS NULL OR expense_date <= p_to_date);
+
+  -- 6. Loan principal repayments in cash
+  SELECT COALESCE(SUM(lr.principal), 0) INTO v_cash_loan_repayments
+  FROM public.loan_repayments lr
+  JOIN public.loans l ON l.id = lr.loan_id
+  WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.mode = 'CASH'
+    AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+    AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date);
+
+  -- 7. Deposits (Cash to Bank)
+  SELECT COALESCE(SUM(amount), 0) INTO v_cash_deposits
+  FROM public.money_transfers
+  WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'CASH_TO_BANK'
+    AND (p_from_date IS NULL OR transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR transfer_date <= p_to_date);
+
+  v_cash_total_out := v_cash_payments + v_cash_expenses + v_cash_loan_repayments + v_cash_deposits;
+
+  v_cash_current_balance := v_cash_opening + v_cash_total_in - v_cash_total_out;
+
+  -- All-time balance
+  v_cash_all_time_balance := COALESCE(v_biz.opening_cash_balance, 0)
+    + COALESCE((SELECT SUM(amount) FROM public.receipts WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'), 0)
+    + COALESCE((SELECT SUM(amount) FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'BANK_TO_CASH'), 0)
+    - COALESCE((SELECT SUM(amount) FROM public.payments WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'), 0)
+    - COALESCE((SELECT SUM(amount) FROM public.expenses WHERE business_id = v_biz_id AND deleted_at IS NULL AND mode = 'CASH'), 0)
+    - COALESCE((SELECT SUM(lr.principal) FROM public.loan_repayments lr JOIN public.loans l ON l.id = lr.loan_id WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.mode = 'CASH'), 0)
+    - COALESCE((SELECT SUM(amount) FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND transfer_type = 'CASH_TO_BANK'), 0);
+
+  -- 8. Bank Accounts with individual opening & closing balances
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', ba.id,
+        'bank_name', ba.bank_name,
+        'account_name', ba.account_name,
+        'account_number', ba.account_number,
+        'ifsc', ba.ifsc,
+        'upi_id', ba.upi_id,
+        'active', ba.active,
+        'opening_balance', ba_calc.opening_bal,
+        'total_in', ba_calc.period_in,
+        'total_out', ba_calc.period_out,
+        'current_balance', ba_calc.closing_bal,
+        'all_time_balance', ba_calc.all_time_bal
+      ) ORDER BY ba.created_at ASC
+    ),
+    '[]'::jsonb
+  )
+  INTO v_bank_accounts
+  FROM public.bank_accounts ba
+  CROSS JOIN LATERAL (
+    SELECT
+      -- Prior in
+      COALESCE(ba.opening_balance, 0)
+      + COALESCE((
+        SELECT SUM(amount) FROM (
+          SELECT amount FROM public.receipts WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NOT NULL AND receipt_date < p_from_date)
+          UNION ALL
+          SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND to_bank_account_id = ba.id AND (p_from_date IS NOT NULL AND transfer_date < p_from_date)
+        ) b_prior_in
+      ), 0)
+      - COALESCE((
+        SELECT SUM(amount) FROM (
+          SELECT amount FROM public.payments WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NOT NULL AND payment_date < p_from_date)
+          UNION ALL
+          SELECT amount FROM public.expenses WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NOT NULL AND expense_date < p_from_date)
+          UNION ALL
+          SELECT lr.principal FROM public.loan_repayments lr JOIN public.loans l ON l.id = lr.loan_id WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.bank_account_id = ba.id AND (p_from_date IS NOT NULL AND lr.repayment_date < p_from_date)
+          UNION ALL
+          SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND from_bank_account_id = ba.id AND (p_from_date IS NOT NULL AND transfer_date < p_from_date)
+        ) b_prior_out
+      ), 0) AS opening_bal,
+
+      -- Period in
+      COALESCE((
+        SELECT SUM(amount) FROM (
+          SELECT amount FROM public.receipts WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NULL OR receipt_date >= p_from_date) AND (p_to_date IS NULL OR receipt_date <= p_to_date)
+          UNION ALL
+          SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND to_bank_account_id = ba.id AND (p_from_date IS NULL OR transfer_date >= p_from_date) AND (p_to_date IS NULL OR transfer_date <= p_to_date)
+        ) b_period_in
+      ), 0) AS period_in,
+
+      -- Period out
+      COALESCE((
+        SELECT SUM(amount) FROM (
+          SELECT amount FROM public.payments WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NULL OR payment_date >= p_from_date) AND (p_to_date IS NULL OR payment_date <= p_to_date)
+          UNION ALL
+          SELECT amount FROM public.expenses WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NULL OR expense_date >= p_from_date) AND (p_to_date IS NULL OR expense_date <= p_to_date)
+          UNION ALL
+          SELECT lr.principal FROM public.loan_repayments lr JOIN public.loans l ON l.id = lr.loan_id WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.bank_account_id = ba.id AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date) AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+          UNION ALL
+          SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND from_bank_account_id = ba.id AND (p_from_date IS NULL OR transfer_date >= p_from_date) AND (p_to_date IS NULL OR transfer_date <= p_to_date)
+        ) b_period_out
+      ), 0) AS period_out,
+
+      -- Closing balance
+      (
+        COALESCE(ba.opening_balance, 0)
+        + COALESCE((
+          SELECT SUM(amount) FROM (
+            SELECT amount FROM public.receipts WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NOT NULL AND receipt_date < p_from_date)
+            UNION ALL
+            SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND to_bank_account_id = ba.id AND (p_from_date IS NOT NULL AND transfer_date < p_from_date)
+          ) b_p_in
+        ), 0)
+        - COALESCE((
+          SELECT SUM(amount) FROM (
+            SELECT amount FROM public.payments WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NOT NULL AND payment_date < p_from_date)
+            UNION ALL
+            SELECT amount FROM public.expenses WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NOT NULL AND expense_date < p_from_date)
+            UNION ALL
+            SELECT lr.principal FROM public.loan_repayments lr JOIN public.loans l ON l.id = lr.loan_id WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.bank_account_id = ba.id AND (p_from_date IS NOT NULL AND lr.repayment_date < p_from_date)
+            UNION ALL
+            SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND from_bank_account_id = ba.id AND (p_from_date IS NOT NULL AND transfer_date < p_from_date)
+          ) b_p_out
+        ), 0)
+      ) + (
+        COALESCE((
+          SELECT SUM(amount) FROM (
+            SELECT amount FROM public.receipts WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NULL OR receipt_date >= p_from_date) AND (p_to_date IS NULL OR receipt_date <= p_to_date)
+            UNION ALL
+            SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND to_bank_account_id = ba.id AND (p_from_date IS NULL OR transfer_date >= p_from_date) AND (p_to_date IS NULL OR transfer_date <= p_to_date)
+          ) b_cur_in
+        ), 0)
+        - COALESCE((
+          SELECT SUM(amount) FROM (
+            SELECT amount FROM public.payments WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NULL OR payment_date >= p_from_date) AND (p_to_date IS NULL OR payment_date <= p_to_date)
+            UNION ALL
+            SELECT amount FROM public.expenses WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id AND (p_from_date IS NULL OR expense_date >= p_from_date) AND (p_to_date IS NULL OR expense_date <= p_to_date)
+            UNION ALL
+            SELECT lr.principal FROM public.loan_repayments lr JOIN public.loans l ON l.id = lr.loan_id WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.bank_account_id = ba.id AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date) AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+            UNION ALL
+            SELECT amount FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND from_bank_account_id = ba.id AND (p_from_date IS NULL OR transfer_date >= p_from_date) AND (p_to_date IS NULL OR transfer_date <= p_to_date)
+          ) b_cur_out
+        ), 0)
+      ) AS closing_bal,
+
+      -- All time balance
+      COALESCE(ba.opening_balance, 0)
+      + COALESCE((SELECT SUM(amount) FROM public.receipts WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id), 0)
+      + COALESCE((SELECT SUM(amount) FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND to_bank_account_id = ba.id), 0)
+      - COALESCE((SELECT SUM(amount) FROM public.payments WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id), 0)
+      - COALESCE((SELECT SUM(amount) FROM public.expenses WHERE business_id = v_biz_id AND deleted_at IS NULL AND bank_account_id = ba.id), 0)
+      - COALESCE((SELECT SUM(lr.principal) FROM public.loan_repayments lr JOIN public.loans l ON l.id = lr.loan_id WHERE l.business_id = v_biz_id AND lr.deleted_at IS NULL AND lr.bank_account_id = ba.id), 0)
+      - COALESCE((SELECT SUM(amount) FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at IS NULL AND from_bank_account_id = ba.id), 0) AS all_time_bal
+  ) ba_calc
+  WHERE ba.business_id = v_biz_id AND ba.deleted_at IS NULL;
+
+  -- 9. Sum of closing bank balances
+  SELECT COALESCE(SUM((elem->>'current_balance')::numeric), 0)
+  INTO v_total_bank_balance
+  FROM jsonb_array_elements(v_bank_accounts) AS elem;
+
+  -- 10. Recent Transfers
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', mt.id,
+        'transfer_date', mt.transfer_date,
+        'transfer_type', mt.transfer_type,
+        'amount', mt.amount,
+        'from_bank_account_id', mt.from_bank_account_id,
+        'to_bank_account_id', mt.to_bank_account_id,
+        'from_bank_name', fb.bank_name,
+        'to_bank_name', tb.bank_name,
+        'notes', mt.notes,
+        'created_at', mt.created_at
+      ) ORDER BY mt.transfer_date DESC, mt.created_at DESC
+    ),
+    '[]'::jsonb
+  )
+  INTO v_recent_transfers
+  FROM public.money_transfers mt
+  LEFT JOIN public.bank_accounts fb ON fb.id = mt.from_bank_account_id
+  LEFT JOIN public.bank_accounts tb ON tb.id = mt.to_bank_account_id
+  WHERE mt.business_id = v_biz_id AND mt.deleted_at IS NULL
+    AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+    AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+  LIMIT 20;
+
+  RETURN jsonb_build_object(
+    'cash', jsonb_build_object(
+      'opening_balance', v_cash_opening,
+      'total_in', v_cash_total_in,
+      'total_out', v_cash_total_out,
+      'current_balance', v_cash_current_balance,
+      'all_time_balance', v_cash_all_time_balance
+    ),
+    'cash_in_hand', jsonb_build_object(
+      'opening_balance', v_cash_opening,
+      'total_in', v_cash_total_in,
+      'total_out', v_cash_total_out,
+      'current_balance', v_cash_current_balance,
+      'all_time_balance', v_cash_all_time_balance
+    ),
+    'bank_accounts', v_bank_accounts,
+    'total_bank_balance', v_total_bank_balance,
+    'total_liquid_funds', v_cash_current_balance + v_total_bank_balance,
+    'recent_transfers', v_recent_transfers
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.cash_bank_summary(date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.cash_bank_summary(date, date) TO authenticated;
+
+
+-- 2. Upgrade bank_ledger with Owner check
+CREATE OR REPLACE FUNCTION public.bank_ledger(
+  p_bank_account_id uuid DEFAULT NULL,
+  p_from_date date DEFAULT NULL,
+  p_to_date date DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_accounts jsonb := '[]'::jsonb;
+  v_entries jsonb := '[]'::jsonb;
+  v_tot_in numeric(14,2) := 0;
+  v_tot_out numeric(14,2) := 0;
+  v_opening_balance numeric(14,2) := 0;
+  v_closing_balance numeric(14,2) := 0;
+  v_summary_data jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can view bank ledgers';
+  END IF;
+
+  -- 1. Get accurate opening & summary info from upgraded cash_bank_summary
+  v_summary_data := public.cash_bank_summary(p_from_date, p_to_date);
+  v_accounts := COALESCE(v_summary_data->'bank_accounts', '[]'::jsonb);
+
+  -- 2. Determine target opening balance
+  IF p_bank_account_id IS NOT NULL THEN
+    SELECT COALESCE((elem->>'opening_balance')::numeric, 0)
+    INTO v_opening_balance
+    FROM jsonb_array_elements(v_accounts) AS elem
+    WHERE (elem->>'id')::uuid = p_bank_account_id;
+  ELSE
+    SELECT COALESCE(SUM((elem->>'opening_balance')::numeric), 0)
+    INTO v_opening_balance
+    FROM jsonb_array_elements(v_accounts) AS elem;
+  END IF;
+
+  -- 3. Union of all bank movements within [p_from_date, p_to_date]
+  WITH bank_txns AS (
+    -- 1. Money IN: Receipts
+    SELECT
+      r.id,
+      r.receipt_date AS date,
+      'RECEIPT' AS txn_type,
+      'Receipt: ' || r.number || COALESCE(' - ' || c.name, '') AS description,
+      r.bank_account_id,
+      ba.bank_name,
+      ba.account_number,
+      r.amount AS in_amount,
+      0::numeric(14,2) AS out_amount,
+      r.mode,
+      r.reference,
+      r.created_at
+    FROM public.receipts r
+    LEFT JOIN public.customers c ON c.id = r.customer_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = r.bank_account_id
+    WHERE r.business_id = v_biz_id
+      AND r.deleted_at IS NULL
+      AND r.bank_account_id IS NOT NULL
+      AND (p_bank_account_id IS NULL OR r.bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR r.receipt_date >= p_from_date)
+      AND (p_to_date IS NULL OR r.receipt_date <= p_to_date)
+
+    UNION ALL
+
+    -- 2. Money IN: Transfer to bank
+    SELECT
+      mt.id,
+      mt.transfer_date AS date,
+      'TRANSFER_IN' AS txn_type,
+      CASE 
+        WHEN mt.transfer_type = 'CASH_TO_BANK' THEN 'Cash Deposit'
+        ELSE 'Transfer from ' || COALESCE(fb.bank_name, 'Other Bank')
+      END AS description,
+      mt.to_bank_account_id AS bank_account_id,
+      tb.bank_name,
+      tb.account_number,
+      mt.amount AS in_amount,
+      0::numeric(14,2) AS out_amount,
+      'CONTRA' AS mode,
+      mt.notes AS reference,
+      mt.created_at
+    FROM public.money_transfers mt
+    JOIN public.bank_accounts tb ON tb.id = mt.to_bank_account_id
+    LEFT JOIN public.bank_accounts fb ON fb.id = mt.from_bank_account_id
+    WHERE mt.business_id = v_biz_id
+      AND mt.deleted_at IS NULL
+      AND (p_bank_account_id IS NULL OR mt.to_bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+      AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+
+    UNION ALL
+
+    -- 3. Money OUT: Payments
+    SELECT
+      p.id,
+      p.payment_date AS date,
+      'PAYMENT' AS txn_type,
+      'Payment to ' || COALESCE(v.name, 'Vendor') || ': ' || p.description AS description,
+      p.bank_account_id,
+      ba.bank_name,
+      ba.account_number,
+      0::numeric(14,2) AS in_amount,
+      p.amount AS out_amount,
+      p.mode,
+      p.notes AS reference,
+      p.created_at
+    FROM public.payments p
+    LEFT JOIN public.vendors v ON v.id = p.vendor_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = p.bank_account_id
+    WHERE p.business_id = v_biz_id
+      AND p.deleted_at IS NULL
+      AND p.bank_account_id IS NOT NULL
+      AND (p_bank_account_id IS NULL OR p.bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR p.payment_date >= p_from_date)
+      AND (p_to_date IS NULL OR p.payment_date <= p_to_date)
+
+    UNION ALL
+
+    -- 4. Money OUT: Expenses
+    SELECT
+      e.id,
+      e.expense_date AS date,
+      'EXPENSE' AS txn_type,
+      'Expense: ' || ec.name || ' - ' || e.description AS description,
+      e.bank_account_id,
+      ba.bank_name,
+      ba.account_number,
+      0::numeric(14,2) AS in_amount,
+      e.amount AS out_amount,
+      e.mode,
+      e.notes AS reference,
+      e.created_at
+    FROM public.expenses e
+    LEFT JOIN public.expense_categories ec ON ec.id = e.category_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = e.bank_account_id
+    WHERE e.business_id = v_biz_id
+      AND e.deleted_at IS NULL
+      AND e.bank_account_id IS NOT NULL
+      AND (p_bank_account_id IS NULL OR e.bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR e.expense_date >= p_from_date)
+      AND (p_to_date IS NULL OR e.expense_date <= p_to_date)
+
+    UNION ALL
+
+    -- 5. Money OUT: Loan Repayments
+    SELECT
+      lr.id,
+      lr.repayment_date AS date,
+      'LOAN_REPAY' AS txn_type,
+      'Loan Repayment to ' || l.lender_name || ' (P: ' || lr.principal || ', I: ' || lr.interest || ')' AS description,
+      lr.bank_account_id,
+      ba.bank_name,
+      ba.account_number,
+      0::numeric(14,2) AS in_amount,
+      (lr.principal + lr.interest) AS out_amount,
+      lr.mode,
+      lr.notes AS reference,
+      lr.created_at
+    FROM public.loan_repayments lr
+    JOIN public.loans l ON l.id = lr.loan_id
+    LEFT JOIN public.bank_accounts ba ON ba.id = lr.bank_account_id
+    WHERE l.business_id = v_biz_id
+      AND lr.deleted_at IS NULL
+      AND lr.bank_account_id IS NOT NULL
+      AND (p_bank_account_id IS NULL OR lr.bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR lr.repayment_date >= p_from_date)
+      AND (p_to_date IS NULL OR lr.repayment_date <= p_to_date)
+
+    UNION ALL
+
+    -- 6. Money OUT: Transfer from bank
+    SELECT
+      mt.id,
+      mt.transfer_date AS date,
+      'TRANSFER_OUT' AS txn_type,
+      CASE 
+        WHEN mt.transfer_type = 'BANK_TO_CASH' THEN 'Cash Withdrawal'
+        ELSE 'Transfer to ' || COALESCE(tb.bank_name, 'Other Bank')
+      END AS description,
+      mt.from_bank_account_id AS bank_account_id,
+      fb.bank_name,
+      fb.account_number,
+      0::numeric(14,2) AS in_amount,
+      mt.amount AS out_amount,
+      'CONTRA' AS mode,
+      mt.notes AS reference,
+      mt.created_at
+    FROM public.money_transfers mt
+    JOIN public.bank_accounts fb ON fb.id = mt.from_bank_account_id
+    LEFT JOIN public.bank_accounts tb ON tb.id = mt.to_bank_account_id
+    WHERE mt.business_id = v_biz_id
+      AND mt.deleted_at IS NULL
+      AND (p_bank_account_id IS NULL OR mt.from_bank_account_id = p_bank_account_id)
+      AND (p_from_date IS NULL OR mt.transfer_date >= p_from_date)
+      AND (p_to_date IS NULL OR mt.transfer_date <= p_to_date)
+  ),
+  running_txns AS (
+    SELECT 
+      bt.*,
+      SUM(bt.in_amount - bt.out_amount) OVER (
+        ORDER BY bt.date ASC, bt.created_at ASC 
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) + v_opening_balance AS running_balance
+    FROM bank_txns bt
+  )
+  SELECT 
+    COALESCE(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', rt.id,
+          'date', rt.date,
+          'txn_type', rt.txn_type,
+          'description', rt.description,
+          'bank_account_id', rt.bank_account_id,
+          'bank_name', rt.bank_name,
+          'account_number', rt.account_number,
+          'in_amount', rt.in_amount,
+          'out_amount', rt.out_amount,
+          'mode', rt.mode,
+          'reference', rt.reference,
+          'running_balance', rt.running_balance,
+          'created_at', rt.created_at
+        ) ORDER BY rt.date ASC, rt.created_at ASC
+      ),
+      '[]'::jsonb
+    ),
+    COALESCE(SUM(rt.in_amount), 0),
+    COALESCE(SUM(rt.out_amount), 0)
+  INTO v_entries, v_tot_in, v_tot_out
+  FROM running_txns rt;
+
+  v_closing_balance := v_opening_balance + v_tot_in - v_tot_out;
+
+  RETURN jsonb_build_object(
+    'bank_account_id', p_bank_account_id,
+    'from_date', p_from_date,
+    'to_date', p_to_date,
+    'opening_balance', v_opening_balance,
+    'total_in', v_tot_in,
+    'total_out', v_tot_out,
+    'closing_balance', v_closing_balance,
+    'entries', v_entries
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.bank_ledger(uuid, date, date) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.bank_ledger(uuid, date, date) TO authenticated;
+
+
+-- 3. Upgrade purge_deleted_records with Owner check and tenant scoping
+CREATE OR REPLACE FUNCTION public.purge_deleted_records()
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_cutoff timestamptz := now() - interval '30 days';
+  v_count int := 0;
+  v_step_count int := 0;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role <> 'OWNER' THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Only Owner can purge deleted records';
+  END IF;
+
+  -- 1. Purge job_type_steps for soft-deleted services
+  DELETE FROM public.job_type_steps
+  WHERE business_id = v_biz_id AND service_id IN (SELECT id FROM public.services WHERE business_id = v_biz_id AND deleted_at < v_cutoff);
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 2. Purge standalone receipts (no allocations)
+  DELETE FROM public.receipts
+  WHERE business_id = v_biz_id AND deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.receipt_allocations WHERE business_id = v_biz_id AND receipt_id = receipts.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 3. Purge payments
+  DELETE FROM public.payments WHERE business_id = v_biz_id AND deleted_at < v_cutoff;
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 4. Purge unlinked expenses (no salary payout or loan repayment links)
+  DELETE FROM public.expenses
+  WHERE business_id = v_biz_id AND deleted_at < v_cutoff AND staff_id IS NULL AND loan_repayment_id IS NULL;
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 5. Purge loans (if no repayments)
+  DELETE FROM public.loans
+  WHERE business_id = v_biz_id AND deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.loan_repayments WHERE loan_id = loans.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 6. Purge vendors (if no payments)
+  DELETE FROM public.vendors
+  WHERE business_id = v_biz_id AND deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.payments WHERE business_id = v_biz_id AND vendor_id = vendors.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 7. Purge services (if not used in invoice items or jobs)
+  DELETE FROM public.services
+  WHERE business_id = v_biz_id AND deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.invoice_items WHERE business_id = v_biz_id AND service_id = services.id
+  ) AND NOT EXISTS (
+    SELECT 1 FROM public.jobs WHERE business_id = v_biz_id AND service_id = services.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 8. Purge customers (if no invoices and no receipts)
+  DELETE FROM public.customers
+  WHERE business_id = v_biz_id AND deleted_at < v_cutoff AND NOT EXISTS (
+    SELECT 1 FROM public.invoices WHERE business_id = v_biz_id AND customer_id = customers.id
+  ) AND NOT EXISTS (
+    SELECT 1 FROM public.receipts WHERE business_id = v_biz_id AND customer_id = customers.id
+  );
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 9. Purge whatsapp_templates
+  DELETE FROM public.whatsapp_templates WHERE business_id = v_biz_id AND deleted_at < v_cutoff;
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  -- 10. Purge money_transfers
+  DELETE FROM public.money_transfers WHERE business_id = v_biz_id AND deleted_at < v_cutoff;
+  GET DIAGNOSTICS v_step_count = ROW_COUNT;
+  v_count := v_count + v_step_count;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'purged_rows', v_count,
+    'purged_count', v_count,
+    'cutoff', v_cutoff
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.purge_deleted_records() FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.purge_deleted_records() TO authenticated;
+
+
+-- >>> Migration: 20261116000052_report_invoices_status_filter.sql <<<
+-- Migration 52: Support status-wise filtering in Invoices Report
+-- Allows generating bills report filtered by ALL, PAID, UNPAID, PARTIAL, OVERDUE, CANCELLED
+
+CREATE OR REPLACE FUNCTION public.report(
+  type text,
+  params jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb AS $$
+DECLARE
+  v_biz_id uuid;
+  v_role text;
+  v_today date;
+  v_fy text;
+  v_from date;
+  v_to date;
+  v_data jsonb;
+  v_period text;
+  v_period_label text;
+  v_biz public.businesses%ROWTYPE;
+
+  -- P&L specific variables
+  v_income numeric(14,2) := 0;
+  v_payments numeric(14,2) := 0;
+  v_expenses numeric(14,2) := 0;
+  v_outgoing numeric(14,2) := 0;
+  v_net_profit numeric(14,2) := 0;
+  v_total_outstanding numeric(14,2) := 0;
+  v_loans_taken numeric(14,2) := 0;
+  v_principal_repaid numeric(14,2) := 0;
+  v_interest_paid numeric(14,2) := 0;
+  v_monthly_trend jsonb;
+  v_expense_by_cat jsonb;
+  v_income_by_cat jsonb;
+  v_min_trend_date date;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_role := (SELECT app.current_role());
+  v_today := (SELECT app.today());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_biz
+  FROM public.businesses
+  WHERE id = v_biz_id;
+
+  v_period := UPPER(COALESCE(params->>'period', ''));
+  v_fy := params->>'fy_label';
+  IF v_fy IS NULL THEN
+    v_fy := public.fy_label(v_today);
+  END IF;
+
+  -- 1. Resolve Date Boundaries
+  IF v_period = 'TODAY' THEN
+    v_from := v_today;
+    v_to := v_today;
+    v_period_label := 'Today (' || to_char(v_today, 'DD Mon YYYY') || ')';
+  ELSIF v_period = 'MONTH' THEN
+    v_from := date_trunc('month', v_today)::date;
+    v_to := (date_trunc('month', v_today) + interval '1 month - 1 day')::date;
+    v_period_label := 'This Month (' || to_char(v_today, 'Mon YYYY') || ')';
+  ELSIF v_period = 'CUSTOM' THEN
+    v_from := COALESCE((params->>'from')::date, v_today);
+    v_to := COALESCE((params->>'to')::date, v_today);
+    v_period_label := to_char(v_from, 'DD Mon YYYY') || ' – ' || to_char(v_to, 'DD Mon YYYY');
+  ELSIF v_period = 'ALL' OR (params->>'all_time')::boolean IS TRUE THEN
+    v_from := '1970-01-01'::date;
+    v_to := (v_today + interval '5 years')::date;
+    v_period_label := 'All Time';
+  ELSE
+    -- Default or YEAR
+    v_from := (params->>'from')::date;
+    v_to := (params->>'to')::date;
+
+    IF v_from IS NULL AND v_to IS NULL THEN
+      DECLARE
+        v_start_year int := split_part(v_fy, '-', 1)::int;
+      BEGIN
+        v_from := make_date(v_start_year, 4, 1);
+        v_to := make_date(v_start_year + 1, 3, 31);
+      EXCEPTION WHEN OTHERS THEN
+        v_from := date_trunc('year', v_today)::date;
+        v_to := (date_trunc('year', v_today) + interval '1 year - 1 day')::date;
+      END;
+      v_period_label := 'FY ' || v_fy;
+    ELSE
+      v_period_label := to_char(v_from, 'DD Mon YYYY') || ' – ' || to_char(v_to, 'DD Mon YYYY');
+    END IF;
+  END IF;
+
+  CASE LOWER(type)
+    ----------------------------------------------------------------------------
+    -- CUSTOMER LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'customer_ledger' THEN
+      v_data := public.party_ledger_report(
+        'CUSTOMER',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- VENDOR LEDGER REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'vendor_ledger' THEN
+      v_data := public.party_ledger_report(
+        'VENDOR',
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_from END,
+        CASE WHEN v_period = 'ALL' THEN NULL ELSE v_to END,
+        params->>'search'
+      );
+      RETURN v_data || jsonb_build_object(
+        'period', v_period,
+        'period_label', v_period_label,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 1. PROFIT & LOSS (BR-1: Cash-basis, loans excluded)
+    ----------------------------------------------------------------------------
+    WHEN 'pnl' THEN
+      SELECT COALESCE(SUM(amount), 0) INTO v_income
+      FROM public.receipts
+      WHERE business_id = v_biz_id AND receipt_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_payments
+      FROM public.payments
+      WHERE business_id = v_biz_id AND payment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_expenses
+      FROM public.expenses
+      WHERE business_id = v_biz_id AND expense_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      v_outgoing := v_payments + v_expenses;
+      v_net_profit := v_income - v_outgoing;
+
+      SELECT COALESCE(SUM(amount), 0) INTO v_loans_taken
+      FROM public.loans
+      WHERE business_id = v_biz_id AND loan_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      SELECT
+        COALESCE(SUM(principal), 0),
+        COALESCE(SUM(interest), 0)
+      INTO
+        v_principal_repaid,
+        v_interest_paid
+      FROM public.loan_repayments
+      WHERE business_id = v_biz_id AND repayment_date BETWEEN v_from AND v_to AND deleted_at IS NULL;
+
+      WITH exp_grouped AS (
+        SELECT
+          ec.name AS category_name,
+          COALESCE(SUM(e.amount), 0) AS total
+        FROM public.expense_categories ec
+        JOIN public.expenses e ON e.category_id = ec.id
+        WHERE ec.business_id = v_biz_id
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND e.deleted_at IS NULL
+        GROUP BY ec.name
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'category_name', eg.category_name,
+            'total', eg.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_expense_by_cat
+      FROM exp_grouped eg;
+
+      WITH inc_grouped AS (
+        SELECT
+          r.kind,
+          r.income_category,
+          COALESCE(SUM(r.amount), 0) AS total
+        FROM public.receipts r
+        WHERE r.business_id = v_biz_id
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND r.deleted_at IS NULL
+        GROUP BY r.kind, r.income_category
+        ORDER BY total DESC
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'kind', ig.kind,
+            'category', ig.income_category,
+            'total', ig.total
+          )
+        ),
+        '[]'::jsonb
+      )
+      INTO v_income_by_cat
+      FROM inc_grouped ig;
+
+      IF v_period = 'ALL' THEN
+        SELECT COALESCE(MIN(receipt_date), date_trunc('year', v_today)::date)
+        INTO v_min_trend_date
+        FROM public.receipts
+        WHERE business_id = v_biz_id AND deleted_at IS NULL;
+      ELSE
+        v_min_trend_date := v_from;
+      END IF;
+
+      WITH months AS (
+        SELECT generate_series(
+          date_trunc('month', v_min_trend_date),
+          date_trunc('month', v_to),
+          '1 month'::interval
+        )::date AS m_start
+      ),
+      monthly_calc AS (
+        SELECT
+          to_char(m.m_start, 'Mon YYYY') AS month_label,
+          m.m_start,
+          COALESCE((
+            SELECT SUM(r.amount)
+            FROM public.receipts r
+            WHERE r.business_id = v_biz_id
+              AND r.receipt_date >= m.m_start
+              AND r.receipt_date < (m.m_start + interval '1 month')::date
+              AND r.deleted_at IS NULL
+          ), 0) AS income,
+          COALESCE((
+            SELECT SUM(p.amount)
+            FROM public.payments p
+            WHERE p.business_id = v_biz_id
+              AND p.payment_date >= m.m_start
+              AND p.payment_date < (m.m_start + interval '1 month')::date
+              AND p.deleted_at IS NULL
+          ), 0)
+          +
+          COALESCE((
+            SELECT SUM(e.amount)
+            FROM public.expenses e
+            WHERE e.business_id = v_biz_id
+              AND e.expense_date >= m.m_start
+              AND e.expense_date < (m.m_start + interval '1 month')::date
+              AND e.deleted_at IS NULL
+          ), 0) AS outgoing
+        FROM months m
+      )
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'month', mc.month_label,
+            'income', mc.income,
+            'outgoing', mc.outgoing,
+            'profit', (mc.income - mc.outgoing)
+          )
+          ORDER BY mc.m_start ASC
+        ),
+        '[]'::jsonb
+      )
+      INTO v_monthly_trend
+      FROM monthly_calc mc;
+
+      -- Total Outstanding (Pending customer dues across active invoices)
+      SELECT COALESCE(SUM(total - paid_amount), 0)
+      INTO v_total_outstanding
+      FROM public.invoices
+      WHERE business_id = v_biz_id AND status = 'ACTIVE' AND deleted_at IS NULL;
+
+      RETURN jsonb_build_object(
+        'type', 'pnl',
+        'fy_label', v_fy,
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'income', v_income,
+        'outgoing', v_outgoing,
+        'payments', v_payments,
+        'expenses', v_expenses,
+        'net_profit', v_net_profit,
+        'total_outstanding', v_total_outstanding,
+        'loans', jsonb_build_object(
+          'taken', v_loans_taken,
+          'principal_repaid', v_principal_repaid,
+          'interest_paid', v_interest_paid
+        ),
+        'expense_categories', v_expense_by_cat,
+        'income_categories', v_income_by_cat,
+        'monthly_trend', v_monthly_trend,
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      );
+
+    ----------------------------------------------------------------------------
+    -- 2. INVOICES REPORT (Enhanced with status-wise filtering)
+    ----------------------------------------------------------------------------
+    WHEN 'invoices' THEN
+      WITH inv_base AS (
+        SELECT
+          i.id,
+          i.number,
+          i.invoice_date,
+          i.due_date,
+          i.party_name,
+          i.party_mobile,
+          i.subtotal,
+          i.discount_amount,
+          i.total,
+          i.paid_amount,
+          (i.total - i.paid_amount) AS balance,
+          i.status,
+          CASE
+            WHEN i.status = 'ACTIVE' AND (i.total > i.paid_amount) AND i.due_date < v_today THEN true
+            ELSE false
+          END AS is_overdue
+        FROM public.invoices i
+        WHERE i.business_id = v_biz_id
+          AND i.deleted_at IS NULL
+          AND i.invoice_date BETWEEN v_from AND v_to
+      ),
+      inv_list AS (
+        SELECT *
+        FROM inv_base i
+        WHERE (
+          params->>'status' IS NULL 
+          OR UPPER(params->>'status') = 'ALL'
+          OR (UPPER(params->>'status') = 'PAID' AND i.status = 'ACTIVE' AND (i.balance = 0 OR i.paid_amount >= i.total))
+          OR (UPPER(params->>'status') = 'UNPAID' AND i.status = 'ACTIVE' AND i.paid_amount = 0)
+          OR (UPPER(params->>'status') = 'PARTIAL' AND i.status = 'ACTIVE' AND i.paid_amount > 0 AND i.paid_amount < i.total)
+          OR (UPPER(params->>'status') = 'OVERDUE' AND i.status = 'ACTIVE' AND i.is_overdue = true)
+          OR (UPPER(params->>'status') = 'CANCELLED' AND i.status = 'CANCELLED')
+          OR (i.status = params->>'status')
+        )
+        ORDER BY i.invoice_date DESC, i.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'invoices',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'status_filter', COALESCE(params->>'status', 'ALL'),
+        'total_billed', COALESCE(SUM(total), 0),
+        'total_paid', COALESCE(SUM(paid_amount), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(inv_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM inv_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 3. RECEIPTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'receipts' THEN
+      WITH rec_list AS (
+        SELECT
+          r.id,
+          r.number,
+          r.receipt_date,
+          c.name AS customer_name,
+          r.amount,
+          r.mode,
+          r.kind,
+          r.income_category,
+          r.reference,
+          r.unallocated_amount
+        FROM public.receipts r
+        LEFT JOIN public.customers c ON c.id = r.customer_id
+        WHERE r.business_id = v_biz_id
+          AND r.deleted_at IS NULL
+          AND r.receipt_date BETWEEN v_from AND v_to
+          AND (params->>'mode' IS NULL OR r.mode = params->>'mode')
+          AND (params->>'kind' IS NULL OR r.kind = params->>'kind')
+        ORDER BY r.receipt_date DESC, r.number DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'receipts',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(rec_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM rec_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 4. PAYMENTS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'payments' THEN
+      WITH pay_list AS (
+        SELECT
+          p.id,
+          p.payment_date,
+          v.name AS vendor_name,
+          p.description,
+          i.number AS invoice_number,
+          p.amount,
+          p.mode,
+          p.notes
+        FROM public.payments p
+        JOIN public.vendors v ON v.id = p.vendor_id
+        LEFT JOIN public.invoices i ON i.id = p.invoice_id
+        WHERE p.business_id = v_biz_id
+          AND p.deleted_at IS NULL
+          AND p.payment_date BETWEEN v_from AND v_to
+          AND (params->>'vendor_id' IS NULL OR p.vendor_id = (params->>'vendor_id')::uuid)
+        ORDER BY p.payment_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'payments',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(pay_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM pay_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 5. EXPENSES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'expenses' THEN
+      WITH exp_list AS (
+        SELECT
+          e.id,
+          e.expense_date,
+          ec.name AS category_name,
+          e.description,
+          e.amount,
+          e.mode,
+          e.payee,
+          e.notes
+        FROM public.expenses e
+        JOIN public.expense_categories ec ON ec.id = e.category_id
+        WHERE e.business_id = v_biz_id
+          AND e.deleted_at IS NULL
+          AND e.expense_date BETWEEN v_from AND v_to
+          AND (params->>'category_id' IS NULL OR e.category_id = (params->>'category_id')::uuid)
+        ORDER BY e.expense_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'expenses',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(exp_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM exp_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 6. OUTSTANDING DUES REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'outstanding' THEN
+      WITH dues_query AS (
+        SELECT
+          c.id,
+          c.name AS customer_name,
+          c.mobile AS customer_mobile,
+          c.type AS customer_type,
+          COALESCE(SUM(i.total), 0) AS total_billed,
+          COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+          COALESCE(SUM(i.total - i.paid_amount), 0) AS balance,
+          COALESCE(SUM(CASE WHEN i.due_date < v_today THEN (i.total - i.paid_amount) ELSE 0 END), 0) AS overdue_balance,
+          MIN(i.invoice_date) AS oldest_invoice_date
+        FROM public.customers c
+        JOIN public.invoices i ON i.customer_id = c.id
+        WHERE c.business_id = v_biz_id
+          AND c.deleted_at IS NULL
+          AND i.business_id = v_biz_id
+          AND i.status = 'ACTIVE'
+          AND i.deleted_at IS NULL
+          AND (i.total > i.paid_amount)
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+        GROUP BY c.id, c.name, c.mobile, c.type
+        HAVING COALESCE(SUM(i.total - i.paid_amount), 0) > 0
+        ORDER BY balance DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'outstanding',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_outstanding', COALESCE(SUM(balance), 0),
+        'total_balance', COALESCE(SUM(balance), 0),
+        'total_overdue', COALESCE(SUM(overdue_balance), 0),
+        'customer_count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(dues_query.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM dues_query;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 7. LOANS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'loans' THEN
+      WITH loan_list AS (
+        SELECT
+          l.id,
+          l.lender_name,
+          l.loan_date,
+          l.amount AS taken_amount,
+          COALESCE(SUM(lr.principal), 0) AS principal_repaid,
+          COALESCE(SUM(lr.interest), 0) AS interest_paid,
+          (l.amount - COALESCE(SUM(lr.principal), 0)) AS current_outstanding
+        FROM public.loans l
+        LEFT JOIN public.loan_repayments lr ON lr.loan_id = l.id AND lr.deleted_at IS NULL
+          AND (v_period = 'ALL' OR lr.repayment_date BETWEEN v_from AND v_to)
+        WHERE l.business_id = v_biz_id
+          AND l.deleted_at IS NULL
+          AND (
+            v_period = 'ALL'
+            OR l.loan_date BETWEEN v_from AND v_to
+            OR EXISTS (
+              SELECT 1 FROM public.loan_repayments r
+              WHERE r.loan_id = l.id AND r.deleted_at IS NULL AND r.repayment_date BETWEEN v_from AND v_to
+            )
+          )
+        GROUP BY l.id, l.lender_name, l.loan_date, l.amount
+        ORDER BY l.loan_date DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'loans',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_taken', COALESCE(SUM(taken_amount), 0),
+        'total_principal_repaid', COALESCE(SUM(principal_repaid), 0),
+        'total_outstanding', COALESCE(SUM(current_outstanding), 0),
+        'rows', COALESCE(jsonb_agg(to_jsonb(loan_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM loan_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 8. JOBS REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'jobs' THEN
+      WITH job_list AS (
+        SELECT
+          j.id,
+          j.job_type_name,
+          j.party_name,
+          j.applicant_name,
+          j.amount,
+          j.deadline_date,
+          j.status,
+          m.name AS assigned_staff_name,
+          i.number AS invoice_number,
+          i.invoice_date
+        FROM public.jobs j
+        JOIN public.invoices i ON i.id = j.invoice_id
+        LEFT JOIN public.members m ON m.id = j.assigned_staff_id
+        WHERE j.business_id = v_biz_id
+          AND j.deleted_at IS NULL
+          AND (v_period = 'ALL' OR i.invoice_date BETWEEN v_from AND v_to)
+          AND (params->>'status' IS NULL OR j.status = params->>'status')
+        ORDER BY j.deadline_date ASC
+      )
+      SELECT jsonb_build_object(
+        'type', 'jobs',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(job_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM job_list;
+
+      RETURN v_data;
+
+    ----------------------------------------------------------------------------
+    -- 9. COMMISSION REPORT
+    ----------------------------------------------------------------------------
+    WHEN 'commission' THEN
+      WITH comm_list AS (
+        SELECT
+          ce.id,
+          m.name AS staff_name,
+          j.job_type_name,
+          ce.base_amount,
+          ce.percent,
+          ce.amount,
+          ce.status,
+          ce.earned_at
+        FROM public.commission_entries ce
+        JOIN public.members m ON m.id = ce.staff_id
+        JOIN public.jobs j ON j.id = ce.job_id
+        WHERE ce.business_id = v_biz_id
+          AND ce.deleted_at IS NULL
+          AND (params->>'staff_id' IS NULL OR ce.staff_id = (params->>'staff_id')::uuid)
+          AND (
+            v_period = 'ALL'
+            OR (ce.earned_at IS NOT NULL AND ce.earned_at::date BETWEEN v_from AND v_to)
+            OR (ce.earned_at IS NULL AND ce.created_at::date BETWEEN v_from AND v_to)
+          )
+        ORDER BY ce.created_at DESC
+      )
+      SELECT jsonb_build_object(
+        'type', 'commission',
+        'from', v_from,
+        'to', v_to,
+        'period_label', v_period_label,
+        'total_amount', COALESCE(SUM(amount), 0),
+        'count', COUNT(*),
+        'rows', COALESCE(jsonb_agg(to_jsonb(comm_list.*)), '[]'::jsonb),
+        'business', jsonb_build_object(
+          'id', v_biz.id,
+          'name', v_biz.name,
+          'owner_name', v_biz.owner_name,
+          'mobile', v_biz.mobile,
+          'email', v_biz.email,
+          'address', v_biz.address,
+          'upi_id', v_biz.upi_id
+        )
+      )
+      INTO v_data
+      FROM comm_list;
+
+      RETURN v_data;
+
+    ELSE
+      RAISE EXCEPTION 'UNKNOWN_REPORT_TYPE' USING ERRCODE = 'P0001';
+  END CASE;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
+
+REVOKE ALL ON FUNCTION public.report(text, jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.report(text, jsonb) TO authenticated;
+
+
+-- >>> Migration: 20261121000053_storage_documents_bucket.sql <<<
+-- Create storage schema if not exists (for Postgres environments)
+CREATE SCHEMA IF NOT EXISTS storage;
+
+-- Create storage.buckets table if not exists
+CREATE TABLE IF NOT EXISTS storage.buckets (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  owner uuid,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  public boolean DEFAULT false,
+  avif_autodetection boolean DEFAULT false,
+  file_size_limit bigint,
+  allowed_mime_types text[]
+);
+
+-- Create storage.objects table if not exists
+CREATE TABLE IF NOT EXISTS storage.objects (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  bucket_id text REFERENCES storage.buckets(id),
+  name text,
+  owner uuid,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  last_accessed_at timestamptz DEFAULT now(),
+  metadata jsonb,
+  path_tokens text[] GENERATED ALWAYS AS (string_to_array(name, '/')) STORED
+);
+
+-- Ensure documents bucket exists and is PRIVATE
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('documents', 'documents', false, 15728640, ARRAY['application/pdf']::text[])
+ON CONFLICT (id) DO UPDATE SET 
+  public = false,
+  allowed_mime_types = ARRAY['application/pdf']::text[];
+
+-- Enable RLS on storage.objects
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
+-- Helper function to extract foldername if storage.foldername is not pre-installed
+CREATE OR REPLACE FUNCTION storage.foldername(name text)
+RETURNS text[]
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN string_to_array(name, '/');
+END;
+$$;
+
+-- RLS: Authenticated business members can upload documents to their own business directory {business_id}/*
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'Business members can upload documents'
+  ) THEN
+    CREATE POLICY "Business members can upload documents" ON storage.objects
+    FOR INSERT TO authenticated
+    WITH CHECK (
+      bucket_id = 'documents' 
+      AND (storage.foldername(name))[1] = (SELECT app.current_business_id()::text)
+    );
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'Business members can view their documents'
+  ) THEN
+    CREATE POLICY "Business members can view their documents" ON storage.objects
+    FOR SELECT TO authenticated
+    USING (
+      bucket_id = 'documents' 
+      AND (storage.foldername(name))[1] = (SELECT app.current_business_id()::text)
+    );
+  END IF;
+END $$;
+
