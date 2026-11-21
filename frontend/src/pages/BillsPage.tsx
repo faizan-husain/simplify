@@ -14,12 +14,13 @@ import { useToast } from '../components/ui/Toast';
 import { BillDetailModal } from '../components/bills/BillDetailModal';
 import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet';
 import { ReceiptDetailModal } from '../components/receipts/ReceiptDetailModal';
-import { Plus, Search, Pencil, ArrowDownLeft, XCircle, FileText, Calendar, Phone, X } from 'lucide-react';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { Plus, Search, Pencil, ArrowDownLeft, XCircle, FileText, Calendar, Phone, X, RotateCcw } from 'lucide-react';
 import { FilterChips, SearchField, BillRow } from '../components/mobile';
 import { Database } from '../types/supabase';
 import { normalizeCustomerMobile } from '../components/documents/documentSharing';
 import { useAuth } from '../context/AuthContext';
+import { CancelBillModal } from '../components/bills/CancelBillModal';
+import { RestoreBillModal } from '../components/bills/RestoreBillModal';
 
 type InvoiceItem = Database['public']['Tables']['invoice_items']['Row'];
 type Invoice = Database['public']['Tables']['invoices']['Row'] & {
@@ -80,7 +81,7 @@ export const BillsPage: React.FC = () => {
   const [receivePaymentInvoice, setReceivePaymentInvoice] = useState<Invoice | null>(null);
   const [selectedReceiptDetailId, setSelectedReceiptDetailId] = useState<string | null>(null);
   const [billToCancel, setBillToCancel] = useState<Invoice | null>(null);
-  const [cancelLoading, setCancelLoading] = useState(false);
+  const [billToRestore, setBillToRestore] = useState<Invoice | null>(null);
   const [focusedRowIndex, setFocusedRowIndex] = useState<number>(-1);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -108,7 +109,10 @@ export const BillsPage: React.FC = () => {
   const getStatusBadge = (inv: Invoice, isOverdue: boolean) => {
     if (inv.status === 'CANCELLED') {
       return (
-        <span className="w-[74px] py-0.5 text-xs font-semibold rounded-md bg-slate-100 text-slate-500 line-through inline-flex items-center justify-center text-center shrink-0 border-0">
+        <span
+          title={inv.cancel_reason ? `Reason: ${inv.cancel_reason}` : 'Cancelled bill'}
+          className="w-[74px] py-0.5 text-xs font-semibold rounded-md bg-rose-50 text-rose-700 border border-rose-200/60 inline-flex items-center justify-center text-center shrink-0"
+        >
           Cancelled
         </span>
       );
@@ -222,10 +226,15 @@ export const BillsPage: React.FC = () => {
     const bal = inv.total - inv.paid_amount;
     const isOverdue = inv.status === 'ACTIVE' && bal > 0 && new Date(inv.due_date) < new Date();
 
-    if (filter === 'PAID' && (inv.status !== 'ACTIVE' || inv.paid_amount < inv.total)) return false;
-    if (filter === 'PARTIAL' && (inv.status !== 'ACTIVE' || inv.paid_amount <= 0 || inv.paid_amount >= inv.total)) return false;
-    if (filter === 'UNPAID' && (inv.status !== 'ACTIVE' || inv.paid_amount > 0)) return false;
-    if (filter === 'OVERDUE' && !isOverdue) return false;
+    if (filter === 'CANCELLED') {
+      if (inv.status !== 'CANCELLED') return false;
+    } else {
+      if (inv.status === 'CANCELLED') return false;
+      if (filter === 'PAID' && inv.paid_amount < inv.total) return false;
+      if (filter === 'PARTIAL' && (inv.paid_amount <= 0 || inv.paid_amount >= inv.total)) return false;
+      if (filter === 'UNPAID' && inv.paid_amount > 0) return false;
+      if (filter === 'OVERDUE' && !isOverdue) return false;
+    }
 
     // 2. Date-wise filter
     if (datePreset === 'TODAY') {
@@ -744,7 +753,7 @@ export const BillsPage: React.FC = () => {
                       </button>
                     )}
 
-                    {!isStaff && inv.status === 'ACTIVE' && (
+                    {inv.status === 'ACTIVE' && (
                       <button
                         type="button"
                         title="Cancel Bill"
@@ -752,6 +761,17 @@ export const BillsPage: React.FC = () => {
                         className="w-7 h-7 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 flex items-center justify-center transition-all cursor-pointer shadow-2xs hover:scale-105"
                       >
                         <XCircle className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    {inv.status === 'CANCELLED' && (
+                      <button
+                        type="button"
+                        title="Restore Bill"
+                        onClick={() => setBillToRestore(inv)}
+                        className="w-7 h-7 rounded-lg bg-teal-50 hover:bg-[#EAF2F1] text-[#0F766E] hover:text-[#0D655E] flex items-center justify-center transition-all cursor-pointer shadow-2xs hover:scale-105"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </div>
@@ -811,32 +831,25 @@ export const BillsPage: React.FC = () => {
         receiptId={selectedReceiptDetailId}
       />
 
-      {/* Cancel Bill Confirmation Dialog */}
-      <ConfirmDialog
+      {/* Cancel Bill Modal */}
+      <CancelBillModal
         open={Boolean(billToCancel)}
         onOpenChange={(open) => !open && setBillToCancel(null)}
-        title={`Cancel Bill #${billToCancel?.number || ''}`}
-        description="Cancelling an invoice releases any payments to customer advance and marks linked jobs as cancelled. This action cannot be undone."
-        confirmLabel="Cancel Bill"
-        variant="danger"
-        loading={cancelLoading}
-        onConfirm={async () => {
-          if (!billToCancel) return;
-          setCancelLoading(true);
-          try {
-            const { error } = await supabase.rpc('cancel_invoice', {
-              id: billToCancel.id,
-              reason: 'Cancelled by user',
-            });
-            if (error) throw error;
-            showToast(`Bill #${billToCancel.number} cancelled successfully`, 'success');
-            setBillToCancel(null);
-            fetchInvoices();
-          } catch (err: any) {
-            showToast(getErrorMessage(err.message), 'error');
-          } finally {
-            setCancelLoading(false);
-          }
+        invoice={billToCancel}
+        onSuccess={() => {
+          setBillToCancel(null);
+          fetchInvoices();
+        }}
+      />
+
+      {/* Restore Bill Modal */}
+      <RestoreBillModal
+        open={Boolean(billToRestore)}
+        onOpenChange={(open) => !open && setBillToRestore(null)}
+        invoice={billToRestore}
+        onSuccess={() => {
+          setBillToRestore(null);
+          fetchInvoices();
         }}
       />
     </div>

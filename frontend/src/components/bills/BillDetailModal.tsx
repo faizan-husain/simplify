@@ -4,15 +4,17 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { formatDate } from '../../lib/dates';
-import { getErrorMessage } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { StatusDot } from '../ui/StatusDot';
 import { useToast } from '../ui/Toast';
 import { useAuth } from '../../context/AuthContext';
-import { Printer, Share2, Download, CheckCircle2, Pencil } from 'lucide-react';
+import { Printer, Share2, Download, CheckCircle2, Pencil, AlertTriangle, RotateCcw } from 'lucide-react';
 import { Database } from '../../types/supabase';
 import { ApplyAdvanceModal } from './ApplyAdvanceModal';
+import { CancelBillModal } from './CancelBillModal';
+import { RestoreBillModal } from './RestoreBillModal';
+import { BillActivityHistory } from './BillActivityHistory';
 import { InvoiceDocument } from '../documents/InvoiceDocument';
 import { exportInvoicePDF, setPrintPageSize, generateDocumentPdfBlob } from '../documents/pdfExport';
 import {
@@ -51,8 +53,8 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   const docRef = useRef<HTMLDivElement>(null);
 
   const [isCancelOpen, setIsCancelOpen] = useState(false);
-  const [cancelReason, setCancelReason] = useState('');
-  const [cancelling, setCancelling] = useState(false);
+  const [isRestoreOpen, setIsRestoreOpen] = useState(false);
+  const [historyRefreshTrigger, setHistoryRefreshTrigger] = useState(0);
   const [customerAdvance, setCustomerAdvance] = useState(0);
   const [isAdvanceOpen, setIsAdvanceOpen] = useState(false);
 
@@ -244,32 +246,6 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
     }
   };
 
-  const handleConfirmCancel = async () => {
-    if (!cancelReason.trim()) {
-      showToast('Cancellation reason is required', 'error');
-      return;
-    }
-
-    setCancelling(true);
-    try {
-      const { error } = await supabase.rpc('cancel_invoice', {
-        id: invoice.id,
-        reason: cancelReason.trim(),
-      });
-
-      if (error) throw error;
-
-      showToast('Invoice cancelled. Any payments moved to customer advance.', 'info');
-      setIsCancelOpen(false);
-      onOpenChange(false);
-      onInvoiceUpdated?.();
-    } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
-    } finally {
-      setCancelling(false);
-    }
-  };
-
   return (
     <>
       <Dialog
@@ -401,7 +377,22 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
           </div>
 
           {/* Centered Document Preview Container - matches ReceiptDetailModal layout */}
-          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto bg-[#F6F7F9] p-3 sm:p-4 rounded-xl border-0 shadow-[0_2px_8px_rgba(0,0,0,0.03),inset_0_1px_3px_rgba(0,0,0,0.02)]">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto bg-[#F6F7F9] p-3 sm:p-4 rounded-xl border-0 shadow-[0_2px_8px_rgba(0,0,0,0.03),inset_0_1px_3px_rgba(0,0,0,0.02)] space-y-3">
+            {invoice.status === 'CANCELLED' && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200/80 text-rose-800 text-xs flex items-start gap-2.5 shadow-2xs">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <div className="font-bold text-[13px]">This Bill is Cancelled</div>
+                  <div className="text-[12px] text-rose-700">
+                    Reason: <span className="font-semibold italic">"{invoice.cancel_reason || 'No reason specified'}"</span>
+                  </div>
+                  <div className="text-[11px] text-rose-500">
+                    Cancelled on {formatDate((invoice as any).cancelled_at || invoice.updated_at)}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-center">
               <InvoiceDocument
                 invoice={invoice}
@@ -409,6 +400,9 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 format={printFormat}
               />
             </div>
+
+            {/* Complete Activity & Audit History */}
+            <BillActivityHistory invoiceId={invoice.id} refreshTrigger={historyRefreshTrigger} />
           </div>
 
           {/* Bottom Operational Action Bar */}
@@ -466,7 +460,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 </Button>
               )}
 
-              {!isStaff && invoice.status === 'ACTIVE' && (
+              {invoice.status === 'ACTIVE' && (
                 <Button
                   type="button"
                   variant="danger"
@@ -475,6 +469,19 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                   onClick={() => setIsCancelOpen(true)}
                 >
                   Cancel
+                </Button>
+              )}
+
+              {invoice.status === 'CANCELLED' && (
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  className="bg-[#0F766E] hover:bg-[#0D655E] text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm"
+                  onClick={() => setIsRestoreOpen(true)}
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Restore Bill
                 </Button>
               )}
 
@@ -511,43 +518,27 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
         <InvoiceDocument ref={docRef} invoice={invoice} business={business} format="a5" />
       </div>
 
-      {/* Cancel Bill Confirmation Dialog */}
-      <Dialog
+      {/* Cancel Bill Modal */}
+      <CancelBillModal
         open={isCancelOpen}
         onOpenChange={setIsCancelOpen}
-        title="Cancel Bill"
-        description="Cancelling an invoice releases any payments to customer advance. Cancelled invoices cannot be undone."
-      >
-        <div className="space-y-4">
-          <input
-            type="text"
-            placeholder="Reason for cancellation (mandatory)"
-            value={cancelReason}
-            onChange={(e) => setCancelReason(e.target.value)}
-            className="w-full h-11 px-3.5 rounded-lg border border-border text-sm"
-          />
+        invoice={invoice}
+        onSuccess={() => {
+          onInvoiceUpdated?.();
+          setHistoryRefreshTrigger((prev) => prev + 1);
+        }}
+      />
 
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="md"
-              className="flex-1"
-              onClick={() => setIsCancelOpen(false)}
-            >
-              Back
-            </Button>
-            <Button
-              variant="danger"
-              size="md"
-              className="flex-1"
-              loading={cancelling}
-              onClick={handleConfirmCancel}
-            >
-              Confirm Cancel
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+      {/* Restore Bill Modal */}
+      <RestoreBillModal
+        open={isRestoreOpen}
+        onOpenChange={setIsRestoreOpen}
+        invoice={invoice}
+        onSuccess={() => {
+          onInvoiceUpdated?.();
+          setHistoryRefreshTrigger((prev) => prev + 1);
+        }}
+      />
 
       {/* Apply Advance Dialog */}
       <ApplyAdvanceModal

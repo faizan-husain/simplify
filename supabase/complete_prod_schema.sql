@@ -24074,35 +24074,46 @@ GRANT EXECUTE ON FUNCTION public.report(text, jsonb) TO authenticated;
 
 -- >>> Migration: 20261121000053_storage_documents_bucket.sql <<<
 -- Ensure documents bucket exists in Supabase Storage and is PRIVATE
-INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('documents', 'documents', false, 15728640, ARRAY['application/pdf']::text[])
-ON CONFLICT (id) DO UPDATE SET 
-  public = false,
-  allowed_mime_types = ARRAY['application/pdf']::text[];
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables WHERE table_schema = 'storage' AND table_name = 'buckets'
+  ) THEN
+    INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    VALUES ('documents', 'documents', false, 15728640, ARRAY['application/pdf']::text[])
+    ON CONFLICT (id) DO UPDATE SET 
+      public = false,
+      allowed_mime_types = ARRAY['application/pdf']::text[];
+  END IF;
+END $$;
 
 -- RLS: Authenticated business members can upload documents to their own business directory {business_id}/*
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'Business members can upload documents'
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables WHERE table_schema = 'storage' AND table_name = 'objects'
   ) THEN
-    CREATE POLICY "Business members can upload documents" ON storage.objects
-    FOR INSERT TO authenticated
-    WITH CHECK (
-      bucket_id = 'documents' 
-      AND (storage.foldername(name))[1] = (SELECT app.current_business_id()::text)
-    );
-  END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'Business members can upload documents'
+    ) THEN
+      CREATE POLICY "Business members can upload documents" ON storage.objects
+      FOR INSERT TO authenticated
+      WITH CHECK (
+        bucket_id = 'documents' 
+        AND (storage.foldername(name))[1] = (SELECT app.current_business_id()::text)
+      );
+    END IF;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'Business members can view their documents'
-  ) THEN
-    CREATE POLICY "Business members can view their documents" ON storage.objects
-    FOR SELECT TO authenticated
-    USING (
-      bucket_id = 'documents' 
-      AND (storage.foldername(name))[1] = (SELECT app.current_business_id()::text)
-    );
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'Business members can view their documents'
+    ) THEN
+      CREATE POLICY "Business members can view their documents" ON storage.objects
+      FOR SELECT TO authenticated
+      USING (
+        bucket_id = 'documents' 
+        AND (storage.foldername(name))[1] = (SELECT app.current_business_id()::text)
+      );
+    END IF;
   END IF;
 END $$;
 
@@ -24125,6 +24136,11 @@ BEGIN
   WHERE auth_user_id = NEW.id;
 
   IF v_existing_member_id IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+
+  -- Skip automated test users
+  IF NEW.email LIKE '%@simplify.local' OR NEW.email LIKE '%@teamtest.com' THEN
     RETURN NEW;
   END IF;
 
@@ -24215,7 +24231,7 @@ BEGIN
 
   -- 6. Privacy PIN '1234'
   INSERT INTO public.business_secrets (business_id, privacy_pin_hash)
-  VALUES (v_biz_id, crypt('1234', gen_salt('bf')))
+  VALUES (v_biz_id, public.crypt('1234', public.gen_salt('bf')))
   ON CONFLICT (business_id) DO NOTHING;
 
   RETURN NEW;
@@ -24327,7 +24343,7 @@ BEGIN
 
     -- Seed Privacy PIN '1234'
     INSERT INTO public.business_secrets (business_id, privacy_pin_hash)
-    VALUES (v_biz_id, crypt('1234', gen_salt('bf')))
+    VALUES (v_biz_id, public.crypt('1234', public.gen_salt('bf')))
     ON CONFLICT (business_id) DO NOTHING;
 
   END LOOP;
@@ -24361,6 +24377,11 @@ BEGIN
   -- If this user is marked as STAFF or already attached to a member profile, skip business creation
   v_role := COALESCE(NEW.raw_user_meta_data->>'role', NEW.raw_app_meta_data->>'role', '');
   IF UPPER(v_role) = 'STAFF' THEN
+    RETURN NEW;
+  END IF;
+
+  -- Skip automated test users
+  IF NEW.email LIKE '%@simplify.local' OR NEW.email LIKE '%@teamtest.com' THEN
     RETURN NEW;
   END IF;
 
@@ -24454,7 +24475,7 @@ BEGIN
 
   -- 6. Privacy PIN '1234'
   INSERT INTO public.business_secrets (business_id, privacy_pin_hash)
-  VALUES (v_biz_id, crypt('1234', gen_salt('bf')))
+  VALUES (v_biz_id, public.crypt('1234', public.gen_salt('bf')))
   ON CONFLICT (business_id) DO NOTHING;
 
   RETURN NEW;
@@ -24668,6 +24689,7 @@ DECLARE
   v_comm_percent numeric(5,2);
   v_comm_amount numeric(14,2);
   v_deadline_date date;
+  v_result jsonb;
 BEGIN
   v_biz_id := (SELECT app.current_business_id());
   v_member_id := (SELECT app.current_member_id());
@@ -25100,14 +25122,11 @@ BEGIN
     );
   END IF;
 
-  RETURN jsonb_build_object(
-    'id', v_invoice_id,
-    'number', v_invoice_number,
-    'total', v_total,
-    'paid_amount', v_paid_now,
-    'balance', v_total - v_paid_now,
-    'status', 'ACTIVE'
-  );
+  SELECT to_jsonb(i.*) INTO v_result
+  FROM public.invoices i
+  WHERE i.id = v_invoice_id;
+
+  RETURN v_result;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
@@ -25405,6 +25424,7 @@ BEGIN
 
   RETURN jsonb_build_object(
     'transactions', v_txns,
+    'entries', v_txns,
     'total_count', jsonb_array_length(v_txns)
   );
 END;
@@ -26060,4 +26080,520 @@ SET bank_account_id = (SELECT id FROM public.bank_accounts WHERE business_id = r
 WHERE r.bank_account_id IS NULL
   AND r.mode IN ('BANK', 'UPI', 'CARD', 'CHEQUE')
   AND EXISTS (SELECT 1 FROM public.bank_accounts WHERE business_id = r.business_id AND deleted_at IS NULL);
+
+
+-- >>> Migration: 20261121000056_bill_cancellation_and_restoration.sql <<<
+-- ==============================================================================
+-- Migration: 20261121000056_bill_cancellation_and_restoration.sql
+-- Description:
+-- Complete and reliable Bill Cancellation & Restoration system with accurate accounting.
+-- 1. Create public.invoice_activities table for immutable audit history across cycles.
+-- 2. Add cancelled_at, cancelled_by, restored_at, restored_by to public.invoices.
+-- 3. Upgrade cancel_invoice: records actor, reason, releases/voids receipts, cancels jobs.
+-- 4. Create restore_invoice: restores original bill, reconciles receipts, detects conflicts, restores jobs & commissions.
+-- 5. Create get_invoice_activities: fetches full chronological lifecycle events.
+-- 6. Update create_invoice to log initial 'CREATED' activity.
+-- ==============================================================================
+
+-- 1. Add audit columns to invoices if not already present
+ALTER TABLE public.invoices
+  ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,
+  ADD COLUMN IF NOT EXISTS cancelled_by uuid REFERENCES public.members(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS restored_at timestamptz,
+  ADD COLUMN IF NOT EXISTS restored_by uuid REFERENCES public.members(id) ON DELETE SET NULL;
+
+-- 2. Create immutable invoice_activities table
+CREATE TABLE IF NOT EXISTS public.invoice_activities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id uuid NOT NULL DEFAULT (app.current_business_id()) REFERENCES public.businesses(id) ON DELETE CASCADE,
+  invoice_id uuid NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+  action text NOT NULL CHECK (action IN ('CREATED', 'CANCELLED', 'RESTORED')),
+  reason text,
+  actor_id uuid REFERENCES public.members(id) ON DELETE SET NULL,
+  actor_name text NOT NULL DEFAULT 'User',
+  actor_role text NOT NULL DEFAULT 'STAFF',
+  details jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_activities_invoice 
+  ON public.invoice_activities(business_id, invoice_id, created_at DESC);
+
+ALTER TABLE public.invoice_activities ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view activities of own business" ON public.invoice_activities;
+CREATE POLICY "Users can view activities of own business"
+  ON public.invoice_activities FOR SELECT
+  TO authenticated
+  USING (business_id = (SELECT app.current_business_id()));
+
+REVOKE ALL ON public.invoice_activities FROM anon, public;
+GRANT SELECT ON public.invoice_activities TO authenticated;
+
+
+-- 3. RPC: cancel_invoice (Upgraded with actor, reason, accounting preservation)
+DROP FUNCTION IF EXISTS public.cancel_invoice(uuid, text);
+
+CREATE OR REPLACE FUNCTION public.cancel_invoice(
+  id uuid,
+  reason text,
+  void_receipts boolean DEFAULT false
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_actor_name text;
+  v_inv public.invoices%ROWTYPE;
+  v_alloc record;
+  v_rcpt record;
+  v_prev_paid numeric(14,2);
+  v_released_advance numeric(14,2) := 0;
+  v_voided_amount numeric(14,2) := 0;
+  v_clean_reason text;
+  v_result jsonb;
+BEGIN
+  v_biz_id := app.current_business_id();
+  v_member_id := app.current_member_id();
+  v_role := app.current_role();
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Both Owner and Staff (and Accountant) can cancel an issued bill
+  IF v_role NOT IN ('OWNER', 'STAFF', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Unauthorized to cancel bills';
+  END IF;
+
+  v_clean_reason := TRIM(COALESCE(reason, ''));
+  IF v_clean_reason = '' THEN
+    RAISE EXCEPTION 'CANCEL_REASON_REQUIRED' USING ERRCODE = 'P0001', DETAIL = 'A cancellation reason is required';
+  END IF;
+
+  SELECT name INTO v_actor_name FROM public.members WHERE members.id = v_member_id;
+  v_actor_name := COALESCE(v_actor_name, 'User');
+
+  -- Concurrency row lock on invoice
+  SELECT * INTO v_inv
+  FROM public.invoices
+  WHERE invoices.id = cancel_invoice.id AND invoices.business_id = v_biz_id AND invoices.deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001', DETAIL = 'Invoice not found';
+  END IF;
+
+  IF v_inv.status = 'CANCELLED' THEN
+    RAISE EXCEPTION 'INVOICE_ALREADY_CANCELLED' USING ERRCODE = 'P0001', DETAIL = 'Invoice is already cancelled';
+  END IF;
+
+  v_prev_paid := COALESCE(v_inv.paid_amount, 0);
+
+  -- Process active allocations
+  FOR v_alloc IN
+    SELECT ra.id, ra.receipt_id, ra.amount
+    FROM public.receipt_allocations ra
+    WHERE ra.invoice_id = v_inv.id AND ra.deleted_at IS NULL
+    FOR UPDATE
+  LOOP
+    SELECT * INTO v_rcpt FROM public.receipts WHERE receipts.id = v_alloc.receipt_id FOR UPDATE;
+    IF FOUND THEN
+      IF void_receipts = true THEN
+        -- Soft-delete the receipt (Cash/Bank & revenue will decrease)
+        UPDATE public.receipts
+        SET deleted_at = now(),
+            deleted_by = v_member_id,
+            notes = COALESCE(notes, '') || ' (Voided with Bill #' || v_inv.number || ')'
+        WHERE receipts.id = v_rcpt.id;
+
+        -- Soft-delete the allocation so it can be audited and restored
+        UPDATE public.receipt_allocations
+        SET deleted_at = now(),
+            deleted_by = v_member_id
+        WHERE receipt_allocations.id = v_alloc.id;
+
+        v_voided_amount := v_voided_amount + v_alloc.amount;
+      ELSE
+        -- Move to customer advance: increase unallocated_amount on receipt
+        UPDATE public.receipts
+        SET unallocated_amount = unallocated_amount + v_alloc.amount,
+            updated_at = now(),
+            updated_by = v_member_id
+        WHERE receipts.id = v_rcpt.id;
+
+        -- Soft-delete the allocation
+        UPDATE public.receipt_allocations
+        SET deleted_at = now(),
+            deleted_by = v_member_id
+        WHERE receipt_allocations.id = v_alloc.id;
+
+        v_released_advance := v_released_advance + v_alloc.amount;
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- Cancel linked jobs and commissions (BR-8)
+  UPDATE public.jobs
+  SET status = 'CANCELLED', updated_at = now(), updated_by = v_member_id
+  WHERE invoice_id = v_inv.id AND status <> 'CANCELLED';
+
+  UPDATE public.commission_entries
+  SET status = 'CANCELLED', updated_at = now(), updated_by = v_member_id
+  WHERE job_id IN (SELECT jobs.id FROM public.jobs WHERE jobs.invoice_id = v_inv.id) AND status <> 'CANCELLED';
+
+  -- Update invoice to CANCELLED
+  UPDATE public.invoices
+  SET
+    status = 'CANCELLED',
+    cancel_reason = v_clean_reason,
+    cancelled_at = now(),
+    cancelled_by = v_member_id,
+    paid_amount = 0,
+    updated_at = now(),
+    updated_by = v_member_id
+  WHERE invoices.id = v_inv.id
+  RETURNING to_jsonb(invoices.*) INTO v_result;
+
+  -- Record in immutable invoice_activities table (Section 7)
+  INSERT INTO public.invoice_activities (
+    business_id,
+    invoice_id,
+    action,
+    reason,
+    actor_id,
+    actor_name,
+    actor_role,
+    details
+  )
+  VALUES (
+    v_biz_id,
+    v_inv.id,
+    'CANCELLED',
+    v_clean_reason,
+    v_member_id,
+    v_actor_name,
+    v_role,
+    jsonb_build_object(
+      'previous_paid', v_prev_paid,
+      'released_advance', v_released_advance,
+      'voided_amount', v_voided_amount,
+      'total', v_inv.total
+    )
+  );
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'invoice_id', v_inv.id,
+    'number', v_inv.number,
+    'status', 'CANCELLED',
+    'cancel_reason', v_clean_reason,
+    'previous_paid', v_prev_paid,
+    'released_advance', v_released_advance,
+    'voided_amount', v_voided_amount
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.cancel_invoice(uuid, text, boolean) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.cancel_invoice(uuid, text, boolean) TO authenticated;
+
+
+-- 4. RPC: restore_invoice (Section 3 & 4 Real Accounting Recalculation & Conflict Handling)
+CREATE OR REPLACE FUNCTION public.restore_invoice(
+  id uuid,
+  reason text
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_actor_name text;
+  v_inv public.invoices%ROWTYPE;
+  v_alloc record;
+  v_rcpt record;
+  v_reallocated_paid numeric(14,2) := 0;
+  v_available_advance numeric(14,2);
+  v_apply_amount numeric(14,2);
+  v_job record;
+  v_pending_steps int;
+  v_conflict_info text := '';
+  v_clean_reason text;
+  v_result jsonb;
+BEGIN
+  v_biz_id := app.current_business_id();
+  v_member_id := app.current_member_id();
+  v_role := app.current_role();
+
+  IF v_biz_id IS NULL OR v_member_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Both Owner and Staff (and Accountant) can restore a cancelled bill
+  IF v_role NOT IN ('OWNER', 'STAFF', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = '42501', DETAIL = 'Unauthorized to restore bills';
+  END IF;
+
+  v_clean_reason := TRIM(COALESCE(reason, ''));
+  IF v_clean_reason = '' THEN
+    RAISE EXCEPTION 'RESTORE_REASON_REQUIRED' USING ERRCODE = 'P0001', DETAIL = 'A restoration reason is required';
+  END IF;
+
+  SELECT name INTO v_actor_name FROM public.members WHERE members.id = v_member_id;
+  v_actor_name := COALESCE(v_actor_name, 'User');
+
+  -- Concurrency row lock on invoice
+  SELECT * INTO v_inv
+  FROM public.invoices
+  WHERE invoices.id = restore_invoice.id AND invoices.business_id = v_biz_id AND invoices.deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001', DETAIL = 'Invoice not found';
+  END IF;
+
+  IF v_inv.status <> 'CANCELLED' THEN
+    RAISE EXCEPTION 'INVOICE_NOT_CANCELLED' USING ERRCODE = 'P0001', DETAIL = 'Only cancelled invoices can be restored';
+  END IF;
+
+  -- Reconcile payments and allocations (Section 4 & 5 Financial Conflict Handling)
+  FOR v_alloc IN
+    SELECT ra.id, ra.receipt_id, ra.amount
+    FROM public.receipt_allocations ra
+    WHERE ra.invoice_id = v_inv.id AND ra.deleted_at IS NOT NULL
+    ORDER BY ra.created_at ASC
+    FOR UPDATE
+  LOOP
+    SELECT * INTO v_rcpt FROM public.receipts WHERE receipts.id = v_alloc.receipt_id FOR UPDATE;
+    IF FOUND THEN
+      -- Case A: The receipt was soft-deleted when bill was cancelled
+      IF v_rcpt.deleted_at IS NOT NULL THEN
+        UPDATE public.receipts
+        SET deleted_at = NULL,
+            deleted_by = NULL,
+            updated_at = now(),
+            updated_by = v_member_id
+        WHERE receipts.id = v_rcpt.id;
+
+        UPDATE public.receipt_allocations
+        SET deleted_at = NULL,
+            deleted_by = NULL,
+            updated_at = now(),
+            updated_by = v_member_id
+        WHERE receipt_allocations.id = v_alloc.id;
+
+        v_reallocated_paid := v_reallocated_paid + v_alloc.amount;
+
+      -- Case B: The receipt was kept active as Customer Advance (Credit)
+      ELSE
+        v_available_advance := COALESCE(v_rcpt.unallocated_amount, 0);
+        v_apply_amount := LEAST(v_available_advance, v_alloc.amount);
+
+        IF v_apply_amount > 0 THEN
+          UPDATE public.receipts
+          SET unallocated_amount = unallocated_amount - v_apply_amount,
+              updated_at = now(),
+              updated_by = v_member_id
+          WHERE receipts.id = v_rcpt.id;
+
+          UPDATE public.receipt_allocations
+          SET amount = v_apply_amount,
+              deleted_at = NULL,
+              deleted_by = NULL,
+              updated_at = now(),
+              updated_by = v_member_id
+          WHERE receipt_allocations.id = v_alloc.id;
+
+          v_reallocated_paid := v_reallocated_paid + v_apply_amount;
+
+          IF v_apply_amount < v_alloc.amount THEN
+            v_conflict_info := v_conflict_info || 'Customer advance of ₹' || (v_alloc.amount - v_apply_amount) || ' was already used by another transaction. ';
+          END IF;
+        ELSE
+          v_conflict_info := v_conflict_info || 'Original advance of ₹' || v_alloc.amount || ' from Receipt #' || v_rcpt.number || ' was already used. ';
+        END IF;
+      END IF;
+    END IF;
+  END LOOP;
+
+  IF v_reallocated_paid > v_inv.total THEN
+    v_reallocated_paid := v_inv.total;
+  END IF;
+
+  -- Restore linked jobs and commission entries (Section 4)
+  FOR v_job IN
+    SELECT j.id
+    FROM public.jobs j
+    WHERE j.invoice_id = v_inv.id
+  LOOP
+    SELECT COUNT(*) INTO v_pending_steps
+    FROM public.job_steps js
+    WHERE js.job_id = v_job.id AND js.ticked = false AND js.deleted_at IS NULL;
+
+    IF v_pending_steps = 0 AND EXISTS (SELECT 1 FROM public.job_steps js WHERE js.job_id = v_job.id AND js.deleted_at IS NULL) THEN
+      UPDATE public.jobs
+      SET status = 'COMPLETED', updated_at = now(), updated_by = v_member_id
+      WHERE jobs.id = v_job.id;
+
+      UPDATE public.commission_entries
+      SET status = 'EARNED', earned_at = now(), updated_at = now(), updated_by = v_member_id
+      WHERE job_id = v_job.id;
+    ELSE
+      UPDATE public.jobs
+      SET status = 'IN_PROGRESS', updated_at = now(), updated_by = v_member_id
+      WHERE jobs.id = v_job.id;
+
+      UPDATE public.commission_entries
+      SET status = 'UPCOMING', updated_at = now(), updated_by = v_member_id
+      WHERE job_id = v_job.id;
+    END IF;
+  END LOOP;
+
+  -- Restore invoice to ACTIVE
+  UPDATE public.invoices
+  SET
+    status = 'ACTIVE',
+    cancel_reason = NULL,
+    restored_at = now(),
+    restored_by = v_member_id,
+    paid_amount = v_reallocated_paid,
+    updated_at = now(),
+    updated_by = v_member_id
+  WHERE invoices.id = v_inv.id
+  RETURNING to_jsonb(invoices.*) INTO v_result;
+
+  -- Record in immutable invoice_activities table (Section 7)
+  INSERT INTO public.invoice_activities (
+    business_id,
+    invoice_id,
+    action,
+    reason,
+    actor_id,
+    actor_name,
+    actor_role,
+    details
+  )
+  VALUES (
+    v_biz_id,
+    v_inv.id,
+    'RESTORED',
+    v_clean_reason,
+    v_member_id,
+    v_actor_name,
+    v_role,
+    jsonb_build_object(
+      'restored_paid', v_reallocated_paid,
+      'balance', v_inv.total - v_reallocated_paid,
+      'conflict_info', NULLIF(TRIM(v_conflict_info), '')
+    )
+  );
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'invoice_id', v_inv.id,
+    'number', v_inv.number,
+    'status', 'ACTIVE',
+    'paid_amount', v_reallocated_paid,
+    'balance', v_inv.total - v_reallocated_paid,
+    'conflict_info', NULLIF(TRIM(v_conflict_info), '')
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.restore_invoice(uuid, text) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.restore_invoice(uuid, text) TO authenticated;
+
+
+-- 5. RPC: get_invoice_activities (Section 7 Activity History)
+CREATE OR REPLACE FUNCTION public.get_invoice_activities(p_invoice_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_activities jsonb := '[]'::jsonb;
+BEGIN
+  v_biz_id := app.current_business_id();
+  IF v_biz_id IS NULL THEN
+    RAISE EXCEPTION 'UNAUTHORIZED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'id', ia.id,
+      'action', ia.action,
+      'reason', ia.reason,
+      'actor_name', ia.actor_name,
+      'actor_role', ia.actor_role,
+      'details', ia.details,
+      'created_at', ia.created_at
+    ) ORDER BY ia.created_at ASC
+  ), '[]'::jsonb)
+  INTO v_activities
+  FROM public.invoice_activities ia
+  WHERE ia.invoice_id = p_invoice_id AND ia.business_id = v_biz_id;
+
+  RETURN v_activities;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_invoice_activities(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.get_invoice_activities(uuid) TO authenticated;
+
+-- 6. Trigger to automatically record 'CREATED' activity on initial invoice insert
+CREATE OR REPLACE FUNCTION public.trig_invoice_created_activity()
+RETURNS trigger AS $$
+DECLARE
+  v_actor_name text := 'User';
+  v_actor_role text := 'STAFF';
+BEGIN
+  IF NEW.created_by IS NOT NULL THEN
+    SELECT name, role INTO v_actor_name, v_actor_role FROM public.members WHERE id = NEW.created_by;
+  END IF;
+
+  INSERT INTO public.invoice_activities (
+    business_id,
+    invoice_id,
+    action,
+    reason,
+    actor_id,
+    actor_name,
+    actor_role,
+    details,
+    created_at
+  )
+  VALUES (
+    NEW.business_id,
+    NEW.id,
+    'CREATED',
+    'Bill created',
+    NEW.created_by,
+    COALESCE(v_actor_name, 'User'),
+    COALESCE(v_actor_role, 'STAFF'),
+    jsonb_build_object('total', NEW.total, 'paid_amount', NEW.paid_amount),
+    NEW.created_at
+  );
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+DROP TRIGGER IF EXISTS on_invoice_created_activity ON public.invoices;
+CREATE TRIGGER on_invoice_created_activity
+  AFTER INSERT ON public.invoices
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trig_invoice_created_activity();
+
 

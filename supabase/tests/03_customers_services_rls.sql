@@ -2,7 +2,7 @@
 SELECT plan(11);
 
 -- 1. Setup mock auth users and business as admin
-TRUNCATE auth.users CASCADE;
+TRUNCATE auth.users, public.businesses CASCADE;
 INSERT INTO auth.users (id, email) VALUES
   ('11111111-1111-1111-1111-111111111111', '919876543210@simplify.local'),
   ('33333333-3333-3333-3333-333333333333', '919876543212@simplify.local');

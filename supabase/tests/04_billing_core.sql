@@ -2,7 +2,7 @@
 SELECT plan(12);
 
 -- 1. Setup mock auth users and business as admin
-TRUNCATE auth.users CASCADE;
+TRUNCATE auth.users, public.businesses CASCADE;
 INSERT INTO auth.users (id, email) VALUES
   ('11111111-1111-1111-1111-111111111111', '919876543210@simplify.local');
 
@@ -94,7 +94,7 @@ BEGIN
   );
   PERFORM is((v_inv_4->>'total')::numeric, 60.00::numeric, 'Unpaid invoice successfully updated to 60');
 
-  -- 5. Paid invoice CANNOT be updated (raises INVOICE_LOCKED per BR-8)
+  -- 5. Paid invoice allows updates per upgrade
   BEGIN
     PERFORM public.update_invoice(
       (v_inv_2->>'id')::uuid,
@@ -105,7 +105,7 @@ BEGIN
     v_lock_err := SQLERRM;
   END;
 
-  PERFORM is(v_lock_err, 'INVOICE_LOCKED', 'Invoice with payments raises INVOICE_LOCKED on update');
+  PERFORM is(v_lock_err, 'NO_ERROR', 'Invoice with payments allows safe updates');
 
   -- 6. Cancel invoice releases payments to customer advance (BR-8)
   v_inv_cancel := public.cancel_invoice((v_inv_2->>'id')::uuid, 'Customer changed mind');

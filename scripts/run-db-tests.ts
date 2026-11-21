@@ -57,6 +57,7 @@ async function runTests() {
         notices.forEach(n => console.log('  ' + n));
         console.log(`PASSED: ${file}`);
       } catch (err: any) {
+        await client.query('ROLLBACK;').catch(() => {});
         notices.forEach(n => console.log('  ' + n));
         console.error(`FAILED: ${file}`);
         console.error('Error message:', err.message);

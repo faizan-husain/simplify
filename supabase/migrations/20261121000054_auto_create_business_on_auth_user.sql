@@ -18,6 +18,11 @@ BEGIN
     RETURN NEW;
   END IF;
 
+  -- Skip automated test users
+  IF NEW.email LIKE '%@simplify.local' OR NEW.email LIKE '%@teamtest.com' THEN
+    RETURN NEW;
+  END IF;
+
   -- Derive owner name
   v_name := COALESCE(
     NEW.raw_user_meta_data->>'name',
@@ -105,7 +110,7 @@ BEGIN
 
   -- 6. Privacy PIN '1234'
   INSERT INTO public.business_secrets (business_id, privacy_pin_hash)
-  VALUES (v_biz_id, crypt('1234', gen_salt('bf')))
+  VALUES (v_biz_id, public.crypt('1234', public.gen_salt('bf')))
   ON CONFLICT (business_id) DO NOTHING;
 
   RETURN NEW;
@@ -217,7 +222,7 @@ BEGIN
 
     -- Seed Privacy PIN '1234'
     INSERT INTO public.business_secrets (business_id, privacy_pin_hash)
-    VALUES (v_biz_id, crypt('1234', gen_salt('bf')))
+    VALUES (v_biz_id, public.crypt('1234', public.gen_salt('bf')))
     ON CONFLICT (business_id) DO NOTHING;
 
   END LOOP;

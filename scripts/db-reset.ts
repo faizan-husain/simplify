@@ -75,7 +75,11 @@ export async function resetDatabase(targetDb = DB_NAME) {
     await client.query(`
       CREATE TABLE IF NOT EXISTS auth.users (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        instance_id uuid DEFAULT '00000000-0000-0000-0000-000000000000'::uuid,
+        aud text DEFAULT 'authenticated',
+        role text DEFAULT 'authenticated',
         email text UNIQUE,
+        phone text,
         encrypted_password text,
         email_confirmed_at timestamptz DEFAULT now(),
         raw_app_meta_data jsonb DEFAULT '{}'::jsonb,
@@ -95,6 +99,30 @@ export async function resetDatabase(targetDb = DB_NAME) {
       RETURNS text AS $$
         SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), 'anon');
       $$ LANGUAGE sql STABLE;
+
+      -- Supabase mock storage schema
+      CREATE SCHEMA IF NOT EXISTS storage;
+      CREATE TABLE IF NOT EXISTS storage.buckets (
+        id text PRIMARY KEY,
+        name text,
+        public boolean DEFAULT false,
+        file_size_limit bigint,
+        allowed_mime_types text[]
+      );
+      CREATE TABLE IF NOT EXISTS storage.objects (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        bucket_id text REFERENCES storage.buckets(id),
+        name text,
+        owner uuid,
+        created_at timestamptz DEFAULT now(),
+        updated_at timestamptz DEFAULT now(),
+        last_accessed_at timestamptz DEFAULT now(),
+        metadata jsonb
+      );
+      CREATE OR REPLACE FUNCTION storage.foldername(name text)
+      RETURNS text[] AS $$
+        SELECT string_to_array(name, '/');
+      $$ LANGUAGE sql IMMUTABLE;
     `);
 
     // 3. Run all migrations in /supabase/migrations

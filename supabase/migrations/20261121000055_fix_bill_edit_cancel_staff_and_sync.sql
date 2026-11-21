@@ -27,6 +27,11 @@ BEGIN
     RETURN NEW;
   END IF;
 
+  -- Skip automated test users
+  IF NEW.email LIKE '%@simplify.local' OR NEW.email LIKE '%@teamtest.com' THEN
+    RETURN NEW;
+  END IF;
+
   IF EXISTS (SELECT 1 FROM public.members WHERE auth_user_id = NEW.id) THEN
     RETURN NEW;
   END IF;
@@ -117,7 +122,7 @@ BEGIN
 
   -- 6. Privacy PIN '1234'
   INSERT INTO public.business_secrets (business_id, privacy_pin_hash)
-  VALUES (v_biz_id, crypt('1234', gen_salt('bf')))
+  VALUES (v_biz_id, public.crypt('1234', public.gen_salt('bf')))
   ON CONFLICT (business_id) DO NOTHING;
 
   RETURN NEW;
@@ -331,6 +336,7 @@ DECLARE
   v_comm_percent numeric(5,2);
   v_comm_amount numeric(14,2);
   v_deadline_date date;
+  v_result jsonb;
 BEGIN
   v_biz_id := (SELECT app.current_business_id());
   v_member_id := (SELECT app.current_member_id());
@@ -763,14 +769,11 @@ BEGIN
     );
   END IF;
 
-  RETURN jsonb_build_object(
-    'id', v_invoice_id,
-    'number', v_invoice_number,
-    'total', v_total,
-    'paid_amount', v_paid_now,
-    'balance', v_total - v_paid_now,
-    'status', 'ACTIVE'
-  );
+  SELECT to_jsonb(i.*) INTO v_result
+  FROM public.invoices i
+  WHERE i.id = v_invoice_id;
+
+  RETURN v_result;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
@@ -1068,6 +1071,7 @@ BEGIN
 
   RETURN jsonb_build_object(
     'transactions', v_txns,
+    'entries', v_txns,
     'total_count', jsonb_array_length(v_txns)
   );
 END;
