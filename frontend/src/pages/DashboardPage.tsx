@@ -331,12 +331,12 @@ export const DashboardPage: React.FC = () => {
     return data.this_month;
   }, [data, period]);
 
-  // Financial values with screenshot fallbacks if empty
-  const income = activeData?.income ?? 482350;
-  const outgoing = activeData?.outgoing ?? 215800;
-  const netProfit = activeData?.net_profit ?? 266550;
+  // Financial values
+  const income = activeData?.income ?? 0;
+  const outgoing = activeData?.outgoing ?? 0;
+  const netProfit = activeData?.net_profit ?? 0;
   const totalOutstanding = Number(duesSummary?.total_outstanding ?? (data?.total_outstanding ?? 0));
-  const loanOutstanding = data?.loan_outstanding ?? 75000;
+  const loanOutstanding = data?.loan_outstanding ?? 0;
 
   interface BankCardInfo {
     id: string;
@@ -365,121 +365,79 @@ export const DashboardPage: React.FC = () => {
     accountCountLabel: string;
   }
 
-  // Cash & Bank dynamic accounts calculations matching screenshot
+  // Cash & Bank dynamic accounts calculations
   const cashBankCalculations: CashBankCalculationResult = useMemo(() => {
-    if (cashBankData) {
-      const cashBal = Number(cashBankData.cash_in_hand?.current_balance ?? 0);
-      const rawAccounts = Array.isArray(cashBankData.bank_accounts) ? cashBankData.bank_accounts : [];
+    const cashBal = Number(cashBankData?.cash_in_hand?.current_balance ?? 0);
+    const rawAccounts = Array.isArray(cashBankData?.bank_accounts) ? cashBankData.bank_accounts : [];
 
-      // If user has accounts or real cash balance
-      if (rawAccounts.length > 0 || cashBal > 0) {
-        const banks = rawAccounts.map((b: any, idx: number) => {
-          const rawNum = b.account_number ? String(b.account_number).trim() : '';
-          const last4 = rawNum.length >= 4 ? rawNum.slice(-4) : (rawNum || '4821');
+    const banks = rawAccounts.map((b: any, idx: number) => {
+      const rawNum = b.account_number ? String(b.account_number).trim() : '';
+      const last4 = rawNum.length >= 4 ? rawNum.slice(-4) : (rawNum || '');
 
-          let short = b.bank_name || 'Bank';
-          if (short.toLowerCase().includes('hdfc')) short = 'HDFC';
-          else if (short.toLowerCase().includes('state bank') || short.toLowerCase().includes('sbi')) short = 'SBI';
-          else if (short.toLowerCase().includes('icici')) short = 'ICICI';
-          else if (short.toLowerCase().includes('axis')) short = 'Axis';
-          else if (short.toLowerCase().includes('punjab') || short.toLowerCase().includes('pnb')) short = 'PNB';
-          else if (short.toLowerCase().includes('baroda') || short.toLowerCase().includes('bob')) short = 'BOB';
-          else short = short.split(' ')[0];
+      let short = b.bank_name || 'Bank';
+      if (short.toLowerCase().includes('hdfc')) short = 'HDFC';
+      else if (short.toLowerCase().includes('state bank') || short.toLowerCase().includes('sbi')) short = 'SBI';
+      else if (short.toLowerCase().includes('icici')) short = 'ICICI';
+      else if (short.toLowerCase().includes('axis')) short = 'Axis';
+      else if (short.toLowerCase().includes('punjab') || short.toLowerCase().includes('pnb')) short = 'PNB';
+      else if (short.toLowerCase().includes('baroda') || short.toLowerCase().includes('bob')) short = 'BOB';
+      else short = short.split(' ')[0];
 
-          return {
-            id: b.id,
-            bank_name: b.bank_name || 'Bank Account',
-            shortName: short,
-            maskedAccount: `••${last4}`,
-            current_balance: Number(b.current_balance ?? 0),
-            color: BANK_COLORS[idx % BANK_COLORS.length],
-            lastActivity: idx === 0 ? 'Last: Receipt +₹2,500 · 2 Nov' : 'Last: Shop rent −₹18,000 · 31 Oct',
-          };
+      return {
+        id: b.id,
+        bank_name: b.bank_name || 'Bank Account',
+        shortName: short,
+        maskedAccount: last4 ? `••${last4}` : '',
+        current_balance: Number(b.current_balance ?? 0),
+        color: BANK_COLORS[idx % BANK_COLORS.length],
+        lastActivity: b.last_activity || 'No transactions yet',
+      };
+    });
+
+    const totalBanks = banks.reduce((sum: number, b: any) => sum + b.current_balance, 0);
+    const total = Number(cashBankData?.total_liquid_funds ?? (cashBal + totalBanks));
+
+    const segments: Array<{ name: string; shortName: string; amount: number; percentage: number; color: string }> = [];
+    if (total > 0) {
+      const cashPct = Math.round((cashBal / total) * 100);
+      segments.push({
+        name: 'Cash in hand',
+        shortName: 'Cash',
+        amount: cashBal,
+        percentage: cashPct,
+        color: '#0F172A',
+      });
+
+      banks.forEach((b: any) => {
+        const bPct = Math.round((b.current_balance / total) * 100);
+        segments.push({
+          name: b.bank_name,
+          shortName: b.shortName,
+          amount: b.current_balance,
+          percentage: bPct,
+          color: b.color,
         });
-
-        const totalBanks = banks.reduce((sum: number, b: any) => sum + b.current_balance, 0);
-        const total = Number(cashBankData.total_liquid_funds ?? (cashBal + totalBanks));
-
-        const segments: Array<{ name: string; shortName: string; amount: number; percentage: number; color: string }> = [];
-        if (total > 0) {
-          const cashPct = Math.round((cashBal / total) * 100);
-          segments.push({
-            name: 'Cash in hand',
-            shortName: 'Cash',
-            amount: cashBal,
-            percentage: cashPct,
-            color: '#0F172A',
-          });
-
-          banks.forEach((b: any) => {
-            const bPct = Math.round((b.current_balance / total) * 100);
-            segments.push({
-              name: b.bank_name,
-              shortName: b.shortName,
-              amount: b.current_balance,
-              percentage: bPct,
-              color: b.color,
-            });
-          });
-        } else {
-          segments.push({
-            name: 'Cash in hand',
-            shortName: 'Cash',
-            amount: 0,
-            percentage: 100,
-            color: '#0F172A',
-          });
-        }
-
-        return {
-          totalLiquid: total,
-          cashBalance: cashBal,
-          cashActivityText: 'Last deposit ₹20,000 · 2 Nov',
-          bankCards: banks,
-          segments,
-          accountCountLabel:
-            banks.length === 0
-              ? 'Cash in drawer only'
-              : `Cash and ${banks.length} bank account${banks.length > 1 ? 's' : ''}`,
-        };
-      }
+      });
+    } else {
+      segments.push({
+        name: 'Cash in hand',
+        shortName: 'Cash',
+        amount: 0,
+        percentage: 100,
+        color: '#0F172A',
+      });
     }
 
-    // Default reference figures matching uploaded mockup screenshot
-    const defaultBanks = [
-      {
-        id: '1',
-        bank_name: 'HDFC Bank',
-        shortName: 'HDFC',
-        maskedAccount: '••4821',
-        current_balance: 214300,
-        color: '#0F766E',
-        lastActivity: 'Last: Receipt +₹2,500 · 2 Nov',
-      },
-      {
-        id: '2',
-        bank_name: 'SBI',
-        shortName: 'SBI',
-        maskedAccount: '••9033',
-        current_balance: 148480,
-        color: '#64748B',
-        lastActivity: 'Last: Shop rent −₹18,000 · 31 Oct',
-      },
-    ];
-
-    const defaultSegments = [
-      { name: 'Cash in hand', shortName: 'Cash', amount: 38450, percentage: 10, color: '#0F172A' },
-      { name: 'HDFC Bank', shortName: 'HDFC', amount: 214300, percentage: 53, color: '#0F766E' },
-      { name: 'SBI', shortName: 'SBI', amount: 148480, percentage: 37, color: '#64748B' },
-    ];
-
     return {
-      totalLiquid: 401230,
-      cashBalance: 38450,
-      cashActivityText: 'Last deposit ₹20,000 · 2 Nov',
-      bankCards: defaultBanks,
-      segments: defaultSegments,
-      accountCountLabel: 'Cash and 2 bank accounts',
+      totalLiquid: total,
+      cashBalance: cashBal,
+      cashActivityText: cashBal > 0 ? 'Current drawer balance' : 'No cash activity yet',
+      bankCards: banks,
+      segments,
+      accountCountLabel:
+        banks.length === 0
+          ? 'Cash in drawer only'
+          : `Cash and ${banks.length} bank account${banks.length > 1 ? 's' : ''}`,
     };
   }, [cashBankData]);
 
@@ -734,13 +692,7 @@ export const DashboardPage: React.FC = () => {
       hasData: false,
       monthYearLabel,
       totalBills: 0,
-      services: [
-        { name: 'Passport', count: 0, percentage: 0, color: '#0F766E' },
-        { name: 'PAN Card', count: 0, percentage: 0, color: '#0F172A' },
-        { name: 'Photocopy', count: 0, percentage: 0, color: '#6366F1' },
-        { name: 'Documentation', count: 0, percentage: 0, color: '#D97706' },
-        { name: 'Other services', count: 0, percentage: 0, color: '#64748B' },
-      ],
+      services: [],
     };
   }, [activeData?.top_services, data?.top_services, configuredServices]);
 
@@ -788,45 +740,43 @@ export const DashboardPage: React.FC = () => {
       });
     }
 
-    // Period-appropriate fallback data when empty
+    // Period-appropriate data when empty (clean 0s for fresh businesses)
     if (period === 'THIS_YEAR') {
       return [
-        { label: 'Apr', fullDate: 'April 2026', income: 42000, outgoing: 28000 },
-        { label: 'May', fullDate: 'May 2026', income: 48000, outgoing: 31000 },
-        { label: 'Jun', fullDate: 'June 2026', income: 55000, outgoing: 34000 },
-        { label: 'Jul', fullDate: 'July 2026', income: 51000, outgoing: 33000 },
-        { label: 'Aug', fullDate: 'August 2026', income: 62000, outgoing: 38000 },
-        { label: 'Sep', fullDate: 'September 2026', income: 58000, outgoing: 36000 },
-        { label: 'Oct', fullDate: 'October 2026', income: 72000, outgoing: 41000 },
-        { label: 'Nov', fullDate: 'November 2026', income: 68000, outgoing: 39000 },
-        { label: 'Dec', fullDate: 'December 2026', income: 75000, outgoing: 44000 },
-        { label: 'Jan', fullDate: 'January 2027', income: 71000, outgoing: 42000 },
-        { label: 'Feb', fullDate: 'February 2027', income: 80000, outgoing: 46000 },
-        { label: 'Mar', fullDate: 'March 2027', income: 85000, outgoing: 49000 },
+        { label: 'Apr', fullDate: 'April', income: 0, outgoing: 0 },
+        { label: 'May', fullDate: 'May', income: 0, outgoing: 0 },
+        { label: 'Jun', fullDate: 'June', income: 0, outgoing: 0 },
+        { label: 'Jul', fullDate: 'July', income: 0, outgoing: 0 },
+        { label: 'Aug', fullDate: 'August', income: 0, outgoing: 0 },
+        { label: 'Sep', fullDate: 'September', income: 0, outgoing: 0 },
+        { label: 'Oct', fullDate: 'October', income: 0, outgoing: 0 },
+        { label: 'Nov', fullDate: 'November', income: 0, outgoing: 0 },
+        { label: 'Dec', fullDate: 'December', income: 0, outgoing: 0 },
+        { label: 'Jan', fullDate: 'January', income: 0, outgoing: 0 },
+        { label: 'Feb', fullDate: 'February', income: 0, outgoing: 0 },
+        { label: 'Mar', fullDate: 'March', income: 0, outgoing: 0 },
       ];
     }
 
     if (period === 'TODAY') {
       return [
-        { label: '9 AM', fullDate: 'Today 9:00 AM', income: 2500, outgoing: 1200 },
-        { label: '11 AM', fullDate: 'Today 11:00 AM', income: 5400, outgoing: 2100 },
-        { label: '1 PM', fullDate: 'Today 1:00 PM', income: 8200, outgoing: 3500 },
-        { label: '3 PM', fullDate: 'Today 3:00 PM', income: 6100, outgoing: 2800 },
-        { label: '5 PM', fullDate: 'Today 5:00 PM', income: 9400, outgoing: 4200 },
-        { label: '7 PM', fullDate: 'Today 7:00 PM', income: 7300, outgoing: 3100 },
-        { label: '9 PM', fullDate: 'Today 9:00 PM', income: 4200, outgoing: 1800 },
+        { label: '9 AM', fullDate: 'Today 9:00 AM', income: 0, outgoing: 0 },
+        { label: '11 AM', fullDate: 'Today 11:00 AM', income: 0, outgoing: 0 },
+        { label: '1 PM', fullDate: 'Today 1:00 PM', income: 0, outgoing: 0 },
+        { label: '3 PM', fullDate: 'Today 3:00 PM', income: 0, outgoing: 0 },
+        { label: '5 PM', fullDate: 'Today 5:00 PM', income: 0, outgoing: 0 },
+        { label: '7 PM', fullDate: 'Today 7:00 PM', income: 0, outgoing: 0 },
+        { label: '9 PM', fullDate: 'Today 9:00 PM', income: 0, outgoing: 0 },
       ];
     }
 
-    // Screenshot reference points: 1 Oct to 31 Oct
     return [
-      { label: '1 Oct', fullDate: '1 Oct 2026', income: 12000, outgoing: 8000 },
-      { label: '6 Oct', fullDate: '6 Oct 2026', income: 24000, outgoing: 12000 },
-      { label: '11 Oct', fullDate: '11 Oct 2026', income: 32000, outgoing: 18000 },
-      { label: '16 Oct', fullDate: '16 Oct 2026', income: 26000, outgoing: 22000 },
-      { label: '21 Oct', fullDate: '21 Oct 2026', income: 48000, outgoing: 24000 },
-      { label: '26 Oct', fullDate: '26 Oct 2026', income: 36000, outgoing: 28000 },
-      { label: '31 Oct', fullDate: '31 Oct 2026', income: 52000, outgoing: 32000 },
+      { label: '1-5', fullDate: 'Day 1–5', income: 0, outgoing: 0 },
+      { label: '6-10', fullDate: 'Day 6–10', income: 0, outgoing: 0 },
+      { label: '11-15', fullDate: 'Day 11–15', income: 0, outgoing: 0 },
+      { label: '16-20', fullDate: 'Day 16–20', income: 0, outgoing: 0 },
+      { label: '21-25', fullDate: 'Day 21–25', income: 0, outgoing: 0 },
+      { label: '26-30', fullDate: 'Day 26–30', income: 0, outgoing: 0 },
     ];
   }, [activeData?.chart_data, data?.chart_data, period]);
 
@@ -846,14 +796,13 @@ export const DashboardPage: React.FC = () => {
       const cd = Math.max(0, 100 - (c + u + b));
       return { cash: c, upi: u, bank: b, card: cd };
     }
-    // Screenshot reference defaults: Cash 38%, UPI 41%, Bank 16%, Card 5%
-    return { cash: 38, upi: 41, bank: 16, card: 5 };
+    return { cash: 0, upi: 0, bank: 0, card: 0 };
   }, [cashAmt, upiAmt, bankAmt, cardAmt, totalPm]);
 
   // Sparklines
-  const incomeSparkline = useMemo(() => [12, 18, 26, 24, 38, 32, 45], []);
-  const outgoingSparkline = useMemo(() => [22, 19, 17, 24, 18, 16, 15], []);
-  const profitSparkline = useMemo(() => [10, 15, 22, 20, 34, 28, 42], []);
+  const incomeSparkline = useMemo(() => [0, 0, 0, 0, 0, 0, 0], []);
+  const outgoingSparkline = useMemo(() => [0, 0, 0, 0, 0, 0, 0], []);
+  const profitSparkline = useMemo(() => [0, 0, 0, 0, 0, 0, 0], []);
 
   // Jobs statistics & list
   const jobsStats = data?.jobs || {};
@@ -868,50 +817,20 @@ export const DashboardPage: React.FC = () => {
       ? `${yellowDays} ${yellowDays === 1 ? 'day' : 'days'}`
       : `${yellowDays} days`;
 
-  const redCount = jobTabCounts?.red ?? (jobsStats.red_count ?? jobsStats.late_count ?? 3);
-  const yellowCount = jobTabCounts?.yellow ?? (jobsStats.yellow_count ?? jobsStats.due_soon_count ?? 5);
-  const onTrackCount = jobsStats.pending ? Math.max(0, jobsStats.pending - (redCount + yellowCount)) : 14;
-  const completedToday = jobTabCounts?.completed ?? (jobsStats.completed_today ?? 6);
+  const redCount = jobTabCounts?.red ?? (jobsStats.red_count ?? jobsStats.late_count ?? 0);
+  const yellowCount = jobTabCounts?.yellow ?? (jobsStats.yellow_count ?? jobsStats.due_soon_count ?? 0);
+  const onTrackCount = jobsStats.pending ? Math.max(0, jobsStats.pending - (redCount + yellowCount)) : 0;
+  const completedToday = jobTabCounts?.completed ?? (jobsStats.completed_today ?? 0);
   const totalJobBuckets = (redCount + yellowCount + onTrackCount) || 1;
 
   const jobPercentages = {
-    red: Math.max(10, Math.round((redCount / totalJobBuckets) * 100)),
-    yellow: Math.max(15, Math.round((yellowCount / totalJobBuckets) * 100)),
-    onTrack: Math.max(20, 100 - (Math.round((redCount / totalJobBuckets) * 100) + Math.round((yellowCount / totalJobBuckets) * 100))),
+    red: Math.round((redCount / totalJobBuckets) * 100),
+    yellow: Math.round((yellowCount / totalJobBuckets) * 100),
+    onTrack: Math.max(0, 100 - (Math.round((redCount / totalJobBuckets) * 100) + Math.round((yellowCount / totalJobBuckets) * 100))),
   };
 
-  const fallbackJobs = useMemo(
-    () => [
-      {
-        id: 'mock-1',
-        party_name: 'Ramesh Kumar',
-        job_type_name: 'Passport',
-        total_steps: 4,
-        ticked_steps: 3,
-        days_left: -1,
-      },
-      {
-        id: 'mock-2',
-        party_name: 'Sunita Verma',
-        job_type_name: 'PAN Card',
-        total_steps: 3,
-        ticked_steps: 1,
-        days_left: 3,
-      },
-      {
-        id: 'mock-3',
-        party_name: 'Anil Kumar',
-        job_type_name: 'Passport',
-        total_steps: 4,
-        ticked_steps: 3,
-        days_left: 4,
-      },
-    ],
-    []
-  );
-
   const displayUrgentJobs = useMemo(() => {
-    if (!urgentJobs || urgentJobs.length === 0) return fallbackJobs;
+    if (!urgentJobs || urgentJobs.length === 0) return [];
     // Show all late jobs (days_left < 0) first, then urgent jobs (<= 5 days)
     const lateJobs = urgentJobs.filter((j: any) => {
       const d = parseInt(String(j.days_left), 10);
@@ -923,7 +842,7 @@ export const DashboardPage: React.FC = () => {
     });
     const combined = [...lateJobs, ...upcomingUrgent];
     return combined.length > 0 ? combined : urgentJobs.slice(0, 4);
-  }, [urgentJobs, fallbackJobs, yellowDays]);
+  }, [urgentJobs, yellowDays]);
 
   // Recent bills list (Live DB Data matching BillsPage exactly - strictly 8 recent bills, all statuses, exact same order)
   const recentBillsList = useMemo(() => {
@@ -2121,7 +2040,12 @@ export const DashboardPage: React.FC = () => {
 
               {/* Right Column: Fluid min-w-0 Services List (Zero Overflow) */}
               <div className="flex-1 min-w-0 space-y-1">
-                {topServicesData.services.map((item, idx) => {
+                {topServicesData.services.length === 0 ? (
+                  <div className="py-8 text-center text-[12px] text-[#64748B]">
+                    No bills generated this month
+                  </div>
+                ) : (
+                  topServicesData.services.map((item, idx) => {
                   const isHovered = hoveredServiceIdx === idx;
                   const isAnyHovered = hoveredServiceIdx !== null;
                   return (
@@ -2178,7 +2102,7 @@ export const DashboardPage: React.FC = () => {
                       </div>
                     </div>
                   );
-                })}
+                }))}
               </div>
             </div>
           </div>

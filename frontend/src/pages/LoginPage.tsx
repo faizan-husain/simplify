@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { useToast } from '../components/ui/Toast';
-import { Mail, Lock, Sparkles, ArrowRight } from 'lucide-react';
+import { Mail, Lock, ArrowRight } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -68,11 +68,6 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  const handleQuickDemo = (demoEmail: string) => {
-    setIdentifier(demoEmail);
-    setPassword('password123');
-  };
-
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-page">
       <div className="w-full max-w-[420px] bg-white p-8 rounded-2xl border border-border shadow-card">
@@ -95,7 +90,7 @@ export const LoginPage: React.FC = () => {
             label="Email Address (Login ID)"
             type="email"
             inputMode="email"
-            placeholder="owner@simplify.com"
+            placeholder="you@business.com"
             value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
             disabled={loading}
@@ -129,30 +124,6 @@ export const LoginPage: React.FC = () => {
             <ArrowRight className="w-4 h-4 ml-1.5" />
           </Button>
         </form>
-
-        {/* Demo Fast Fill Pill */}
-        <div className="mt-5 p-3 rounded-xl bg-surface-2 border border-border text-xs">
-          <div className="flex items-center gap-1.5 text-text-muted font-medium mb-1.5">
-            <Sparkles className="w-3.5 h-3.5 text-accent" />
-            <span>Demo Quick Logins:</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => handleQuickDemo('owner@simplify.com')}
-              className="px-2.5 py-1 rounded-lg bg-white border border-border text-accent font-medium hover:border-accent transition-colors cursor-pointer"
-            >
-              Owner Demo
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickDemo('staff@simplify.com')}
-              className="px-2.5 py-1 rounded-lg bg-white border border-border text-text font-medium hover:border-border transition-colors cursor-pointer"
-            >
-              Staff Demo
-            </button>
-          </div>
-        </div>
 
         {/* Footer Link */}
         <div className="mt-6 text-center text-xs text-text-muted font-medium">
