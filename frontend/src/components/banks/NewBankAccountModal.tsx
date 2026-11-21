@@ -4,12 +4,14 @@ import { getErrorMessage } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Select } from '../ui/Select';
 import { AmountInput } from '../ui/AmountInput';
 import { useToast } from '../ui/Toast';
 
 export interface NewBankAccountModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  accountToEdit?: any | null;
   onSuccess?: () => void;
 }
 
@@ -29,6 +31,7 @@ const COMMON_BANKS = [
 export const NewBankAccountModal: React.FC<NewBankAccountModalProps> = ({
   open,
   onOpenChange,
+  accountToEdit,
   onSuccess,
 }) => {
   const { showToast } = useToast();
@@ -41,6 +44,31 @@ export const NewBankAccountModal: React.FC<NewBankAccountModalProps> = ({
   const [upiId, setUpiId] = useState('');
   const [openingBalance, setOpeningBalance] = useState('0');
   const [saving, setSaving] = useState(false);
+
+  React.useEffect(() => {
+    if (accountToEdit) {
+      if (COMMON_BANKS.includes(accountToEdit.bank_name)) {
+        setBankName(accountToEdit.bank_name);
+        setCustomBankName('');
+      } else {
+        setBankName('Other Bank');
+        setCustomBankName(accountToEdit.bank_name || '');
+      }
+      setAccountName(accountToEdit.account_name || '');
+      setAccountNumber(accountToEdit.account_number || '');
+      setIfsc(accountToEdit.ifsc || '');
+      setUpiId(accountToEdit.upi_id || '');
+      setOpeningBalance(String(accountToEdit.opening_balance || 0));
+    } else {
+      setBankName(COMMON_BANKS[0]);
+      setCustomBankName('');
+      setAccountName('');
+      setAccountNumber('');
+      setIfsc('');
+      setUpiId('');
+      setOpeningBalance('0');
+    }
+  }, [accountToEdit, open]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,19 +86,36 @@ export const NewBankAccountModal: React.FC<NewBankAccountModalProps> = ({
 
     setSaving(true);
     try {
-      const { error } = await supabase.from('bank_accounts').insert({
-        bank_name: actualBank,
-        account_name: accountName.trim(),
-        account_number: accountNumber.trim() || null,
-        ifsc: ifsc.trim().toUpperCase() || null,
-        upi_id: upiId.trim() || null,
-        opening_balance: parseFloat(openingBalance) || 0,
-        active: true,
-      });
+      if (accountToEdit) {
+        const { error } = await supabase
+          .from('bank_accounts')
+          .update({
+            bank_name: actualBank,
+            account_name: accountName.trim(),
+            account_number: accountNumber.trim() || null,
+            ifsc: ifsc.trim().toUpperCase() || null,
+            upi_id: upiId.trim() || null,
+            opening_balance: parseFloat(openingBalance) || 0,
+          })
+          .eq('id', accountToEdit.id);
 
-      if (error) throw error;
+        if (error) throw error;
+        showToast('Bank account updated successfully', 'success');
+      } else {
+        const { error } = await supabase.from('bank_accounts').insert({
+          bank_name: actualBank,
+          account_name: accountName.trim(),
+          account_number: accountNumber.trim() || null,
+          ifsc: ifsc.trim().toUpperCase() || null,
+          upi_id: upiId.trim() || null,
+          opening_balance: parseFloat(openingBalance) || 0,
+          active: true,
+        });
 
-      showToast('Bank account added successfully', 'success');
+        if (error) throw error;
+        showToast('Bank account added successfully', 'success');
+      }
+
       onOpenChange(false);
       // Reset form
       setAccountName('');
@@ -90,26 +135,22 @@ export const NewBankAccountModal: React.FC<NewBankAccountModalProps> = ({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Add Bank Account"
-      description="Track Money IN and Money OUT transactions for this bank"
+      title={accountToEdit ? 'Edit Bank Account' : 'Add Bank Account'}
+      description={
+        accountToEdit
+          ? 'Update bank account details and information'
+          : 'Track Money IN and Money OUT transactions for this bank'
+      }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider block mb-1">
-            Bank Name
-          </label>
-          <select
-            value={bankName}
-            onChange={(e) => setBankName(e.target.value)}
-            className="w-full text-xs rounded-lg border border-slate-300 p-2.5 bg-white font-medium focus:ring-2 focus:ring-primary/20 focus:outline-none"
-          >
-            {COMMON_BANKS.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
-        </div>
+        <Select
+          label="Bank Name"
+          value={bankName}
+          onChange={setBankName}
+          options={COMMON_BANKS.map((b) => ({ value: b, label: b }))}
+          searchable
+          placeholder="Select or search bank..."
+        />
 
         {bankName === 'Other Bank' && (
           <Input
@@ -129,7 +170,7 @@ export const NewBankAccountModal: React.FC<NewBankAccountModalProps> = ({
           required
         />
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             label="A/c Number (Last 4 Digits or Full)"
             placeholder="e.g. XXXX9821"
@@ -145,7 +186,7 @@ export const NewBankAccountModal: React.FC<NewBankAccountModalProps> = ({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             label="Linked UPI ID (Optional)"
             placeholder="e.g. shop@sbi"
@@ -172,7 +213,7 @@ export const NewBankAccountModal: React.FC<NewBankAccountModalProps> = ({
             Cancel
           </Button>
           <Button type="submit" variant="primary" size="sm" disabled={saving}>
-            {saving ? 'Saving...' : 'Save Bank Account'}
+            {saving ? 'Saving...' : accountToEdit ? 'Update Bank Account' : 'Save Bank Account'}
           </Button>
         </div>
       </form>

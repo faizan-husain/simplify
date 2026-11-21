@@ -1,7 +1,7 @@
+@import './tokens.css';
 @import '@fontsource/inter/400.css';
 @import '@fontsource/inter/500.css';
 @import '@fontsource/inter/600.css';
-@import '@fontsource/inter/700.css';
 
 @tailwind base;
 @tailwind components;
@@ -9,53 +9,442 @@
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: var(--border);
   }
+
+  html,
   body {
-    @apply bg-white text-text font-sans;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Quiet Luxury Focus Ring */
+  :focus-visible {
+    outline: none;
+    box-shadow: var(--focus);
+  }
+
+  /* All numbers, dates and money are tabular */
+  input[type="number"],
+  .tabular-nums,
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 }
 
-/* Custom Minimal Scrollbar */
+/* SaaS Custom Dropdown Animations */
+@keyframes select-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes select-out {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+}
+
+.animate-select-in {
+  animation: select-in 170ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-select-out {
+  animation: select-out 130ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Custom Soft Scrollbar */
+/* Firefox only - so Chromium does not disable ::-webkit-scrollbar styling */
+@supports (-moz-appearance: none) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+}
+
+/* Global WebKit / Blink scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
+
+::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+::-webkit-scrollbar-corner {
+  display: none !important;
+  background: transparent !important;
+}
+
 ::-webkit-scrollbar-track {
   background: transparent;
+  margin-block: 8px;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: #E5E7EB;
-  border-radius: 3px;
+  background-color: var(--border);
+  border-radius: var(--r-pill);
+  border: 1px solid transparent;
+  background-clip: padding-box;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: #D1D5DB;
+  background-color: var(--border-strong);
+}
+
+/* Modals, Dialogs & Sheets Scrollbar Containment - strictly contained inside rounded cards */
+[role="dialog"],
+[data-radix-dialog-content],
+.dialog-content {
+  overflow: hidden !important;
+  isolation: isolate;
+}
+
+[role="dialog"]::-webkit-scrollbar,
+[role="dialog"] ::-webkit-scrollbar,
+[data-radix-dialog-content]::-webkit-scrollbar,
+[data-radix-dialog-content] ::-webkit-scrollbar,
+.dialog-content::-webkit-scrollbar,
+.dialog-content ::-webkit-scrollbar {
+  width: 6px !important;
+  height: 6px !important;
+}
+
+[role="dialog"]::-webkit-scrollbar-button,
+[role="dialog"] ::-webkit-scrollbar-button,
+[data-radix-dialog-content]::-webkit-scrollbar-button,
+[data-radix-dialog-content] ::-webkit-scrollbar-button,
+.dialog-content::-webkit-scrollbar-button,
+.dialog-content ::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+[role="dialog"]::-webkit-scrollbar-corner,
+[role="dialog"] ::-webkit-scrollbar-corner,
+[data-radix-dialog-content]::-webkit-scrollbar-corner,
+[data-radix-dialog-content] ::-webkit-scrollbar-corner,
+.dialog-content::-webkit-scrollbar-corner,
+.dialog-content ::-webkit-scrollbar-corner {
+  display: none !important;
+  background: transparent !important;
+}
+
+[role="dialog"]::-webkit-scrollbar-track,
+[role="dialog"] ::-webkit-scrollbar-track,
+[data-radix-dialog-content]::-webkit-scrollbar-track,
+[data-radix-dialog-content] ::-webkit-scrollbar-track,
+.dialog-content::-webkit-scrollbar-track,
+.dialog-content ::-webkit-scrollbar-track {
+  background: transparent !important;
+  margin-block: 20px !important;
+}
+
+[role="dialog"]::-webkit-scrollbar-thumb,
+[role="dialog"] ::-webkit-scrollbar-thumb,
+[data-radix-dialog-content]::-webkit-scrollbar-thumb,
+[data-radix-dialog-content] ::-webkit-scrollbar-thumb,
+.dialog-content::-webkit-scrollbar-thumb,
+.dialog-content ::-webkit-scrollbar-thumb {
+  background-color: var(--border) !important;
+  border-radius: var(--r-pill) !important;
+  border: 1px solid transparent !important;
+  background-clip: padding-box !important;
+}
+
+[role="dialog"]::-webkit-scrollbar-thumb:hover,
+[role="dialog"] ::-webkit-scrollbar-thumb:hover,
+[data-radix-dialog-content]::-webkit-scrollbar-thumb:hover,
+[data-radix-dialog-content] ::-webkit-scrollbar-thumb:hover,
+.dialog-content::-webkit-scrollbar-thumb:hover,
+.dialog-content ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--border-strong) !important;
 }
 
 /* Print CSS */
 @media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  html,
   body {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
-    background: transparent !important;
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
   }
-  .no-print {
+
+  /* Universal print hides */
+  .no-print,
+  .print\:hidden,
+  [data-print-hidden],
+  [data-radix-dialog-overlay] {
     display: none !important;
   }
-  body * {
-    visibility: hidden;
+
+  /* 1. When printing an Invoice / Receipt / Staff / Bank Statement document mounted at document.body via Portal */
+  body.printing-portal-active #root,
+  body.printing-portal-active [data-radix-portal],
+  body.printing-portal-active [role="dialog"],
+  body.printing-portal-active [data-radix-dialog-content],
+  body.printing-portal-active .fixed,
+  body.printing-portal-active>*:not(#print-invoice-root):not(#print-receipt-root):not(#print-staff-statement-root):not(#print-bank-statement-root) {
+    display: none !important;
+    visibility: hidden !important;
   }
-  #print-invoice-root, #print-invoice-root * {
-    visibility: visible;
+
+  /* Fallback in case class wasn't added */
+  body:has(#print-invoice-root:not(.hidden)) #root,
+  body:has(#print-invoice-root:not(.hidden)) [data-radix-portal],
+  body:has(#print-invoice-root:not(.hidden)) [role="dialog"],
+  body:has(#print-receipt-root:not(.hidden)) #root,
+  body:has(#print-receipt-root:not(.hidden)) [data-radix-portal],
+  body:has(#print-receipt-root:not(.hidden)) [role="dialog"],
+  body:has(#print-staff-statement-root:not(.hidden)) #root,
+  body:has(#print-staff-statement-root:not(.hidden)) [data-radix-portal],
+  body:has(#print-staff-statement-root:not(.hidden)) [role="dialog"],
+  body:has(#print-bank-statement-root:not(.hidden)) #root,
+  body:has(#print-bank-statement-root:not(.hidden)) [data-radix-portal],
+  body:has(#print-bank-statement-root:not(.hidden)) [role="dialog"] {
+    display: none !important;
+    visibility: hidden !important;
   }
-  #print-invoice-root {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    margin: 0;
-    padding: 0;
+
+  #print-invoice-root,
+  #print-receipt-root,
+  #print-staff-statement-root,
+  #print-bank-statement-root {
+    position: static !important;
+    display: flex !important;
+    visibility: visible !important;
+    justify-content: center !important;
+    align-items: flex-start !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+  }
+
+  #print-invoice-root *,
+  #print-receipt-root *,
+  #print-staff-statement-root *,
+  #print-bank-statement-root * {
+    visibility: visible !important;
+  }
+
+  /* 2. When printing a Customer/Vendor Statement from inside a modal */
+  body.printing-statement-active #root,
+  body.printing-statement-active [data-radix-dialog-overlay] {
+    display: none !important;
+  }
+
+  body.printing-statement-active [data-radix-dialog-content],
+  body.printing-statement-active [role="dialog"] {
+    position: static !important;
+    inset: auto !important;
+    transform: none !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  body.printing-statement-active .no-print {
+    display: none !important;
+  }
+
+  body.printing-statement-active .grid .bg-white,
+  body.printing-statement-active .p-3\.5.bg-white:not(:has(table)),
+  body.printing-statement-active .p-4.bg-white:not(:has(table)),
+  body.printing-statement-active .p-5.bg-white:not(:has(table)) {
+    border: 1px solid #CBD5E1 !important;
+  }
+
+  body.printing-statement-active table,
+  body.printing-statement-active .overflow-x-auto {
+    border: none !important;
+  }
+
+  /* 3. When printing standard A4 pages (Reports, Ledgers, Bank Tab) */
+  body:not(.printing-portal-active):not(.printing-statement-active) #root {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* 4. When printing Business Reports from ReportsPage */
+  body.printing-report-active #root {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+  }
+
+  body.printing-report-active #print-report-root {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+
+  body.printing-report-active #print-report-root .shadow-card,
+  body.printing-report-active #print-report-root .shadow-xs,
+  body.printing-report-active #print-report-root .shadow-2xs {
+    box-shadow: none !important;
+  }
+
+  body.printing-report-active #print-report-root .grid .bg-white,
+  body.printing-report-active #print-report-root .p-3\.5.bg-white:not(:has(table)):not(.pdf-footer):not([data-no-border]),
+  body.printing-report-active #print-report-root .p-4.bg-white:not(:has(table)):not(.pdf-footer):not([data-no-border]),
+  body.printing-report-active #print-report-root .p-5.bg-white:not(:has(table)):not(.pdf-footer):not([data-no-border]) {
+    border: 1px solid #CBD5E1 !important;
+  }
+
+  body.printing-report-active #print-report-root table,
+  body.printing-report-active #print-report-root .overflow-x-auto,
+  body.printing-report-active #print-report-root .overflow-hidden:has(table) {
+    border: none !important;
+  }
+
+  /* Force display of desktop report tables during print, overriding hidden md:block */
+  body.printing-report-active #print-report-root .hidden.md\:block,
+  body.printing-report-active #print-report-root [class*="hidden"][class*="md:block"] {
+    display: block !important;
+  }
+
+  body.printing-report-active #print-report-root table {
+    width: 100% !important;
+    table-layout: auto !important;
+    border-collapse: collapse !important;
+  }
+
+  body.printing-report-active #print-report-root thead {
+    display: table-header-group !important;
+  }
+
+  body.printing-report-active #print-report-root tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  body.printing-report-active #print-report-root th,
+  body.printing-report-active #print-report-root td {
+    word-break: break-word !important;
+  }
+
+  body.printing-report-active #print-report-root .overflow-x-auto {
+    overflow: visible !important;
+    width: 100% !important;
+  }
+
+  /* 5. When printing Staff Financial Year Statement */
+  body.printing-staff-fy-active #root {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+  }
+
+  body.printing-staff-fy-active #print-staff-fy-statement {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+
+  body.printing-staff-fy-active #print-staff-fy-statement .shadow-card,
+  body.printing-staff-fy-active #print-staff-fy-statement .shadow-xs,
+  body.printing-staff-fy-active #print-staff-fy-statement .shadow-2xs {
+    box-shadow: none !important;
+  }
+
+  body.printing-staff-fy-active #print-staff-fy-statement .grid .bg-white,
+  body.printing-staff-fy-active #print-staff-fy-statement .p-3\.5.bg-white:not(:has(table)):not(.pdf-footer):not([data-no-border]),
+  body.printing-staff-fy-active #print-staff-fy-statement .p-4.bg-white:not(:has(table)):not(.pdf-footer):not([data-no-border]),
+  body.printing-staff-fy-active #print-staff-fy-statement .p-5.bg-white:not(:has(table)):not(.pdf-footer):not([data-no-border]) {
+    border: 1px solid #CBD5E1 !important;
+  }
+
+  body.printing-staff-fy-active #print-staff-fy-statement .pdf-footer,
+  body.printing-staff-fy-active #print-staff-fy-statement [data-no-border],
+  body.printing-report-active #print-report-root .pdf-footer,
+  body.printing-report-active #print-report-root [data-no-border] {
+    border: none !important;
+    border-top: 1px solid #E2E8F0 !important;
+  }
+
+  body.printing-staff-fy-active #print-staff-fy-statement table,
+  body.printing-staff-fy-active #print-staff-fy-statement .overflow-x-auto,
+  body.printing-staff-fy-active #print-staff-fy-statement .overflow-hidden:has(table) {
+    border: none !important;
+  }
+
+  main {
+    position: static !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .overflow-y-auto,
+  .overflow-x-auto,
+  .overflow-hidden {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  /* Multi-page document pagebreak protection */
+  tr,
+  .break-inside-avoid {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
 }
-

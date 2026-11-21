@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { isValidEmail, isValidIndianMobile, mobileToEmail } from '../lib/auth';
+import { isValidEmail } from '../lib/auth';
 import { t, getErrorMessage } from '../i18n';
 import { useAuth } from '../context/AuthContext';
 import { Input } from '../components/ui/Input';
@@ -12,7 +12,7 @@ import { Mail, Lock, Sparkles, ArrowRight } from 'lucide-react';
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const { user } = useAuth();
+  const { user, member, refreshProfile } = useAuth();
 
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -20,18 +20,23 @@ export const LoginPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (user) {
+    if (user && member) {
       navigate('/', { replace: true });
     }
-  }, [user, navigate]);
+  }, [user, member, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    const trimmed = identifier.trim();
+    const trimmed = identifier.trim().toLowerCase();
     if (!trimmed) {
-      setError(t('auth.required'));
+      setError('Please enter your email address');
+      return;
+    }
+
+    if (!trimmed.includes('@') || !isValidEmail(trimmed)) {
+      setError('Please enter a valid email address (e.g. name@domain.com)');
       return;
     }
 
@@ -40,23 +45,10 @@ export const LoginPage: React.FC = () => {
       return;
     }
 
-    let authEmail = trimmed.toLowerCase();
-    if (trimmed.includes('@')) {
-      if (!isValidEmail(trimmed)) {
-        setError(t('auth.invalid_email'));
-        return;
-      }
-    } else if (isValidIndianMobile(trimmed)) {
-      authEmail = mobileToEmail(trimmed);
-    } else {
-      setError(t('auth.invalid_email'));
-      return;
-    }
-
     setLoading(true);
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: authEmail,
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: trimmed,
         password,
       });
 
@@ -65,7 +57,10 @@ export const LoginPage: React.FC = () => {
       }
 
       showToast(t('common.success'), 'success');
-      navigate('/');
+      if (signInData?.user) {
+        await refreshProfile();
+      }
+      navigate('/', { replace: true });
     } catch (err: any) {
       setError(getErrorMessage(err.message));
     } finally {
@@ -79,28 +74,32 @@ export const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-[#F8FAFC]">
-      <div className="w-full max-w-[420px] bg-white p-8 rounded-2xl border border-slate-200/80 shadow-[0_10px_35px_-5px_rgba(8,98,236,0.08)]">
-        {/* Header */}
+    <div className="min-h-screen flex items-center justify-center p-4 bg-page">
+      <div className="w-full max-w-[420px] bg-white p-8 rounded-2xl border border-border shadow-card">
+        {/* Header with Perfectly Centered Official Logo */}
         <div className="text-center mb-7">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-b from-[#0B67F6] to-[#073897] text-white flex items-center justify-center font-bold text-2xl mx-auto mb-3.5 shadow-md shadow-[#0862EC]/20">
-            S
+          <div className="w-full flex items-center justify-center mb-4">
+            <img
+              src="/simplify-logo.png"
+              alt="SIMPLIFY"
+              className="h-11 sm:h-12 w-auto object-contain mx-auto select-none"
+            />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">{t('auth.sign_in')}</h1>
-          <p className="text-xs font-medium text-slate-500 mt-1">{t('app.tagline')}</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-text">{t('auth.sign_in')}</h1>
+          <p className="text-xs text-text-muted mt-1">{t('app.tagline')}</p>
         </div>
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <Input
-            label={t('auth.email_label')}
+            label="Email Address (Login ID)"
             type="email"
             inputMode="email"
             placeholder="owner@simplify.com"
             value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
             disabled={loading}
-            leftIcon={<Mail className="w-4 h-4 text-slate-400" />}
+            leftIcon={<Mail className="w-4 h-4 text-text-muted" />}
           />
 
           <Input
@@ -110,11 +109,11 @@ export const LoginPage: React.FC = () => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={loading}
-            leftIcon={<Lock className="w-4 h-4 text-slate-400" />}
+            leftIcon={<Lock className="w-4 h-4 text-text-muted" />}
           />
 
           {error && (
-            <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 p-2.5 rounded-lg font-medium">
+            <div className="text-xs text-danger bg-danger/10 border border-danger/20 p-2.5 rounded-lg font-medium">
               {error}
             </div>
           )}
@@ -123,7 +122,7 @@ export const LoginPage: React.FC = () => {
             type="submit"
             variant="primary"
             size="lg"
-            className="w-full font-semibold bg-[#0862EC] hover:bg-[#0652CA] text-white shadow-md shadow-[#0862EC]/20 transition-all mt-1"
+            className="w-full mt-1"
             loading={loading}
           >
             <span>{t('auth.sign_in')}</span>
@@ -132,23 +131,23 @@ export const LoginPage: React.FC = () => {
         </form>
 
         {/* Demo Fast Fill Pill */}
-        <div className="mt-5 p-3 rounded-xl bg-slate-50 border border-slate-200/60 text-xs">
-          <div className="flex items-center gap-1.5 text-slate-600 font-semibold mb-1.5">
-            <Sparkles className="w-3.5 h-3.5 text-[#0862EC]" />
+        <div className="mt-5 p-3 rounded-xl bg-surface-2 border border-border text-xs">
+          <div className="flex items-center gap-1.5 text-text-muted font-medium mb-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-accent" />
             <span>Demo Quick Logins:</span>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => handleQuickDemo('owner@simplify.com')}
-              className="px-2.5 py-1 rounded-md bg-white border border-slate-200 text-[#0862EC] font-medium hover:border-[#0862EC] transition-colors"
+              className="px-2.5 py-1 rounded-lg bg-white border border-border text-accent font-medium hover:border-accent transition-colors cursor-pointer"
             >
               Owner Demo
             </button>
             <button
               type="button"
               onClick={() => handleQuickDemo('staff@simplify.com')}
-              className="px-2.5 py-1 rounded-md bg-white border border-slate-200 text-slate-700 font-medium hover:border-[#0862EC] transition-colors"
+              className="px-2.5 py-1 rounded-lg bg-white border border-border text-text font-medium hover:border-border transition-colors cursor-pointer"
             >
               Staff Demo
             </button>
@@ -156,9 +155,9 @@ export const LoginPage: React.FC = () => {
         </div>
 
         {/* Footer Link */}
-        <div className="mt-6 text-center text-xs text-slate-500 font-medium">
+        <div className="mt-6 text-center text-xs text-text-muted font-medium">
           Don't have an account?{' '}
-          <Link to="/register" className="text-[#0862EC] font-semibold hover:underline">
+          <Link to="/register" className="text-accent font-medium hover:underline">
             {t('auth.register')}
           </Link>
         </div>

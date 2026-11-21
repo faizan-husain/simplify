@@ -4,9 +4,9 @@ import { getErrorMessage, t } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Select } from '../ui/Select';
 import { AmountInput } from '../ui/AmountInput';
 import { useToast } from '../ui/Toast';
-import { Building } from 'lucide-react';
 
 export interface OtherIncomeModalProps {
   open: boolean;
@@ -103,27 +103,20 @@ export const OtherIncomeModal: React.FC<OtherIncomeModalProps> = ({
       onOpenChange={onOpenChange}
       title={t('receipts.other_income')}
     >
-      <form onSubmit={handleSave} className="space-y-4">
-        <div>
-          <label className="text-xs font-semibold text-text block mb-1">
-            {t('receipts.income_category')}
-          </label>
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            className="w-full h-11 px-3.5 rounded-lg border border-border bg-white text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary/20"
-          >
-            {INCOME_CATEGORIES.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
-        </div>
+      <form onSubmit={handleSave} className="space-y-4 pt-2">
+        <Select
+          label={t('receipts.income_category')}
+          value={category}
+          onChange={setCategory}
+          options={INCOME_CATEGORIES.map((cat) => ({
+            value: cat,
+            label: cat,
+          }))}
+        />
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-semibold text-text block mb-1">Amount (₹)</label>
+            <label className="text-xs font-medium text-text-muted block mb-1">Amount (₹)</label>
             <AmountInput
               value={amount}
               onChange={setAmount}
@@ -133,7 +126,7 @@ export const OtherIncomeModal: React.FC<OtherIncomeModalProps> = ({
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-text block mb-1">Date</label>
+            <label className="text-xs font-medium text-text-muted block mb-1">Date</label>
             <Input
               type="date"
               value={receiptDate}
@@ -143,17 +136,17 @@ export const OtherIncomeModal: React.FC<OtherIncomeModalProps> = ({
         </div>
 
         <div>
-          <label className="text-xs font-semibold text-text block mb-1.5">Payment Mode</label>
+          <label className="text-xs font-medium text-text-muted block mb-1.5">Payment Mode</label>
           <div className="flex flex-wrap gap-2">
             {PAYMENT_MODES.map((m) => (
               <button
                 key={m}
                 type="button"
                 onClick={() => setMode(m)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
+                className={`px-3 py-1.5 rounded-control text-xs font-medium transition-all border ${
                   mode === m
-                    ? 'bg-primary text-white border-primary'
-                    : 'bg-white text-text border-border hover:bg-surface'
+                    ? 'bg-surface-2 text-text border-accent ring-1 ring-accent'
+                    : 'bg-surface text-text-muted border-hair hover:bg-surface-2 hover:text-text'
                 }`}
               >
                 {m}
@@ -162,31 +155,23 @@ export const OtherIncomeModal: React.FC<OtherIncomeModalProps> = ({
           </div>
         </div>
 
-        {/* Bank Account Picker for Online Modes */}
         {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
-          <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-2">
-            <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between">
-              <span className="flex items-center gap-1">
-                <Building className="w-3.5 h-3.5" />
-                <span>Deposited to Bank Account</span>
-                <span className="text-danger">*</span>
-              </span>
-              <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                Compulsory
-              </span>
-            </label>
-            <select
+          <div className="p-3.5 bg-surface-2 rounded-control border border-hair space-y-2">
+            <Select
+              label="Deposited to Bank Account"
+              required
               value={selectedBankId}
-              onChange={(e) => setSelectedBankId(e.target.value)}
-              className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
-            >
-              <option value="">-- Select Bank Account * --</option>
-              {bankAccounts.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedBankId}
+              options={[
+                { value: '', label: '-- Select Bank Account * --' },
+                ...bankAccounts.map((b) => ({
+                  value: b.id,
+                  label: `${b.bank_name} (${b.account_name} - ${b.account_number || 'General'})`,
+                })),
+              ]}
+              size="sm"
+              searchable={bankAccounts.length > 5}
+            />
           </div>
         )}
 
@@ -204,7 +189,7 @@ export const OtherIncomeModal: React.FC<OtherIncomeModalProps> = ({
           onChange={(e) => setNotes(e.target.value)}
         />
 
-        <div className="flex gap-2 pt-2">
+        <div className="flex gap-2 pt-3 border-t border-hair">
           <Button
             type="button"
             variant="outline"

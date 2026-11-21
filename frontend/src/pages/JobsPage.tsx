@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { clsx } from 'clsx';
 import { supabase } from '../lib/supabase';
 import { formatINR } from '../lib/money';
 import { t, getErrorMessage } from '../i18n';
@@ -8,18 +9,17 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/ui/Toast';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
-import { Tabs, TabsList, TabsTrigger } from '../components/ui/Tabs';
+import { Select } from '../components/ui/Select';
 import { EmptyState } from '../components/ui/EmptyState';
 import { JobDetailModal } from '../components/jobs/JobDetailModal';
 import {
   Search,
   Clock,
-  User,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   ListOrdered,
   TrendingUp,
-  ChevronDown,
   MessageCircle,
   Check,
 } from 'lucide-react';
@@ -63,19 +63,24 @@ export const JobsPage: React.FC = () => {
 
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [enablingJobs, setEnablingJobs] = useState(false);
+  const [focusedJobIndex, setFocusedJobIndex] = useState<number>(-1);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
 
+  // Keyboard navigation for jobs
   // Load available job types for filtering
-  useEffect(() => {
-    supabase
+  const loadJobTypes = async () => {
+    const { data } = await supabase
       .from('services')
       .select('id, name')
       .eq('is_job_type', true)
       .eq('active', true)
       .is('deleted_at', null)
-      .order('name')
-      .then(({ data }) => {
-        setJobTypes(data || []);
-      });
+      .order('name');
+    setJobTypes(data || []);
+  };
+
+  useEffect(() => {
+    loadJobTypes();
   }, []);
 
   const loadJobs = async () => {
@@ -112,6 +117,43 @@ export const JobsPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [activeTab, search, selectedServiceId, sortOrder]);
 
+  // Live auto-refresh when services are updated by admin, cross-tab broadcast, or window gains focus
+  useEffect(() => {
+    const handleRefresh = () => {
+      loadJobs();
+      loadJobTypes();
+    };
+
+    window.addEventListener('simplify:jobs_updated', handleRefresh);
+    window.addEventListener('focus', handleRefresh);
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'simplify:jobs_updated') {
+        handleRefresh();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel('simplify_events');
+      bc.onmessage = (msg) => {
+        if (msg.data?.type === 'jobs_updated') {
+          handleRefresh();
+        }
+      };
+    } catch {
+      // BroadcastChannel optional fallback
+    }
+
+    return () => {
+      window.removeEventListener('simplify:jobs_updated', handleRefresh);
+      window.removeEventListener('focus', handleRefresh);
+      window.removeEventListener('storage', handleStorage);
+      bc?.close();
+    };
+  }, [activeTab, search, selectedServiceId, sortOrder]);
+
   const handleEnableJobManagement = async () => {
     if (!business) return;
     setEnablingJobs(true);
@@ -129,6 +171,18 @@ export const JobsPage: React.FC = () => {
       showToast(getErrorMessage(err.message), 'error');
     } finally {
       setEnablingJobs(false);
+    }
+  };
+
+  const handleDirectComplete = async (jobId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const { data, error } = await supabase.rpc('complete_job_directly', { p_job_id: jobId });
+      if (error) throw error;
+      showToast(data?.status === 'COMPLETED' ? 'Job completed!' : 'Job reopened', 'success');
+      loadJobs();
+    } catch (err: any) {
+      showToast(getErrorMessage(err.message), 'error');
     }
   };
 
@@ -167,13 +221,13 @@ export const JobsPage: React.FC = () => {
       if (sortOrder === 'PROGRESS') {
         const aTicked = a.ticked_steps || 0;
         const bTicked = b.ticked_steps || 0;
-        if (bTicked !== aTicked) {
-          return bTicked - aTicked; // Most ticked steps come to the top!
+        if (aTicked !== bTicked) {
+          return aTicked - bTicked; // Fewer ticked steps at top, more ticked at bottom (Ascending)
         }
         const aProg = parseFloat(String(a.progress_percent || '0'));
         const bProg = parseFloat(String(b.progress_percent || '0'));
-        if (bProg !== aProg) {
-          return bProg - aProg; // Highest percentage next
+        if (aProg !== bProg) {
+          return aProg - bProg; // Lower percentage first
         }
         return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
       }
@@ -182,98 +236,174 @@ export const JobsPage: React.FC = () => {
     });
   }, [jobs, search, selectedServiceId, jobTypes, sortOrder]);
 
-  // Connected Circle Stepper (exact match to user design)
-  const renderConnectedStepper = (totalSteps: number, tickedSteps: number, isCompleted: boolean) => {
-    const count = Math.max(1, totalSteps || 1);
-    const nodes = [];
+  useEffect(() => {
+    const handleJobsKeyDown = (e: KeyboardEvent) => {
+      if (selectedJobId) return;
 
-    for (let i = 0; i < count; i++) {
-      const isDone = isCompleted || i < tickedSteps;
+      const activeEl = document.activeElement as HTMLElement | null;
+      const isInputActive =
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'SELECT' ||
+          activeEl.isContentEditable);
 
-      nodes.push(
-        <div key={`node-${i}`} className="flex items-center flex-1 last:flex-initial">
-          {/* Circular Node */}
-          <div
-            className={`w-3.5 h-3.5 rounded-full shrink-0 transition-all ${
-              isCompleted
-                ? 'bg-emerald-500 ring-4 ring-emerald-100'
-                : isDone
-                ? 'bg-primary ring-4 ring-blue-100'
-                : 'border-2 border-slate-300 bg-white'
-            }`}
-          />
-          {/* Connecting Track between nodes */}
-          {i < count - 1 && (
-            <div
-              className={`h-1 flex-1 mx-1.5 rounded-full transition-all ${
-                isCompleted
-                  ? 'bg-emerald-400'
-                  : i < tickedSteps - 1
-                  ? 'bg-primary'
-                  : i === tickedSteps - 1
-                  ? 'bg-gradient-to-r from-primary to-blue-200'
-                  : 'bg-slate-200'
-              }`}
-            />
-          )}
-        </div>
-      );
+      if (e.key === '/' && !isInputActive) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (isInputActive && activeEl === searchInputRef.current) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          searchInputRef.current?.blur();
+          setFocusedJobIndex(0);
+        }
+        return;
+      }
+
+      if (isInputActive) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setFocusedJobIndex((prev) => (prev + 1 >= filteredAndSortedJobs.length ? 0 : prev + 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setFocusedJobIndex((prev) => (prev <= 0 ? Math.max(0, filteredAndSortedJobs.length - 1) : prev - 1));
+      } else if (e.key === 'Enter' && focusedJobIndex >= 0 && focusedJobIndex < filteredAndSortedJobs.length) {
+        e.preventDefault();
+        setSelectedJobId(filteredAndSortedJobs[focusedJobIndex].id);
+      }
+    };
+
+    window.addEventListener('keydown', handleJobsKeyDown);
+    return () => window.removeEventListener('keydown', handleJobsKeyDown);
+  }, [filteredAndSortedJobs, focusedJobIndex, selectedJobId]);
+
+  // Format Indian mobile number as 5 digits + space + 5 digits (e.g. 98110 01044)
+  const formatMobile = (mob?: string) => {
+    if (!mob) return '';
+    const clean = mob.replace(/\D/g, '');
+    if (clean.length === 10) {
+      return `${clean.slice(0, 5)} ${clean.slice(5)}`;
     }
+    if (clean.length === 12 && clean.startsWith('91')) {
+      const raw = clean.slice(2);
+      return `${raw.slice(0, 5)} ${raw.slice(5)}`;
+    }
+    return mob;
+  };
+
+  // Get 2-letter staff initials for avatar (e.g. 'AK' for Amit Kumar)
+  const getInitials = (name?: string) => {
+    if (!name) return 'OW';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
+  };
+
+  // Discrete Step Segment Bar (matches reference image: split into N equal segments)
+  const renderDiscreteStepBar = (
+    totalSteps: number,
+    tickedSteps: number,
+    isCompleted: boolean,
+    isLate: boolean = false,
+    isRed: boolean = false,
+    isYellow: boolean = false
+  ) => {
+    const count = Math.max(totalSteps || 1, 1);
+    const ticked = isCompleted ? count : Math.min(tickedSteps || 0, count);
+
+    // Active filled segment color based on status
+    const activeSegmentColor = isCompleted
+      ? 'bg-emerald-600'
+      : isLate
+        ? 'bg-red-600'
+        : isRed
+          ? 'bg-red-600'
+          : isYellow
+            ? 'bg-amber-500'
+            : 'bg-[#0D746E]'; // Deep elegant teal/slate as in reference
+
+    // Inactive pending segment color (soft pastel tint)
+    const inactiveSegmentColor = isCompleted
+      ? 'bg-emerald-100'
+      : isLate
+        ? 'bg-red-200/60'
+        : isRed
+          ? 'bg-red-200/60'
+          : isYellow
+            ? 'bg-amber-200/60'
+            : 'bg-slate-200';
 
     return (
-      <div className="w-full flex items-center justify-between py-1">
-        {nodes}
+      <div className="w-full flex items-center gap-1.5 py-0.5">
+        {Array.from({ length: count }).map((_, i) => {
+          const isDone = i < ticked;
+          return (
+            <div
+              key={i}
+              className={clsx(
+                'h-1.5 flex-1 rounded-full transition-all duration-300',
+                isDone ? activeSegmentColor : inactiveSegmentColor
+              )}
+            />
+          );
+        })}
       </div>
     );
   };
 
-  // Standard Pill Deadline Badge
+  // Luxury Pill Deadline Badge (clean borderless days late / days left pill)
   const getDeadlineBadge = (job: any) => {
     if (job.status === 'COMPLETED') {
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#ECFDF5] text-[#059669] shrink-0">
-          <CheckCircle2 className="w-3.5 h-3.5 text-[#059669]" />
-          <span>Done</span>
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-800 border-0 shrink-0 shadow-2xs">
+          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+          <span>Completed</span>
         </span>
       );
     }
     const days = parseInt(String(job.days_left), 10);
     if (days < 0) {
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FEF2F2] text-[#EF4444] shrink-0">
-          <AlertCircle className="w-3.5 h-3.5 text-[#EF4444]" />
-          <span>{Math.abs(days)}d late</span>
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-red-600 text-white shrink-0 shadow-2xs border-0">
+          <AlertTriangle className="w-3 h-3 text-white" />
+          <span>{Math.abs(days)} days late</span>
         </span>
       );
     }
     if (days === 0) {
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FEF2F2] text-[#EF4444] shrink-0">
-          <Clock className="w-3.5 h-3.5 text-[#EF4444]" />
-          <span>Today</span>
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-red-50 text-red-700 border-0 shrink-0 shadow-2xs">
+          <Clock className="w-3 h-3 text-red-600" />
+          <span>Due today</span>
         </span>
       );
     }
-    if (job.deadline_bucket === 'RED') {
+    if (job.deadline_bucket === 'RED' || days <= 3) {
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FEF2F2] text-[#EF4444] shrink-0">
-          <Clock className="w-3.5 h-3.5 text-[#EF4444]" />
-          <span>{days}d left</span>
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-red-50 text-red-700 border-0 shrink-0 shadow-2xs">
+          <Clock className="w-3 h-3 text-red-600" />
+          <span>{days} days left</span>
         </span>
       );
     }
-    if (job.deadline_bucket === 'YELLOW') {
+    if (job.deadline_bucket === 'YELLOW' || days <= 5) {
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#FFFBEB] text-[#D97706] shrink-0">
-          <Clock className="w-3.5 h-3.5 text-[#D97706]" />
-          <span>{days}d left</span>
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800 border-0 shrink-0 shadow-2xs">
+          <Clock className="w-3 h-3 text-amber-600" />
+          <span>{days} days left</span>
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 shrink-0">
-        <Clock className="w-3.5 h-3.5 text-slate-500" />
-        <span>{days}d left</span>
+      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 border-0 shrink-0 shadow-2xs">
+        <Clock className="w-3 h-3 text-slate-500" />
+        <span>{days} days left</span>
       </span>
     );
   };
@@ -283,39 +413,37 @@ export const JobsPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Customer Work Queue (Jobs)</h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+          <h1 className="text-xl font-semibold tracking-tight text-text">Customer Work Queue (Jobs)</h1>
+          <p className="text-xs text-text-muted mt-0.5">
             Live order tracking, workflow step management, and deadline monitoring
           </p>
         </div>
 
         {/* Sort Order Selector (Only Queue and Progress) */}
-        <div className="flex items-center gap-1.5 bg-slate-100/90 p-1.5 rounded-xl border border-slate-200/80 shrink-0">
+        <div className="flex items-center gap-1 bg-surface-3 p-1 rounded-xl shrink-0">
           <button
             type="button"
             onClick={() => setSortOrder('QUEUE')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              sortOrder === 'QUEUE'
-                ? 'bg-white text-primary shadow-xs border border-slate-200'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${sortOrder === 'QUEUE'
+              ? 'bg-white text-text shadow-xs font-semibold'
+              : 'text-text-muted hover:text-text'
+              }`}
             title="Queue (FIFO) — Serve customers in order of arrival"
           >
-            <ListOrdered className="w-4 h-4 text-primary" />
+            <ListOrdered className="w-3.5 h-3.5 text-accent" />
             <span>Queue</span>
           </button>
 
           <button
             type="button"
             onClick={() => setSortOrder('PROGRESS')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              sortOrder === 'PROGRESS'
-                ? 'bg-white text-primary shadow-xs border border-slate-200'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-            title="Most completed steps first"
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${sortOrder === 'PROGRESS'
+              ? 'bg-white text-text shadow-xs font-semibold'
+              : 'text-text-muted hover:text-text'
+              }`}
+            title="Sort by progress (least completed steps first)"
           >
-            <TrendingUp className="w-4 h-4 text-primary" />
+            <TrendingUp className="w-3.5 h-3.5 text-accent" />
             <span>Progress</span>
           </button>
         </div>
@@ -353,10 +481,11 @@ export const JobsPage: React.FC = () => {
         <div className="sm:col-span-2 relative">
           <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
           <Input
+            ref={searchInputRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by customer name, mobile, bill #, applicant, or service..."
-            className="pl-10 h-11 text-sm bg-white border-slate-200 rounded-xl shadow-2xs focus:border-primary focus:ring-primary/20"
+            placeholder="Search by customer name, mobile, bill #, applicant, or service... (Press / to search)"
+            className="pl-10 h-11 text-sm bg-white border-0 rounded-xl shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] focus:ring-2 focus:ring-[#0F766E]/20"
           />
           {search && (
             <button
@@ -368,47 +497,118 @@ export const JobsPage: React.FC = () => {
             </button>
           )}
         </div>
-        <div className="relative">
-          <select
+        <div className="w-full sm:w-[220px]">
+          <Select
             value={selectedServiceId}
-            onChange={(e) => setSelectedServiceId(e.target.value)}
-            className="w-full h-11 px-3.5 pr-9 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-800 shadow-2xs hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all appearance-none cursor-pointer"
-          >
-            <option value="">{t('jobs.all_job_types') || 'All Job Types'}</option>
-            {jobTypes.map((jt) => (
-              <option key={jt.id} value={jt.id}>
-                {jt.name}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            onChange={setSelectedServiceId}
+            options={[
+              { value: '', label: t('jobs.all_job_types') || 'All Job Types' },
+              ...jobTypes.map((jt) => ({
+                value: jt.id,
+                label: jt.name,
+              })),
+            ]}
+            variant="card"
+            placeholder={t('jobs.all_job_types') || 'All Job Types'}
+            searchable={jobTypes.length > 5}
+          />
         </div>
       </div>
 
       {/* Tab Navigation */}
-      <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <TabsList className="w-full h-11 p-1 bg-slate-100 rounded-xl">
-          <TabsTrigger value="CURRENT" className="flex-1 font-semibold text-xs sm:text-sm">
-            Current Queue ({tabCounts.current})
-          </TabsTrigger>
-          <TabsTrigger value="DUE" className="flex-1 font-semibold text-xs sm:text-sm text-red-600">
-            Late Jobs ({tabCounts.due})
-          </TabsTrigger>
-          <TabsTrigger value="YELLOW" className="flex-1 font-semibold text-xs sm:text-sm text-amber-700">
-            Yellow Box Jobs ({tabCounts.yellow})
-          </TabsTrigger>
-          <TabsTrigger value="RED" className="flex-1 font-semibold text-xs sm:text-sm text-red-600">
-            Red Box Jobs ({tabCounts.red})
-          </TabsTrigger>
-          <TabsTrigger value="COMPLETED" className="flex-1 font-semibold text-xs sm:text-sm text-emerald-700">
-            Completed ({tabCounts.completed})
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="border-b border-divider bg-transparent p-0 overflow-x-auto max-w-full no-scrollbar">
+        <div className="inline-flex items-center justify-start gap-4 sm:gap-6 min-w-full sm:min-w-0">
+          {[
+            {
+              key: 'CURRENT',
+              label: 'Current Queue',
+              count: tabCounts.current,
+              activeText: 'text-primary font-bold',
+              activeIndicator: 'after:bg-primary',
+              inactiveBadge: 'bg-slate-100 text-slate-600 font-semibold',
+              activeBadge: 'bg-primary text-white font-bold',
+            },
+            {
+              key: 'DUE',
+              label: 'Late Jobs',
+              count: tabCounts.due,
+              activeText: 'text-rose-700 font-bold',
+              activeIndicator: 'after:bg-rose-600',
+              inactiveBadge:
+                tabCounts.due > 0
+                  ? 'bg-rose-100 text-rose-700 font-bold'
+                  : 'bg-slate-100 text-slate-500 font-medium',
+              activeBadge: 'bg-rose-600 text-white font-bold',
+            },
+            {
+              key: 'YELLOW',
+              label: 'Yellow Box',
+              count: tabCounts.yellow,
+              activeText: 'text-amber-800 font-bold',
+              activeIndicator: 'after:bg-amber-500',
+              inactiveBadge:
+                tabCounts.yellow > 0
+                  ? 'bg-amber-100 text-amber-800 font-bold'
+                  : 'bg-slate-100 text-slate-500 font-medium',
+              activeBadge: 'bg-amber-500 text-white font-bold',
+            },
+            {
+              key: 'RED',
+              label: 'Red Box',
+              count: tabCounts.red,
+              activeText: 'text-red-700 font-bold',
+              activeIndicator: 'after:bg-red-600',
+              inactiveBadge:
+                tabCounts.red > 0
+                  ? 'bg-red-100 text-red-700 font-bold'
+                  : 'bg-slate-100 text-slate-500 font-medium',
+              activeBadge: 'bg-red-600 text-white font-bold',
+            },
+            {
+              key: 'COMPLETED',
+              label: 'Completed',
+              count: tabCounts.completed,
+              activeText: 'text-emerald-700 font-bold',
+              activeIndicator: 'after:bg-emerald-600',
+              inactiveBadge:
+                tabCounts.completed > 0
+                  ? 'bg-emerald-100 text-emerald-800 font-bold'
+                  : 'bg-slate-100 text-slate-500 font-medium',
+              activeBadge: 'bg-emerald-600 text-white font-bold',
+            },
+          ].map((tab) => {
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => handleTabChange(tab.key)}
+                className={clsx(
+                  'group relative inline-flex items-center justify-center gap-2 whitespace-nowrap pb-3 pt-1 text-[13.5px] sm:text-[14px] font-medium transition-all select-none outline-none cursor-pointer',
+                  'after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2.5px] after:transition-all after:duration-200',
+                  isActive
+                    ? clsx(tab.activeText, tab.activeIndicator, 'after:bg-current')
+                    : 'text-text-muted hover:text-text after:bg-transparent'
+                )}
+              >
+                <span>{tab.label}</span>
+                <span
+                  className={clsx(
+                    'text-[11px] tabular-nums px-1.5 py-0.5 min-w-[20px] rounded-md transition-all duration-200 border-0 flex items-center justify-center font-semibold leading-none',
+                    isActive ? tab.activeBadge : tab.inactiveBadge
+                  )}
+                >
+                  {tab.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       {/* Professional Job Card matching reference layout */}
       {loading ? (
-        <div className="py-16 text-center text-sm font-medium text-slate-500">
+        <div className="py-16 text-center text-sm font-medium text-text-muted">
           {t('common.loading')}
         </div>
       ) : filteredAndSortedJobs.length === 0 ? (
@@ -418,41 +618,47 @@ export const JobsPage: React.FC = () => {
       ) : (
         <div className="space-y-3">
           {filteredAndSortedJobs.map((job, idx) => {
-            const days = parseInt(String(job.days_left), 10);
-            const isLate = days < 0;
-            const isToday = days === 0;
             const isCompleted = job.status === 'COMPLETED';
+            const days = parseInt(String(job.days_left), 10);
+            const isLate = !isCompleted && days < 0;
+            const isToday = !isCompleted && days === 0;
+            const isRed = !isCompleted && !isLate && (isToday || job.deadline_bucket === 'RED' || days <= 3);
+            const isYellow = !isCompleted && !isLate && !isToday && !isRed && (job.deadline_bucket === 'YELLOW' || days <= 5);
 
-            // Left Urgency Strip color matching reference
-            const accentBgClass = isLate || isToday || job.deadline_bucket === 'RED'
-              ? 'bg-[#F85149]'
-              : job.deadline_bucket === 'YELLOW'
-              ? 'bg-[#F59E0B]'
-              : isCompleted
-              ? 'bg-[#10B981]'
-              : 'bg-[#0862EC]';
+            // Clean White Background for All Cards with tactile elevation shadow
+            const cardBgBorderClass =
+              'bg-white border-0 shadow-[0_4px_20px_rgba(15,23,42,0.08),0_1px_3px_rgba(15,23,42,0.04)] hover:shadow-[0_8px_30px_rgba(15,23,42,0.12),0_2px_6px_rgba(15,23,42,0.06)]';
 
-            const count = Math.max(1, job.total_steps || 1);
+            const count = job.total_steps || 0;
+            const hasMultiSteps = count >= 2;
             const ticked = job.ticked_steps || 0;
             const percent = isCompleted
               ? 100
-              : Math.round((ticked / count) * 100);
+              : hasMultiSteps
+                ? Math.round((ticked / count) * 100)
+                : count === 1 && ticked === 1
+                  ? 100
+                  : 0;
+
+            const rankStr = `#${String(idx + 1).padStart(2, '0')}`;
+            const isFocused = idx === focusedJobIndex;
 
             return (
               <div
                 key={job.id}
                 onClick={() => setSelectedJobId(job.id)}
-                className="group relative bg-white hover:bg-slate-50/50 rounded-2xl border border-slate-200/80 shadow-[0_2px_12px_rgba(0,0,0,0.03)] hover:shadow-subtle transition-all cursor-pointer p-4 sm:p-5 pl-5 sm:pl-6 overflow-hidden"
+                className={clsx(
+                  'group rounded-2xl transition-all duration-200 cursor-pointer p-4 sm:p-5 hover:-translate-y-0.5 select-none',
+                  cardBgBorderClass,
+                  isFocused && 'ring-2 ring-[#0F766E]'
+                )}
               >
-                {/* Left Urgency Color Strip (rounded matching card corner) */}
-                <div className={`absolute left-0 top-0 bottom-0 w-1.5 rounded-l-2xl ${accentBgClass}`} />
-
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-                  {/* Left Section: Customer Name, Phone, Badges, Applicant */}
-                  <div className="space-y-2.5 min-w-[260px] lg:max-w-[340px]">
-                    {/* Row 1: Customer Name + WhatsApp Phone Pill */}
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <h3 className="font-bold text-slate-900 text-base sm:text-[17px] tracking-tight group-hover:text-primary transition-colors">
+                <div className="flex flex-col lg:flex-row lg:items-stretch justify-between gap-5 lg:gap-0">
+                  {/* Left Half: 50% of card for Customer, Service, and Particulars */}
+                  <div className="w-full lg:w-1/2 min-w-0 space-y-1.5 lg:pr-6 xl:lg:pr-8 flex flex-col justify-center">
+                    {/* Row 1: Party Name + Phone WhatsApp Pill (Borderless) */}
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <h3 className="font-semibold text-slate-900 text-[15px] sm:text-[16px] tracking-tight group-hover:text-primary transition-colors">
                         {job.party_name}
                       </h3>
 
@@ -467,106 +673,134 @@ export const JobsPage: React.FC = () => {
                             );
                             window.open(waUrl, '_blank');
                           }}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#E8FAF0] text-[#047857] hover:bg-[#D1FAE5] text-xs font-semibold transition-colors"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 text-[11.5px] font-medium border-0 transition-all shadow-2xs cursor-pointer"
                           title="Chat on WhatsApp"
                         >
-                          <MessageCircle className="w-3.5 h-3.5 fill-[#047857] text-[#047857]" />
-                          <span>{job.party_mobile}</span>
+                          <MessageCircle className="w-3 h-3 text-emerald-600 shrink-0" />
+                          <span className="tabular-nums tracking-wide">{formatMobile(job.party_mobile)}</span>
                         </button>
                       )}
                     </div>
 
-                    {/* Row 2: #1, Job Type, Bill Number Badges */}
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-[#EFF6FF] text-[#0862EC]">
-                        #{idx + 1}
-                      </span>
+                    {/* Row 2: #09 · Job Type · INV-1102 */}
+                    <div className="flex items-center gap-2 text-xs text-slate-500 font-medium flex-wrap">
+                      <span className="font-semibold text-slate-700">{rankStr}</span>
+                      <span className="text-slate-300">·</span>
+                      <span className="text-slate-600">{job.job_type_name}</span>
+                      <span className="text-slate-300">·</span>
+                      <span className="text-slate-500 font-mono">{job.invoice_number}</span>
+                    </div>
 
-                      <span className="px-3 py-1 rounded-lg text-xs font-bold bg-[#EFF6FF] text-[#0862EC]">
-                        {job.job_type_name}
-                      </span>
-
-                      <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#F1F5F9] text-[#64748B]">
-                        {job.invoice_number}
+                    {/* Row 3: Particular [applicant_name || party_name] */}
+                    <div className="flex items-center text-xs text-slate-600 gap-2 min-w-0 pt-0.5">
+                      <span className="text-slate-400 font-normal shrink-0">Particular</span>
+                      <span className="font-medium text-slate-700 truncate" title={job.applicant_name || job.party_name}>
+                        {job.applicant_name || job.party_name}
                       </span>
                     </div>
 
-                    {/* Row 3: Particular Details Box */}
-                    <div>
-                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#F8FAFC] border border-slate-200/80 text-xs shadow-2xs">
-                        <span className="text-slate-500 font-medium">Particular:</span>
-                        <span className="font-bold text-slate-900">
-                          {job.applicant_name || job.party_name}
-                        </span>
-                      </div>
+                    {/* Row 4: Created by */}
+                    <div className="flex items-center text-xs text-slate-500 gap-1.5 min-w-0 pt-0.5">
+                      <span className="text-slate-400 font-normal shrink-0">Created by:</span>
+                      <span className="font-semibold text-slate-700 truncate">
+                        {job.created_by_name || 'Owner'}
+                      </span>
                     </div>
                   </div>
 
-                  {/* Center Section: Connected Stepper & Status Row */}
-                  <div className="flex-1 lg:border-l lg:border-slate-200/70 lg:pl-6 space-y-2.5 min-w-[280px]">
-                    {/* Stepper with Circles & Connector Bar */}
-                    <div className="max-w-md">
-                      {renderConnectedStepper(job.total_steps, job.ticked_steps, isCompleted)}
-                    </div>
-
-                    {/* Status Meta Row: Step Ratio | Percent, Deadline Badge, Staff Badge */}
-                    <div className="flex items-center gap-3 text-xs flex-wrap">
-                      <div className="flex items-center gap-1.5 text-slate-600 font-medium shrink-0">
+                  {/* Right Half: 50% of card containing Steps Progress & Total Action */}
+                  <div
+                    className={clsx(
+                      'w-full lg:w-1/2 min-w-0 flex flex-col sm:flex-row sm:items-center justify-between gap-5 lg:gap-6',
+                      'pt-4 lg:pt-0 lg:pl-6 xl:lg:pl-8'
+                    )}
+                  >
+                    {/* Steps & Progress: flex-1 with generous room to breathe */}
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                      {/* Line 1: Step Ratio + Percentage */}
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-800">
                         <span>
-                          {ticked} of {job.total_steps || 0} steps
+                          {hasMultiSteps
+                            ? `${ticked} of ${count} steps`
+                            : count === 1
+                              ? isCompleted ? '1 of 1 step' : '0 of 1 step'
+                              : 'Direct Job'}
                         </span>
-                        <span className="text-slate-300 font-light">|</span>
-                        <span className="font-bold text-[#0862EC]">
+                        <span className="font-bold tabular-nums text-slate-700">
                           {percent}%
                         </span>
                       </div>
 
-                      {/* Deadline Badge */}
-                      {getDeadlineBadge(job)}
+                      {/* Line 2: Discrete Step Segment Bar */}
+                      {renderDiscreteStepBar(count, ticked, isCompleted, isLate, isRed, isYellow)}
 
-                      {/* Staff Badge */}
-                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#F1F5F9] text-slate-700 text-xs font-semibold shrink-0">
-                        <User className="w-3.5 h-3.5 text-slate-400" />
-                        <span className="max-w-[100px] truncate">{job.assigned_staff_name || 'Unassigned'}</span>
+                      {/* Line 3: Next Step */}
+                      <div className="text-xs text-slate-500 font-normal truncate pt-0.5">
+                        {isCompleted ? (
+                          <span className="text-emerald-700 font-medium inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                            <span>All steps completed</span>
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="text-slate-400 shrink-0">Next</span>
+                            <span className="text-slate-300 shrink-0">·</span>
+                            <span className="text-slate-600 font-medium truncate">
+                              {job.next_step_name || 'Processing next step'}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Line 4: Badges (Deadline + Staff) */}
+                      <div className="flex items-center gap-2 pt-1 flex-wrap">
+                        {getDeadlineBadge(job)}
+
+                        {/* Staff Avatar + Name */}
+                        <div className="inline-flex items-center gap-1.5 shrink-0" title={`Assigned to ${job.assigned_staff_name || 'Owner'}`}>
+                          <span className="text-xs text-slate-400 font-normal">Assigned:</span>
+                          <div className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 border-0 shadow-2xs flex items-center justify-center text-[10px] font-bold">
+                            {getInitials(job.assigned_staff_name)}
+                          </div>
+                          <span className="text-xs text-slate-700 font-medium truncate max-w-[110px]">
+                            {job.assigned_staff_name || 'Owner'}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Right Section: Total Amount & Tick Steps Action Button */}
-                  <div className="flex items-center justify-between lg:justify-end gap-5 lg:border-l lg:border-slate-200/70 lg:pl-6 shrink-0 pt-3 lg:pt-0 border-t lg:border-t-0 border-slate-100">
-                    {/* Amount */}
-                    <div className="text-right">
-                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">TOTAL</div>
-                      <div className="text-2xl font-black text-[#0F172A] tracking-tight">
-                        {formatINR(job.amount)}
+                    {/* Total Amount + Tick steps Button */}
+                    <div className="shrink-0 flex items-center justify-between sm:flex-col sm:items-end sm:justify-center gap-2.5 min-w-[125px] pt-3 sm:pt-0">
+                      <div className="text-left sm:text-right">
+                        <div className="text-[11.5px] font-normal text-slate-400">Total</div>
+                        <div className="text-xl sm:text-[22px] font-bold text-slate-900 tabular-nums tracking-tight leading-tight">
+                          {formatINR(job.amount)}
+                        </div>
                       </div>
-                    </div>
 
-                    {/* Action Button: Deep Royal Navy with White Checkmark */}
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedJobId(job.id);
-                      }}
-                      className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold shadow-xs transition-all shrink-0 cursor-pointer ${
-                        isCompleted
-                          ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                          : 'bg-[#103D88] hover:bg-[#0C306B] text-white active:scale-[0.98]'
-                      }`}
-                    >
-                      {isCompleted ? (
-                        <>
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                          <span>Completed</span>
-                        </>
-                      ) : (
-                        <>
-                          <Check className="w-4 h-4 stroke-[3]" />
-                          <span>Tick Steps</span>
-                        </>
-                      )}
-                    </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!hasMultiSteps && !isCompleted) {
+                            handleDirectComplete(job.id, e);
+                          } else {
+                            setSelectedJobId(job.id);
+                          }
+                        }}
+                        className={clsx(
+                          'inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer shadow-sm active:scale-[0.98] border-0',
+                          isCompleted
+                            ? 'bg-emerald-50 text-emerald-800 border-0 hover:bg-emerald-100 shadow-2xs'
+                            : 'bg-slate-900 hover:bg-black text-white hover:shadow border-0'
+                        )}
+                      >
+                        <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                        <span>
+                          {isCompleted ? 'Completed' : !hasMultiSteps ? 'Mark Done' : 'Tick steps'}
+                        </span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

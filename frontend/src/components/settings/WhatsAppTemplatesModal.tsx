@@ -122,7 +122,7 @@ export const WhatsAppTemplatesModal: React.FC<WhatsAppTemplatesModalProps> = ({
         />
 
         <div>
-          <label className="text-xs font-semibold text-text-muted block mb-1.5">
+          <label className="text-xs font-medium text-text-muted block mb-1.5">
             Template Text
           </label>
           <textarea
@@ -130,7 +130,7 @@ export const WhatsAppTemplatesModal: React.FC<WhatsAppTemplatesModalProps> = ({
             value={body}
             onChange={(e) => setBody(e.target.value)}
             disabled={loading}
-            className="w-full p-3 rounded-lg border border-border text-xs text-text bg-surface focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none"
+            className="w-full p-3 rounded-control border border-hair text-xs text-text bg-surface-2 focus:bg-surface focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent resize-none transition-colors"
             placeholder="Type your WhatsApp message..."
             required
           />
@@ -138,7 +138,7 @@ export const WhatsAppTemplatesModal: React.FC<WhatsAppTemplatesModalProps> = ({
 
         {/* Variable chips */}
         <div className="space-y-1.5">
-          <div className="text-[11px] font-semibold text-text-muted flex items-center gap-1">
+          <div className="text-[11px] font-medium text-text-muted flex items-center gap-1">
             <Tag className="w-3 h-3" />
             <span>Click to insert variable:</span>
           </div>
@@ -148,7 +148,7 @@ export const WhatsAppTemplatesModal: React.FC<WhatsAppTemplatesModalProps> = ({
                 key={chip}
                 type="button"
                 onClick={() => handleInsertVariable(chip)}
-                className="px-2 py-0.5 rounded-full bg-surface hover:bg-primary/10 hover:text-primary text-[11px] font-mono text-text-muted border border-border transition-colors"
+                className="px-2 py-0.5 rounded-full bg-surface-2 hover:bg-surface hover:text-text text-[11px] font-mono text-text-muted border border-hair transition-colors"
               >
                 {chip}
               </button>
@@ -156,16 +156,17 @@ export const WhatsAppTemplatesModal: React.FC<WhatsAppTemplatesModalProps> = ({
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 pt-2 border-t border-border">
+        <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 pt-3 border-t border-slate-100">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={saving}
+            className="w-full sm:w-auto border-0 bg-[#EEF0F3] hover:bg-slate-200 text-slate-700 font-semibold rounded-xl shadow-2xs"
           >
             Cancel
           </Button>
-          <Button type="submit" loading={saving}>
+          <Button type="submit" variant="primary" loading={saving} className="w-full sm:w-auto bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-xl shadow-2xs border-0">
             Save Template
           </Button>
         </div>

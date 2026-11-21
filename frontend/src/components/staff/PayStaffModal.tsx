@@ -55,6 +55,7 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
         supabase
           .from('members')
           .select('id, name, role')
+          .eq('role', 'STAFF')
           .eq('active', true)
           .is('deleted_at', null)
           .order('name')
@@ -135,16 +136,17 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
       onOpenChange={onOpenChange}
       title={t('staff.pay_staff')}
       description="Record a salary or commission payout. An operating expense will automatically be created in 'Salary / Commission'."
+      className="sm:max-w-[480px] border-0 shadow-[0_8px_30px_rgba(0,0,0,0.1)]"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {staffMember ? (
-          <div className="p-3 bg-surface rounded-card border border-border">
+          <div className="p-3.5 bg-surface-2 rounded-2xl border-0 shadow-2xs">
             <div className="text-xs text-text-muted">{t('staff.title')}</div>
-            <div className="font-semibold text-text">{staffMember.name}</div>
+            <div className="font-medium text-text">{staffMember.name}</div>
             {typeof staffMember.balance === 'number' && (
               <div className="text-xs text-text-muted mt-1">
                 {t('staff.payable')}:{' '}
-                <strong className={staffMember.balance > 0 ? 'text-primary' : 'text-text'}>
+                <strong className={staffMember.balance > 0 ? 'text-accent tabular-nums' : 'text-text tabular-nums'}>
                   {formatINR(staffMember.balance)}
                 </strong>
               </div>
@@ -166,7 +168,7 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
         )}
 
         <div>
-          <label className="text-xs font-semibold text-text-muted block mb-1.5">
+          <label className="text-xs font-medium text-text-muted block mb-1.5">
             {t('staff.payout_amount')} (₹)
           </label>
           <AmountInput
@@ -175,12 +177,12 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
             placeholder="0.00"
           />
           {currentStaff?.balance && currentStaff.balance > 0 && (
-            <div className="flex items-center justify-between text-xs text-text-muted mt-1">
-              <span>{t('staff.payable')}: {formatINR(currentStaff.balance)}</span>
+            <div className="flex items-center justify-between text-xs text-text-muted mt-1.5">
+              <span>{t('staff.payable')}: <span className="tabular-nums font-medium text-text">{formatINR(currentStaff.balance)}</span></span>
               <button
                 type="button"
                 onClick={() => setAmount(String(currentStaff.balance))}
-                className="text-primary hover:underline font-medium"
+                className="text-accent hover:underline font-medium text-[11px]"
               >
                 Pay Full Balance
               </button>
@@ -188,7 +190,7 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             type="date"
             label={t('staff.payout_date')}
@@ -209,29 +211,23 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
           />
         </div>
 
-        {/* Bank Account Selection for Online / Bank Modes */}
         {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
-          <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-2">
-            <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between">
-              <span>
-                Paid from Bank Account <span className="text-danger">*</span>
-              </span>
-              <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                Compulsory
-              </span>
-            </label>
-            <select
+          <div className="p-3.5 bg-surface-2 rounded-2xl border-0 shadow-2xs space-y-2">
+            <Select
+              label="Paid from Bank Account"
+              required
               value={selectedBankId}
-              onChange={(e) => setSelectedBankId(e.target.value)}
-              className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
-            >
-              <option value="">-- Select Bank Account * --</option>
-              {bankAccounts.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedBankId}
+              options={[
+                { value: '', label: '-- Select Bank Account * --' },
+                ...bankAccounts.map((b) => ({
+                  value: b.id,
+                  label: `${b.bank_name} (${b.account_name} - ${b.account_number || 'General'})`,
+                })),
+              ]}
+              size="sm"
+              searchable={bankAccounts.length > 5}
+            />
           </div>
         )}
 
@@ -242,7 +238,7 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
           placeholder="e.g. Month end settlement"
         />
 
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
           <Button
             type="button"
             variant="outline"
@@ -251,7 +247,7 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
           >
             {t('common.cancel')}
           </Button>
-          <Button type="submit" loading={submitting}>
+          <Button type="submit" variant="primary" loading={submitting}>
             {t('staff.pay_staff')}
           </Button>
         </div>

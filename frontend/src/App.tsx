@@ -2,6 +2,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from './components/ui/Toast';
 import { AuthProvider } from './context/AuthContext';
+import { PwaProvider } from './context/PwaContext';
+import { KeyboardShortcutProvider } from './context/KeyboardShortcutContext';
+import { PwaInstallModal } from './components/pwa/PwaInstallModal';
 import { Layout } from './components/layout/Layout';
 
 // Pages
@@ -16,9 +19,13 @@ import { RegisterPage } from './pages/RegisterPage';
 import { CustomersPage } from './pages/CustomersPage';
 import { ServicesPage } from './pages/ServicesPage';
 import { StaffCommissionPage } from './pages/StaffCommissionPage';
+import { StaffDetailPage } from './pages/StaffDetailPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { RecentlyDeletedPage } from './pages/RecentlyDeletedPage';
+import { ProfilePage } from './pages/ProfilePage';
+import { PublicDocumentViewPage } from './pages/PublicDocumentViewPage';
+import { KitPage } from './pages/KitPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -33,31 +40,43 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <ToastProvider>
-          <BrowserRouter>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/register" element={<RegisterPage />} />
+        <PwaProvider>
+          <ToastProvider>
+            <BrowserRouter>
+              <KeyboardShortcutProvider>
+                <Routes>
+                  <Route path="/login" element={<LoginPage />} />
+                  <Route path="/register" element={<RegisterPage />} />
+                  <Route path="/view/document" element={<PublicDocumentViewPage />} />
 
-              <Route path="/" element={<Layout />}>
-                <Route index element={<DashboardPage />} />
-                <Route path="bills" element={<BillsPage />} />
-                <Route path="bills/new" element={<NewBillPage />} />
-                <Route path="jobs" element={<JobsPage />} />
-                <Route path="money" element={<MoneyPage />} />
-                <Route path="more" element={<MorePage />} />
-                <Route path="customers" element={<CustomersPage />} />
-                <Route path="services" element={<ServicesPage />} />
-                <Route path="staff" element={<StaffCommissionPage />} />
-                <Route path="reports" element={<ReportsPage />} />
-                <Route path="settings" element={<SettingsPage />} />
-                <Route path="recently-deleted" element={<RecentlyDeletedPage />} />
-              </Route>
+                  <Route path="/" element={<Layout />}>
+                    <Route index element={<DashboardPage />} />
+                    <Route path="dashboard" element={<DashboardPage />} />
+                    <Route path="bills" element={<BillsPage />} />
+                    <Route path="bills/new" element={<NewBillPage />} />
+                    <Route path="bills/:id/edit" element={<NewBillPage />} />
+                    <Route path="jobs" element={<JobsPage />} />
+                    <Route path="money" element={<MoneyPage />} />
+                    <Route path="more" element={<MorePage />} />
+                    <Route path="customers" element={<CustomersPage />} />
+                    <Route path="services" element={<ServicesPage />} />
+                    <Route path="staff" element={<StaffCommissionPage />} />
+                    <Route path="earnings" element={<StaffCommissionPage />} />
+                    <Route path="staff/:id" element={<StaffDetailPage />} />
+                    <Route path="reports" element={<ReportsPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="recently-deleted" element={<RecentlyDeletedPage />} />
+                    <Route path="profile" element={<ProfilePage />} />
+                    <Route path="_kit" element={<KitPage />} />
+                  </Route>
 
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </BrowserRouter>
-        </ToastProvider>
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+                <PwaInstallModal />
+              </KeyboardShortcutProvider>
+            </BrowserRouter>
+          </ToastProvider>
+        </PwaProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

@@ -4,6 +4,7 @@ import { getErrorMessage, t } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Select } from '../ui/Select';
 import { AmountInput } from '../ui/AmountInput';
 import { useToast } from '../ui/Toast';
 import { Database } from '../../types/supabase';
@@ -13,6 +14,7 @@ type ExpenseCategory = Database['public']['Tables']['expense_categories']['Row']
 export interface NewExpenseModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  expenseToEdit?: any | null;
   onSuccess?: () => void;
 }
 
@@ -21,6 +23,7 @@ const PAYMENT_MODES = ['CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE'] as const;
 export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
   open,
   onOpenChange,
+  expenseToEdit,
   onSuccess,
 }) => {
   const { showToast } = useToast();
@@ -54,7 +57,9 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
       const list = (data as ExpenseCategory[]) || [];
       setCategories(list);
-      if (list.length > 0 && !selectedCategoryId) {
+      if (expenseToEdit?.category_id) {
+        setSelectedCategoryId(expenseToEdit.category_id);
+      } else if (list.length > 0 && !selectedCategoryId) {
         setSelectedCategoryId(list[0].id);
       }
     };
@@ -68,11 +73,33 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       .then(({ data }) => {
         const bList = data || [];
         setBankAccounts(bList);
-        if (bList.length > 0 && !selectedBankId) {
+        if (expenseToEdit?.bank_account_id) {
+          setSelectedBankId(expenseToEdit.bank_account_id);
+        } else if (bList.length > 0 && !selectedBankId) {
           setSelectedBankId(bList[0].id);
         }
       });
-  }, [open]);
+  }, [open, expenseToEdit]);
+
+  // Pre-fill state when editing expense
+  useEffect(() => {
+    if (open && expenseToEdit) {
+      setSelectedCategoryId(expenseToEdit.category_id || '');
+      setAmount(String(expenseToEdit.amount || ''));
+      setMode(expenseToEdit.mode || 'CASH');
+      setSelectedBankId(expenseToEdit.bank_account_id || '');
+      setDescription(expenseToEdit.description || '');
+      setPayee(expenseToEdit.payee || '');
+      setExpenseDate(expenseToEdit.expense_date || new Date().toISOString().split('T')[0]);
+      setNotes(expenseToEdit.notes || '');
+    } else if (open && !expenseToEdit) {
+      setAmount('');
+      setDescription('');
+      setPayee('');
+      setNotes('');
+      setExpenseDate(new Date().toISOString().split('T')[0]);
+    }
+  }, [open, expenseToEdit]);
 
   const handleCreateCategory = async () => {
     if (!newCategoryName.trim()) return;
@@ -147,22 +174,43 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     try {
       const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
 
-      const { error } = await supabase.from('expenses').insert({
-        category_id: catId,
-        amount: amtNum,
-        mode,
-        bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
-        bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
-        expense_date: expenseDate,
-        description: description.trim(),
-        payee: payee.trim() || null,
-        notes: notes.trim() || null,
-        fy_label: '', // trigger sets it
-      });
+      if (expenseToEdit) {
+        const { error } = await supabase
+          .from('expenses')
+          .update({
+            category_id: catId,
+            amount: amtNum,
+            mode,
+            bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
+            bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
+            expense_date: expenseDate,
+            description: description.trim(),
+            payee: payee.trim() || null,
+            notes: notes.trim() || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', expenseToEdit.id);
 
-      if (error) throw error;
+        if (error) throw error;
+        showToast('Expense updated successfully', 'success');
+      } else {
+        const { error } = await supabase.from('expenses').insert({
+          category_id: catId,
+          amount: amtNum,
+          mode,
+          bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
+          bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
+          expense_date: expenseDate,
+          description: description.trim(),
+          payee: payee.trim() || null,
+          notes: notes.trim() || null,
+          fy_label: '', // trigger sets it
+        });
 
-      showToast('Expense recorded successfully', 'success');
+        if (error) throw error;
+        showToast('Expense recorded successfully', 'success');
+      }
+
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
@@ -176,7 +224,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title={t('expenses.add_expense')}
+      title={expenseToEdit ? 'Edit Expense' : t('expenses.add_expense')}
     >
       <form onSubmit={handleSave} className="space-y-4">
         {/* Category Picker with inline add */}
@@ -211,22 +259,21 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
               </Button>
             </div>
           ) : (
-            <select
+            <Select
               value={selectedCategoryId}
-              onChange={(e) => setSelectedCategoryId(e.target.value)}
-              className="w-full h-11 px-3.5 rounded-lg border border-border bg-white text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary/20"
-            >
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedCategoryId}
+              options={categories.map((c) => ({
+                value: c.id,
+                label: c.name,
+              }))}
+              searchable={categories.length > 5}
+              placeholder="Select category..."
+            />
           )}
         </div>
 
         {/* Amount & Date */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-semibold text-text block mb-1">Amount (₹)</label>
             <AmountInput
@@ -249,17 +296,17 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
         {/* Payment Mode */}
         <div>
-          <label className="text-xs font-semibold text-text block mb-1.5">Payment Mode</label>
+          <label className="text-xs font-medium text-text-muted block mb-1.5">Payment Mode</label>
           <div className="flex flex-wrap gap-2">
             {PAYMENT_MODES.map((m) => (
               <button
                 key={m}
                 type="button"
                 onClick={() => setMode(m)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
+                className={`px-3 py-1.5 rounded-control text-xs font-medium transition-all border ${
                   mode === m
-                    ? 'bg-primary text-white border-primary'
-                    : 'bg-white text-text border-border hover:bg-surface'
+                    ? 'bg-surface-2 text-text border-accent ring-1 ring-accent'
+                    : 'bg-surface text-text-muted border-hair hover:bg-surface-2 hover:text-text'
                 }`}
               >
                 {m}
@@ -270,27 +317,22 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
         {/* Bank Account Selection for Online / Bank Modes */}
         {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
-          <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-2">
-            <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between">
-              <span>
-                Paid from Bank Account <span className="text-danger">*</span>
-              </span>
-              <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                Compulsory
-              </span>
-            </label>
-            <select
+          <div className="p-3.5 bg-surface-2 rounded-control border border-hair space-y-2">
+            <Select
+              label="Paid from Bank Account"
+              required
               value={selectedBankId}
-              onChange={(e) => setSelectedBankId(e.target.value)}
-              className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
-            >
-              <option value="">-- Select Bank Account * --</option>
-              {bankAccounts.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedBankId}
+              options={[
+                { value: '', label: '-- Select Bank Account * --' },
+                ...bankAccounts.map((b) => ({
+                  value: b.id,
+                  label: `${b.bank_name} (${b.account_name} - ${b.account_number || 'General'})`,
+                })),
+              ]}
+              size="sm"
+              searchable={bankAccounts.length > 5}
+            />
           </div>
         )}
 
@@ -302,7 +344,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
           required
         />
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             label="Payee (Optional)"
             placeholder="e.g. BESCOM / Landlord"
@@ -318,7 +360,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
           />
         </div>
 
-        <div className="flex gap-2 pt-2">
+        <div className="flex gap-2 pt-3 border-t border-hair">
           <Button
             type="button"
             variant="outline"
@@ -335,7 +377,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
             className="flex-1"
             loading={saving}
           >
-            Save Expense
+            {saving ? (expenseToEdit ? 'Updating...' : 'Saving...') : (expenseToEdit ? 'Save Changes' : 'Save Expense')}
           </Button>
         </div>
       </form>

@@ -1,14 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../../lib/supabase';
 import { getErrorMessage } from '../../i18n';
-import { getWhatsAppUrl } from '../../lib/auth';
 import { formatINR } from '../../lib/money';
 import { formatDate } from '../../lib/dates';
 import { Dialog } from '../ui/Dialog';
-import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
 import { ReceiptDocument } from '../documents/ReceiptDocument';
-import { exportReceiptPDF } from '../documents/pdfExport';
+import { exportReceiptPDF, setPrintPageSize, generateDocumentPdfBlob } from '../documents/pdfExport';
+import {
+  normalizeCustomerMobile,
+  buildReceiptWhatsAppMessage,
+  sharePdfViaNativeShare,
+} from '../documents/documentSharing';
+import { uploadAndSignDocumentPDF } from '../../lib/storage';
+import { UpdateMobileModal } from '../documents/UpdateMobileModal';
 import { Printer, Download, Share2 } from 'lucide-react';
 
 export interface ReceiptDetailModalProps {
@@ -32,9 +38,22 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
     business: any;
   } | null>(null);
 
-  const [format, setFormat] = useState<'a4' | 'thermal80'>('a4');
-  const [exporting, setExporting] = useState(false);
-  const printDocRef = useRef<HTMLDivElement>(null);
+  const [format, setFormat] = useState<'a5' | 'thermal58' | 'thermal80'>('a5');
+  const [localCustomerMobile, setLocalCustomerMobile] = useState('');
+  const [isUpdateMobileOpen, setIsUpdateMobileOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'whatsapp_direct' | 'share_pdf' | null>(null);
+  const [sharingState, setSharingState] = useState<'idle' | 'generating' | 'uploading' | 'sharing'>('idle');
+  const pdfDocRef = useRef<HTMLDivElement>(null);
+  const pdfBlobCacheRef = useRef<Blob | null>(null);
+
+  useEffect(() => {
+    setLocalCustomerMobile(data?.customer?.mobile || '');
+    pdfBlobCacheRef.current = null;
+  }, [data?.receipt?.id, data?.customer?.mobile]);
+
+  useEffect(() => {
+    pdfBlobCacheRef.current = null;
+  }, [format]);
 
   useEffect(() => {
     if (!open || !receiptId) {
@@ -50,6 +69,13 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
         });
         if (error) throw error;
         setData(res as any);
+        if ((res as any)?.business?.thermal_width === 58) {
+          setFormat('thermal58');
+        } else if ((res as any)?.business?.thermal_width === 80) {
+          setFormat('thermal80');
+        } else {
+          setFormat('a5');
+        }
       } catch (err: any) {
         showToast(getErrorMessage(err.message), 'error');
       } finally {
@@ -61,33 +87,157 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
   }, [open, receiptId]);
 
   const handlePrint = () => {
+    setPrintPageSize(
+      format === 'thermal58' ? 'thermal58' : format === 'thermal80' ? 'thermal80' : 'a5',
+      0
+    );
+    document.body.classList.add('printing-portal-active');
+    const cleanup = () => {
+      document.body.classList.remove('printing-portal-active');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
     window.print();
   };
 
+  const getOrGenerateReceiptPdfBlob = async (): Promise<Blob> => {
+    if (pdfBlobCacheRef.current) return pdfBlobCacheRef.current;
+    if (!pdfDocRef.current || !data) throw new Error('Receipt preview not ready');
+    const blob = await generateDocumentPdfBlob(pdfDocRef.current, `Receipt-${data.receipt.number}.pdf`);
+    pdfBlobCacheRef.current = blob;
+    return blob;
+  };
+
   const handleDownloadPDF = async () => {
-    if (!printDocRef.current || !data) return;
-    setExporting(true);
+    if (!pdfDocRef.current || !data) return;
+    setSharingState('generating');
     try {
       await exportReceiptPDF(
-        printDocRef.current,
+        pdfDocRef.current,
         `Receipt-${data.receipt.number}.pdf`
       );
       showToast('Receipt PDF downloaded successfully', 'success');
     } catch (err: any) {
       showToast('Failed to export PDF: ' + err.message, 'error');
     } finally {
-      setExporting(false);
+      setSharingState('idle');
     }
   };
 
-  const handleWhatsApp = () => {
-    if (!data?.customer?.mobile) {
-      showToast('No customer mobile number available', 'error');
+  const handleWhatsAppDirect = async (overrideMobile?: string) => {
+    if (!data) return;
+    const targetMobile = overrideMobile || localCustomerMobile;
+    const mob = normalizeCustomerMobile(targetMobile);
+
+    if (!mob.valid) {
+      setPendingAction('whatsapp_direct');
+      setIsUpdateMobileOpen(true);
       return;
     }
-    const message = `Hello ${data.customer.name}, payment receipt #${data.receipt.number} for ${formatINR(data.receipt.amount)} dated ${formatDate(data.receipt.receipt_date)} received via ${data.receipt.mode}. Thank you! - ${data.business?.name || 'SIMPLIFY'}`;
-    const url = getWhatsAppUrl(data.customer.mobile, message);
-    window.open(url, '_blank');
+
+    setSharingState('generating');
+    try {
+      const pdfBlob = await getOrGenerateReceiptPdfBlob();
+      setSharingState('uploading');
+
+      const businessId = data.receipt.business_id || data.business?.id || '';
+      const { signedUrl } = await uploadAndSignDocumentPDF({
+        businessId,
+        docType: 'receipts',
+        docId: data.receipt.id,
+        pdfBlob,
+        filename: `Receipt-${data.receipt.number}.pdf`,
+      });
+
+      const message = buildReceiptWhatsAppMessage({
+        customerName: data.customer?.name || 'Customer',
+        receiptNumber: data.receipt.number,
+        amountFormatted: formatINR(data.receipt.amount),
+        paymentMode: data.receipt.mode || 'CASH',
+        receiptDateFormatted: formatDate(data.receipt.receipt_date),
+        businessName: data.business?.name || 'SIMPLIFY',
+        signedUrl,
+      });
+
+      const waUrl = `https://wa.me/${mob.whatsappNumber}?text=${encodeURIComponent(message)}`;
+      window.open(waUrl, '_blank');
+      showToast('WhatsApp opened with secure receipt link', 'success');
+    } catch (err: any) {
+      showToast('Failed to share to WhatsApp: ' + err.message, 'error');
+    } finally {
+      setSharingState('idle');
+    }
+  };
+
+  const handleSharePDF = async () => {
+    if (!pdfDocRef.current || !data) return;
+
+    setSharingState('generating');
+    try {
+      const pdfBlob = await getOrGenerateReceiptPdfBlob();
+      setSharingState('sharing');
+
+      // 1. Attempt native Web Share API with actual PDF file
+      const nativeRes = await sharePdfViaNativeShare({
+        pdfBlob,
+        filename: `Receipt-${data.receipt.number}.pdf`,
+        title: `Receipt #${data.receipt.number}`,
+        text: `Receipt #${data.receipt.number} - ${data.business?.name || 'SIMPLIFY'}`,
+      });
+
+      if (nativeRes.supported) {
+        if (nativeRes.success) {
+          showToast('Receipt PDF shared successfully', 'success');
+        } else if (nativeRes.cancelled) {
+          // User dismissed share dialog
+        } else if (nativeRes.error) {
+          showToast('Share failed: ' + nativeRes.error, 'error');
+        }
+        return;
+      }
+
+      // 2. Desktop Fallback: Download PDF & offer WhatsApp link if mobile available
+      const blobUrl = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `Receipt-${data.receipt.number}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+      const mob = normalizeCustomerMobile(localCustomerMobile);
+      if (mob.valid) {
+        showToast('Receipt PDF downloaded! Opening WhatsApp link...', 'info');
+        await handleWhatsAppDirect(localCustomerMobile);
+      } else {
+        showToast('Receipt PDF saved to device', 'success');
+      }
+    } catch (err: any) {
+      showToast('Failed to share PDF: ' + err.message, 'error');
+    } finally {
+      setSharingState('idle');
+    }
+  };
+
+  const handleSaveMobile = async (newMobile: string) => {
+    try {
+      if (data?.customer?.id) {
+        await supabase.from('customers').update({ mobile: newMobile }).eq('id', data.customer.id);
+      }
+      setLocalCustomerMobile(newMobile);
+      showToast('Customer mobile number updated', 'success');
+
+      if (pendingAction === 'whatsapp_direct') {
+        setPendingAction(null);
+        setTimeout(() => handleWhatsAppDirect(newMobile), 150);
+      } else if (pendingAction === 'share_pdf') {
+        setPendingAction(null);
+        setTimeout(() => handleSharePDF(), 150);
+      }
+    } catch (err: any) {
+      showToast('Failed to update mobile: ' + err.message, 'error');
+    }
   };
 
   if (!open) return null;
@@ -98,73 +248,97 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
       onOpenChange={onOpenChange}
       title={data ? `Payment Receipt #${data.receipt.number}` : 'Loading Receipt...'}
       description={data?.customer ? `Customer: ${data.customer.name}` : undefined}
+      className="sm:max-w-[680px] border-0 shadow-[0_12px_40px_rgba(0,0,0,0.08),0_2px_8px_rgba(0,0,0,0.04)]"
+      contentClassName="flex flex-col p-4 sm:p-5 overflow-hidden"
     >
-      <div className="space-y-4 max-h-[80vh] flex flex-col">
+      <div className="space-y-3 flex-1 min-h-0 flex flex-col">
         {/* Top Control Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-slate-50 border border-slate-200 rounded-xl">
-          <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-[#F8FAFC] border-0 shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] rounded-xl">
+          <div className="flex items-center gap-1 bg-[#EEF2F6] p-0.5 rounded-lg">
             <button
               type="button"
-              onClick={() => setFormat('a4')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-                format === 'a4'
-                  ? 'bg-primary text-white shadow-2xs'
-                  : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-              }`}
+              onClick={() => setFormat('a5')}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${format === 'a5'
+                ? 'bg-white text-slate-900 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+                }`}
             >
-              A4 Document
+              A5 (Half A4)
+            </button>
+            <button
+              type="button"
+              onClick={() => setFormat('thermal58')}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${format === 'thermal58'
+                ? 'bg-white text-slate-900 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+                }`}
+            >
+              58mm
             </button>
             <button
               type="button"
               onClick={() => setFormat('thermal80')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-                format === 'thermal80'
-                  ? 'bg-primary text-white shadow-2xs'
-                  : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-              }`}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${format === 'thermal80'
+                ? 'bg-white text-slate-900 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+                }`}
             >
-              Thermal 80mm
+              80mm
             </button>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {data?.customer?.mobile && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleWhatsApp}
-                title="Send on WhatsApp"
-                className="border-emerald-300 text-emerald-800 hover:bg-emerald-50"
-              >
-                <Share2 className="w-3.5 h-3.5 mr-1" />
-                WhatsApp
-              </Button>
-            )}
+          <div className="flex flex-wrap items-center gap-1.5 w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={() => handleWhatsAppDirect()}
+              disabled={sharingState !== 'idle' || loading}
+              title="Send Receipt on WhatsApp with secure PDF download link"
+              className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg border-0 bg-[#25D366]/12 hover:bg-[#25D366]/20 text-[#075E54] font-semibold text-xs transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)] cursor-pointer disabled:opacity-50"
+            >
+              <Share2 className="w-3.5 h-3.5 mr-1" />
+              {sharingState === 'uploading'
+                ? 'Creating Link...'
+                : sharingState === 'generating'
+                  ? 'Preparing...'
+                  : 'WhatsApp Direct'}
+            </button>
 
-            <Button
-              variant="outline"
-              size="sm"
+            <button
+              type="button"
               onClick={handlePrint}
               title="Print Receipt"
+              className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg border-0 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-all shadow-[0_1px_3px_rgba(0,0,0,0.05)] cursor-pointer"
             >
               <Printer className="w-3.5 h-3.5 mr-1" />
-              Print
-            </Button>
+              Print ({format === 'a5' ? 'A5' : format === 'thermal58' ? '58mm' : '80mm'})
+            </button>
 
-            <Button
-              variant="primary"
-              size="sm"
+            <button
+              type="button"
+              onClick={handleSharePDF}
+              disabled={sharingState !== 'idle' || loading}
+              title="Share PDF Receipt File via Web Share / WhatsApp"
+              className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg border-0 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-all shadow-[0_1px_3px_rgba(0,0,0,0.05)] cursor-pointer disabled:opacity-50"
+            >
+              <Share2 className="w-3.5 h-3.5 mr-1" />
+              {sharingState === 'sharing' ? 'Sharing...' : 'Share PDF'}
+            </button>
+
+            <button
+              type="button"
               onClick={handleDownloadPDF}
-              disabled={exporting || loading}
+              disabled={sharingState !== 'idle' || loading}
+              title="Download A5 PDF"
+              className="inline-flex items-center justify-center px-3 py-1.5 rounded-lg border-0 bg-[#0F766E] hover:bg-[#0D655E] text-white font-semibold text-xs transition-all shadow-[0_2px_6px_rgba(15,118,110,0.25)] cursor-pointer disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5 mr-1" />
-              {exporting ? 'Exporting...' : 'PDF'}
-            </Button>
+              {sharingState === 'generating' ? 'Exporting...' : 'PDF'}
+            </button>
           </div>
         </div>
 
-        {/* Document Container */}
-        <div className="flex-1 overflow-y-auto overflow-x-auto bg-slate-100/80 p-4 rounded-xl border border-slate-200">
+        {/* Document Preview Container */}
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto bg-[#F6F7F9] p-3 sm:p-4 rounded-xl border-0 shadow-[0_2px_8px_rgba(0,0,0,0.03),inset_0_1px_3px_rgba(0,0,0,0.02)]">
           {loading ? (
             <div className="py-20 text-center text-xs text-slate-500 font-medium">
               Loading receipt document...
@@ -172,7 +346,6 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
           ) : data ? (
             <div className="flex justify-center">
               <ReceiptDocument
-                ref={printDocRef}
                 receipt={data.receipt}
                 customer={data.customer}
                 allocations={data.allocations}
@@ -188,6 +361,44 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* Hidden container for print and offscreen container for PDF generation */}
+      {data && (
+        <>
+          {createPortal(
+            <div id="print-receipt-root" className="hidden print:flex">
+              <ReceiptDocument
+                receipt={data.receipt}
+                customer={data.customer}
+                allocations={data.allocations}
+                ledger_summary={data.ledger_summary}
+                business={data.business}
+                format={format}
+              />
+            </div>,
+            document.body
+          )}
+          <div style={{ position: 'fixed', left: '-9999px', top: '-9999px', width: '148mm' }}>
+            <ReceiptDocument
+              ref={pdfDocRef}
+              receipt={data.receipt}
+              customer={data.customer}
+              allocations={data.allocations}
+              ledger_summary={data.ledger_summary}
+              business={data.business}
+              format="a5"
+            />
+          </div>
+        </>
+      )}
+      {/* Customer WhatsApp Number Modal */}
+      <UpdateMobileModal
+        open={isUpdateMobileOpen}
+        onOpenChange={setIsUpdateMobileOpen}
+        partyName={data?.customer?.name || 'Customer'}
+        initialMobile={localCustomerMobile}
+        onSave={handleSaveMobile}
+      />
     </Dialog>
   );
 };

@@ -2,14 +2,61 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="/favicon.ico?v=3" sizes="any" />
+    <link rel="icon" type="image/png" href="/favicon.png?v=3" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#0862EC" />
-    <meta name="description" content="SIMPLIFY — Fast billing, receipts, payments & job tracking for small businesses" />
-    <title>SIMPLIFY</title>
+    <meta name="theme-color" content="#0F766E" />
+    <meta name="description" content="Simplify — Made business simple" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Simplify" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="Simplify" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Simplify</title>
+    <script>
+      (function() {
+        window.__deferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', function(e) {
+          e.preventDefault();
+          window.__deferredInstallPrompt = e;
+          window.dispatchEvent(new CustomEvent('simplify:pwa_prompt_ready'));
+        });
+        window.addEventListener('appinstalled', function() {
+          window.__deferredInstallPrompt = null;
+          window.__isSimplifyInstalled = true;
+          window.dispatchEvent(new CustomEvent('simplify:pwa_installed'));
+        });
+
+        // Unregister any stale dev service workers on localhost to keep local dev 100% fast & clean
+        if ('serviceWorker' in navigator && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+          navigator.serviceWorker.getRegistrations().then(function(regs) {
+            for (var i = 0; i < regs.length; i++) {
+              regs[i].unregister();
+            }
+          });
+        }
+      })();
+    </script>
+    <style>
+      @keyframes splashPulse {
+        0%, 80%, 100% { transform: scale(0.6); opacity: 0.35; }
+        40% { transform: scale(1); opacity: 1; }
+      }
+    </style>
   </head>
-  <body class="bg-white text-text font-sans antialiased selection:bg-primary-light selection:text-primary">
-    <div id="root"></div>
+  <body class="bg-[#F6F7F9] text-text font-sans antialiased selection:bg-accent/15 selection:text-accent">
+    <div id="root">
+      <div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background-color:#F6F7F9;user-select:none;">
+        <img src="/simplify-logo.png" alt="Simplify" style="height:48px;width:auto;object-fit:contain;margin-bottom:16px;" />
+        <div style="display:flex;gap:6px;align-items:center;">
+          <div style="width:7px;height:7px;border-radius:50%;background-color:#0F766E;animation:splashPulse 1.2s infinite ease-in-out;"></div>
+          <div style="width:7px;height:7px;border-radius:50%;background-color:#0F766E;animation:splashPulse 1.2s infinite ease-in-out;animation-delay:0.2s;"></div>
+          <div style="width:7px;height:7px;border-radius:50%;background-color:#0F766E;animation:splashPulse 1.2s infinite ease-in-out;animation-delay:0.4s;"></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

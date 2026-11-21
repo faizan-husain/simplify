@@ -48,11 +48,11 @@ export interface ReceiptDocumentProps {
     remaining_due: number;
     customer_advance: number;
   } | null;
-  format?: 'a4' | 'thermal58' | 'thermal80';
+  format?: 'a5' | 'a4' | 'thermal58' | 'thermal80';
 }
 
 export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
-  ({ receipt, customer, allocations = [], ledger_summary, business, format = 'a4' }, ref) => {
+  ({ receipt, customer, allocations = [], ledger_summary, business, format = 'a5' }, ref) => {
     const isThermal = format === 'thermal58' || format === 'thermal80';
     const is58 = format === 'thermal58';
 
@@ -61,8 +61,8 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
       return (
         <div
           ref={ref}
-          className={`bg-white text-black p-3 font-mono leading-tight mx-auto border border-border shadow-xs print:shadow-none print:border-none ${
-            is58 ? 'w-[58mm] text-[10px]' : 'w-[80mm] text-[11px]'
+          className={`bg-white text-black p-3 font-mono leading-tight mx-auto border-0 shadow-[0_4px_20px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.02)] rounded-lg print:shadow-none print:border-none ${
+            is58 ? 'w-[58mm] text-[9.5px]' : 'w-[80mm] text-[11px]'
           }`}
         >
           {/* Header */}
@@ -77,51 +77,51 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
           </div>
 
           {/* Receipt Info */}
-          <div className="py-2 border-b border-black text-[10px] space-y-0.5">
+          <div className="py-2 border-b border-black text-[9.5px] space-y-0.5">
             <div className="flex justify-between">
               <span>Receipt: #{receipt.number}</span>
               <span>{formatDate(receipt.receipt_date)}</span>
             </div>
             {customer && (
               <div>
-                <div>Customer: {customer.name}</div>
+                <div className="break-words">Customer: {customer.name}</div>
                 {customer.mobile && <div>Mobile: {customer.mobile}</div>}
               </div>
             )}
             <div className="flex justify-between">
               <span>Mode: {receipt.mode}</span>
-              {receipt.bank_name && <span>Bank: {receipt.bank_name}</span>}
+              {receipt.bank_name && <span className="break-words">Bank: {receipt.bank_name}</span>}
             </div>
-            {receipt.reference && <div>Ref/Txn: {receipt.reference}</div>}
+            {receipt.reference && <div className="break-words">Ref/Txn: {receipt.reference}</div>}
           </div>
 
           {/* Allocations Table */}
           {receipt.kind === 'INVOICE_PAYMENT' && allocations.length > 0 ? (
             <div className="py-2 border-b border-black space-y-1">
-              <div className="flex justify-between font-bold border-b border-gray-300 pb-0.5">
-                <span>Bill # / Date</span>
-                <span>Bill Amt</span>
+              <div className="flex justify-between font-bold border-b border-gray-300 pb-0.5 text-[9px]">
+                <span>Bill #</span>
+                <span>Total</span>
                 <span>Paid</span>
               </div>
               {allocations.map((a, idx) => (
-                <div key={idx} className="flex justify-between text-[10px]">
-                  <span>#{a.invoice_number} ({formatDate(a.invoice_date)})</span>
-                  <span>{formatINR(a.invoice_total)}</span>
+                <div key={idx} className="flex justify-between text-[9px]">
+                  <span className="pr-1">#{a.invoice_number}</span>
+                  <span className="text-gray-600">{formatINR(a.invoice_total)}</span>
                   <span className="font-bold">{formatINR(a.allocated_amount)}</span>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="py-2 border-b border-black text-[10px]">
+            <div className="py-2 border-b border-black text-[9.5px]">
               <div className="font-semibold">Category: {receipt.income_category || 'Other Income'}</div>
               {receipt.notes && <div className="text-gray-600">{receipt.notes}</div>}
             </div>
           )}
 
           {/* Totals & Dues Ledger Summary */}
-          <div className="py-2 border-b border-black space-y-1 text-[10px]">
+          <div className="py-2 border-b border-black space-y-1 text-[9.5px]">
             {ledger_summary && (
-              <div className="flex justify-between text-[10px] text-gray-700">
+              <div className="flex justify-between text-gray-700">
                 <span>Total Balance Due:</span>
                 <span className="font-semibold">{formatINR(ledger_summary.previous_due)}</span>
               </div>
@@ -131,7 +131,7 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
               <span>{formatINR(receipt.amount)}</span>
             </div>
             {ledger_summary && (
-              <div className="flex justify-between text-[11px] font-black pt-0.5 border-t border-black">
+              <div className="flex justify-between text-[10.5px] font-black pt-0.5 border-t border-black">
                 <span>REMAINING DUE:</span>
                 <span className={ledger_summary.remaining_due > 0 ? 'text-black font-extrabold' : 'font-extrabold'}>
                   {formatINR(ledger_summary.remaining_due)}
@@ -151,219 +151,247 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
           <div className="text-center pt-2 text-[9px]">
             <div>{business?.receipt_footer || 'Thank you for your payment!'}</div>
           </div>
+
+          {/* Simplify Brand Footer */}
+          <div className="pt-1.5 mt-1 border-t border-dashed border-gray-400 text-center text-[8.5px] flex items-center justify-center gap-1 text-gray-600">
+            <span>Powered by</span>
+            <img src="/simplify-logo.png" alt="Simplify" className="h-3 w-auto object-contain inline-block filter grayscale" />
+          </div>
         </div>
       );
     }
 
-    // Standard A4 Format
+    // Professional A5 Format (148mm × 210mm, perfectly fits 2 prints per A4 sheet)
     return (
       <div
         ref={ref}
-        className="bg-white text-slate-800 p-8 w-[210mm] min-h-[297mm] mx-auto text-xs leading-relaxed font-sans shadow-md print:shadow-none print:w-full print:p-6"
+        className="bg-white text-slate-800 mx-auto border-0 shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.02)] rounded-xl print:shadow-none print:border-none print:mx-auto"
+        style={{
+          boxSizing: 'border-box',
+          width: '148mm',
+          maxWidth: '148mm',
+          padding: '6mm 7mm 5mm 7mm',
+          margin: '0 auto',
+        }}
       >
         {/* Header Bar */}
-        <div className="flex justify-between items-start border-b-2 border-primary/20 pb-6 mb-6">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
+        <div className="flex justify-between items-start border-b border-slate-200 pb-2 mb-2 gap-2">
+          <div className="flex-1 min-w-0 pr-1">
+            <h1 className="text-base font-bold text-text leading-normal">
               {business?.name || 'SIMPLIFY'}
             </h1>
-            {business?.address && (
-              <p className="text-slate-600 text-xs max-w-sm">{business.address}</p>
+            {business?.receipt_header && (
+              <p className="text-[10px] font-medium text-text-muted mt-0.5 leading-normal whitespace-pre-line">
+                {business.receipt_header}
+              </p>
             )}
-            <div className="text-xs text-slate-600 flex flex-wrap gap-x-4 pt-1">
+            {business?.address && (
+              <p className="text-[10px] text-text-muted mt-0.5 leading-normal whitespace-pre-line">
+                {business.address}
+              </p>
+            )}
+            <div className="text-[9.5px] text-text-muted mt-0.5 flex flex-wrap gap-x-2 leading-normal">
               {business?.mobile && <span>Phone: {business.mobile}</span>}
-              {business?.email && <span>Email: {business.email}</span>}
-              {business?.upi_id && <span>UPI: {business.upi_id}</span>}
+              {business?.email && <span>• {business.email}</span>}
+              {business?.upi_id && <span>• UPI: {business.upi_id}</span>}
             </div>
           </div>
 
-          <div className="text-right">
-            <div className="inline-block bg-primary text-white font-black text-sm px-4 py-1.5 rounded-md tracking-wider uppercase mb-2">
-              Payment Receipt
+          <div className="text-right shrink-0">
+            <div className="flex items-center justify-end gap-1 mb-0.5">
+              <span className="inline-block px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border-0 font-bold text-[9px] uppercase tracking-wider">
+                PAYMENT RECEIPT
+              </span>
             </div>
-            <div className="text-base font-bold text-slate-900">#{receipt.number}</div>
-            <div className="text-xs text-slate-500 font-medium">Date: {formatDate(receipt.receipt_date)}</div>
+            <div className="text-xs font-bold text-text font-mono">#{receipt.number}</div>
+            <div className="text-[9.5px] text-text-muted mt-0.5">
+              Date: <strong className="text-text">{formatDate(receipt.receipt_date)}</strong>
+            </div>
             {receipt.fy_label && (
-              <div className="text-[11px] text-slate-400">Financial Year: {receipt.fy_label}</div>
+              <div className="text-[9px] text-text-muted">FY: {receipt.fy_label}</div>
             )}
           </div>
         </div>
 
-        {/* Payer and Payment Details */}
-        <div className="grid grid-cols-2 gap-6 bg-slate-50 p-4 rounded-xl border border-slate-200 mb-6">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+        {/* Payer and Payment Details Bar */}
+        <div className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2 flex items-center justify-between gap-2 text-[10px] border border-slate-200">
+          <div className="min-w-0 flex-1">
+            <div className="text-[8px] font-bold text-text-muted uppercase tracking-wider">
               Received From
             </div>
-            {customer ? (
-              <div className="space-y-0.5">
-                <div className="font-bold text-slate-900 text-sm">{customer.name}</div>
-                {customer.mobile && (
-                  <div className="text-xs text-slate-600">Mobile: {customer.mobile}</div>
-                )}
-                {customer.address && (
-                  <div className="text-xs text-slate-500">{customer.address}</div>
-                )}
-                <div className="text-[10px] inline-block px-2 py-0.5 mt-1 bg-white border border-slate-200 rounded text-slate-600 font-semibold">
-                  {customer.type || 'Customer'}
-                </div>
+            <div className="font-bold text-xs text-text mt-0.5 leading-normal break-words">
+              {customer ? customer.name : 'Direct / Walk-in Customer'}
+            </div>
+            {customer?.mobile && (
+              <div className="text-[9px] font-mono text-text-muted leading-normal">Mobile: {customer.mobile}</div>
+            )}
+          </div>
+
+          <div className="text-right shrink-0 space-y-0.5">
+            <div className="text-[8px] font-bold text-text-muted uppercase tracking-wider">
+              Payment Mode &amp; Details
+            </div>
+            <div className="flex items-center justify-end gap-1.5 text-[9.5px] mt-0.5">
+              <span className="font-semibold text-slate-800 px-1.5 py-0.5 rounded bg-white border border-slate-300">
+                {receipt.mode === 'BANK' ? 'Bank Transfer' : receipt.mode}
+              </span>
+              {receipt.bank_name && (
+                <span className="text-slate-600 font-medium break-words">
+                  ({receipt.bank_name})
+                </span>
+              )}
+            </div>
+            {receipt.reference && (
+              <div className="text-[8.5px] text-slate-600 font-mono leading-normal">
+                Ref: <strong className="text-slate-800 font-semibold">{receipt.reference}</strong>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Allocations & Ledger Accounting Split Grid (Compact Side-by-Side, Fits A5 Perfectly) */}
+        <div className="grid grid-cols-2 gap-2 items-start mb-2">
+          {/* Left Column: Purpose & Allocation */}
+          <div className="min-w-0">
+            <div className="text-[8px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+              Purpose &amp; Bill Allocation
+            </div>
+
+            {receipt.kind === 'INVOICE_PAYMENT' && allocations.length > 0 ? (
+              <div className="border border-slate-300 rounded-lg overflow-hidden bg-white">
+                <table className="w-full text-left text-[9.5px] table-fixed border-collapse">
+                  <colgroup>
+                    <col style={{ width: '48%' }} />
+                    <col style={{ width: '26%' }} />
+                    <col style={{ width: '26%' }} />
+                  </colgroup>
+                  <thead className="bg-[#F8FAFC] text-slate-600 uppercase text-[8px] font-semibold">
+                    <tr>
+                      <th className="px-2 py-1 border-b border-slate-300">Bill #</th>
+                      <th className="px-1.5 py-1 text-right border-b border-slate-300">Total</th>
+                      <th className="px-2 py-1 text-right border-b border-slate-300">Paid</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allocations.map((a, i) => {
+                      const isLast = i === allocations.length - 1;
+                      const borderClass = isLast ? '' : 'border-b border-slate-200';
+                      return (
+                        <tr key={i} className="hover:bg-slate-50/50">
+                          <td className={`px-2 py-1 text-slate-800 break-words ${borderClass}`}>
+                            <span className="font-semibold text-teal-800">#{a.invoice_number}</span>
+                          </td>
+                          <td className={`px-1.5 py-1 text-right text-slate-600 tabular-nums whitespace-nowrap ${borderClass}`}>
+                            {formatINR(a.invoice_total)}
+                          </td>
+                          <td className={`px-2 py-1 text-right font-bold text-emerald-700 tabular-nums whitespace-nowrap ${borderClass}`}>
+                            {formatINR(a.allocated_amount)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             ) : (
-              <div className="font-bold text-slate-900 text-sm">Direct / Walk-in Customer</div>
-            )}
-          </div>
-
-          <div className="space-y-1.5 text-right sm:text-left">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-              Payment Details
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-500">Payment Mode:</span>
-              <span className="font-bold text-slate-900 px-2 py-0.5 rounded bg-white border border-slate-200">
-                {receipt.mode === 'BANK' ? '🏦 Bank Transfer' : receipt.mode === 'UPI' ? '📱 UPI' : receipt.mode}
-              </span>
-            </div>
-            {receipt.bank_name && (
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Bank Account:</span>
-                <span className="font-semibold text-slate-800">{receipt.bank_name}</span>
-              </div>
-            )}
-            {receipt.reference && (
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Ref / Txn / Cheque #:</span>
-                <span className="font-mono text-slate-900 font-bold">{receipt.reference}</span>
-              </div>
-            )}
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-500">Receipt Type:</span>
-              <span className="text-slate-700 font-medium">
-                {receipt.kind === 'OTHER_INCOME'
-                  ? `Other Income (${receipt.income_category || 'General'})`
-                  : 'Invoice Payment'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Breakdown / Allocations Table */}
-        <div className="mb-6">
-          <div className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-2">
-            Payment Allocation & Purpose
-          </div>
-
-          {receipt.kind === 'INVOICE_PAYMENT' && allocations.length > 0 ? (
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-100 text-slate-600 uppercase font-semibold text-[11px] border-b border-slate-200">
-                  <tr>
-                    <th className="py-2.5 px-3">Bill Number</th>
-                    <th className="py-2.5 px-3">Bill Date</th>
-                    <th className="py-2.5 px-3 text-right">Bill Total</th>
-                    <th className="py-2.5 px-3 text-right font-bold text-slate-900">
-                      Amount Paid (Allocated)
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {allocations.map((a, i) => (
-                    <tr key={i} className="hover:bg-slate-50/50">
-                      <td className="py-2 px-3 font-bold text-primary">#{a.invoice_number}</td>
-                      <td className="py-2 px-3 text-slate-600">{formatDate(a.invoice_date)}</td>
-                      <td className="py-2 px-3 text-right text-slate-500">{formatINR(a.invoice_total)}</td>
-                      <td className="py-2 px-3 text-right font-bold text-success text-sm">
-                        {formatINR(a.allocated_amount)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-              <div className="flex justify-between items-center">
-                <div>
-                  <div className="font-bold text-slate-900 text-sm">
-                    {receipt.income_category || 'Other Business Income'}
+              <div className="bg-[#F8FAFC] border border-slate-300 rounded-lg p-2 flex flex-col justify-center">
+                <div className="text-[8px] text-slate-600 uppercase font-bold">Category</div>
+                <div className="font-bold text-xs text-slate-800 mt-0.5 leading-normal">
+                  {receipt.income_category || 'Other Business Income'}
+                </div>
+                {receipt.notes && (
+                  <div className="text-[9px] text-slate-600 mt-1 leading-normal whitespace-pre-line">
+                    {receipt.notes}
                   </div>
-                  {receipt.notes && (
-                    <div className="text-slate-600 text-xs mt-1">{receipt.notes}</div>
-                  )}
-                </div>
-                <div className="text-lg font-black text-success">
-                  {formatINR(receipt.amount)}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Summary Card with Ledger Dues Accounting */}
-        <div className="flex justify-end mb-8">
-          <div className="w-80 bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2">
-            {ledger_summary && (
-              <div className="flex justify-between text-xs text-slate-600">
-                <span className="font-medium">Total Balance Due (Before):</span>
-                <span className="font-bold text-slate-800">{formatINR(ledger_summary.previous_due)}</span>
+                )}
               </div>
             )}
-            <div className="flex justify-between text-xs text-slate-700 pt-1 border-t border-slate-200">
-              <span className="font-bold">Amount Paid (Received):</span>
-              <span className="font-black text-success text-base">{formatINR(receipt.amount)}</span>
+          </div>
+
+          {/* Right Column: Amount Received & Ledger Summary */}
+          <div className="bg-[#F8FAFC] p-2 rounded-lg border border-slate-300 space-y-1 text-[10px]">
+            {ledger_summary && (
+              <div className="flex justify-between items-center text-slate-600 text-[9.5px]">
+                <span>Total Due (Before)</span>
+                <span className="font-medium text-slate-800 tabular-nums">{formatINR(ledger_summary.previous_due)}</span>
+              </div>
+            )}
+
+            <div className="flex justify-between items-center text-xs font-bold pt-0.5 border-t border-slate-300">
+              <span>Amount Paid</span>
+              <span className="text-emerald-700 font-extrabold tabular-nums text-xs">{formatINR(receipt.amount)}</span>
             </div>
+
             {receipt.kind === 'INVOICE_PAYMENT' && allocations.length > 0 && (
-              <div className="flex justify-between text-[11px] text-slate-500">
-                <span>Allocated to Selected Bills:</span>
-                <span className="font-semibold text-slate-700">
+              <div className="flex justify-between items-center text-[9px] text-slate-600">
+                <span>Allocated to Bills</span>
+                <span className="font-medium text-slate-800 tabular-nums">
                   {formatINR(
                     allocations.reduce((sum, a) => sum + parseFloat(String(a.allocated_amount || 0)), 0)
                   )}
                 </span>
               </div>
             )}
+
             {ledger_summary && (
-              <div className="flex justify-between text-xs font-black pt-2 border-t border-slate-300">
-                <span className="text-slate-900">Remaining Balance Due:</span>
+              <div className="flex justify-between items-center text-[10px] font-bold pt-0.5 border-t border-slate-300">
+                <span>Remaining Due</span>
                 <span
-                  className={
-                    ledger_summary.remaining_due > 0
-                      ? 'text-rose-600 font-extrabold text-sm'
-                      : 'text-emerald-700 font-extrabold text-sm'
-                  }
+                  className={`tabular-nums ${
+                    ledger_summary.remaining_due > 0 ? 'text-red-600' : 'text-emerald-700'
+                  }`}
                 >
                   {formatINR(ledger_summary.remaining_due)}
-                  {ledger_summary.remaining_due === 0 && ' (Cleared ✓)'}
+                  {ledger_summary.remaining_due === 0 && ' (Cleared)'}
                 </span>
               </div>
             )}
+
             {(receipt.unallocated_amount || ledger_summary?.customer_advance || 0) > 0 && (
-              <div className="flex justify-between text-xs font-semibold text-primary border-t border-primary/20 pt-1.5">
-                <span>Added to Advance Balance:</span>
-                <span>+{formatINR(receipt.unallocated_amount || ledger_summary?.customer_advance || 0)}</span>
+              <div className="flex justify-between items-center text-[9px] font-semibold text-teal-800 border-t border-teal-200/60 pt-0.5">
+                <span>Customer Advance</span>
+                <span className="tabular-nums">
+                  +{formatINR(receipt.unallocated_amount || ledger_summary?.customer_advance || 0)}
+                </span>
               </div>
             )}
           </div>
         </div>
 
-        {/* Notes if any */}
-        {receipt.notes && (
-          <div className="mb-6 p-3 bg-amber-50/70 border border-amber-200 rounded-lg text-xs text-amber-900">
+        {/* Remarks if any */}
+        {receipt.notes && receipt.kind === 'INVOICE_PAYMENT' && (
+          <div className="mb-2 p-1.5 bg-amber-50/70 border border-amber-200/60 rounded text-[9px] text-amber-900">
             <span className="font-bold">Remarks: </span>
             {receipt.notes}
           </div>
         )}
 
-        {/* Signatures & Footer */}
-        <div className="mt-16 pt-6 border-t border-slate-200 flex justify-between items-end">
-          <div className="text-slate-500 text-[11px] space-y-1">
-            <div className="font-bold text-slate-700">{business?.receipt_footer || 'Thank you for your business!'}</div>
-            <div>This is a computer-generated official receipt.</div>
+        {/* Signatures & Footer Bar */}
+        <div className="pt-2 border-t border-slate-200 flex justify-between items-end mb-1.5">
+          <div className="text-slate-500 text-[9px] space-y-0.5">
+            <div className="font-semibold text-slate-700">{business?.receipt_footer || 'Thank you for your payment!'}</div>
+            <div>Computer generated official receipt.</div>
           </div>
 
-          <div className="text-center">
-            <div className="w-40 border-b border-slate-400 mb-1"></div>
-            <div className="text-[11px] font-bold text-slate-700">Authorized Signatory</div>
-            <div className="text-[10px] text-slate-400">{business?.name}</div>
+          <div className="text-center shrink-0">
+            <div className="w-24 border-b border-slate-300 mb-0.5"></div>
+            <div className="text-[8.5px] font-bold text-slate-700">Authorized Signatory</div>
+            <div className="text-[8px] text-slate-500">{business?.name}</div>
+          </div>
+        </div>
+
+        {/* Simplify Software Small Logo & Brand Footer */}
+        <div className="pt-1.5 border-t border-slate-200 flex items-center justify-between text-[8.5px] text-slate-500">
+          <div className="flex items-center gap-1.5">
+            <span>Powered by</span>
+            <img
+              src="/simplify-logo.png"
+              alt="Simplify"
+              className="h-3.5 w-auto object-contain inline-block"
+            />
+          </div>
+          <div className="text-[8px] text-text-muted font-medium">
+            Business Management &amp; Billing Software
           </div>
         </div>
       </div>

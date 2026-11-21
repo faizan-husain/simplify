@@ -5,7 +5,12 @@ import { twMerge } from 'tailwind-merge';
 export const Skeleton: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ className, ...props }) => {
   return (
     <div
-      className={twMerge(clsx('animate-pulse rounded-md bg-gray-200/80', className))}
+      className={twMerge(
+        clsx(
+          'animate-pulse rounded-control bg-surface-3',
+          className
+        )
+      )}
       {...props}
     />
   );

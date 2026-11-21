@@ -4,9 +4,10 @@ import { getErrorMessage } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Select } from '../ui/Select';
 import { AmountInput } from '../ui/AmountInput';
 import { useToast } from '../ui/Toast';
-import { Search, Plus } from 'lucide-react';
+import { Search, Plus, Banknote, Smartphone, Landmark, FileText, CreditCard } from 'lucide-react';
 import { Database } from '../../types/supabase';
 
 type Vendor = Database['public']['Tables']['vendors']['Row'];
@@ -15,21 +16,23 @@ export interface NewPaymentModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   prefillVendorId?: string;
+  paymentToEdit?: any | null;
   onSuccess?: () => void;
 }
 
 const PAYMENT_MODES = [
-  { id: 'CASH', label: 'Cash', icon: '💵' },
-  { id: 'UPI', label: 'UPI / QR', icon: '📱' },
-  { id: 'BANK', label: 'Bank Transfer (IMPS/NEFT)', icon: '🏦' },
-  { id: 'CHEQUE', label: 'Cheque', icon: '📜' },
-  { id: 'CARD', label: 'Debit/Credit Card', icon: '💳' },
+  { id: 'CASH', label: 'Cash', icon: Banknote },
+  { id: 'UPI', label: 'UPI / QR', icon: Smartphone },
+  { id: 'BANK', label: 'Bank Transfer', icon: Landmark },
+  { id: 'CHEQUE', label: 'Cheque', icon: FileText },
+  { id: 'CARD', label: 'Card', icon: CreditCard },
 ] as const;
 
 export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
   open,
   onOpenChange,
   prefillVendorId,
+  paymentToEdit,
   onSuccess,
 }) => {
   const { showToast } = useToast();
@@ -61,8 +64,9 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
       const vList = (vData as Vendor[]) || [];
       setVendors(vList);
 
-      if (prefillVendorId) {
-        const found = vList.find((v) => v.id === prefillVendorId);
+      const targetVendorId = paymentToEdit?.vendor_id || prefillVendorId;
+      if (targetVendorId) {
+        const found = vList.find((v) => v.id === targetVendorId);
         if (found) setSelectedVendor(found);
       }
 
@@ -74,12 +78,32 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
         .order('bank_name', { ascending: true });
       const bList = bData || [];
       setBankAccounts(bList);
-      if (bList.length > 0 && !selectedBankId) {
+      if (paymentToEdit?.bank_account_id) {
+        setSelectedBankId(paymentToEdit.bank_account_id);
+      } else if (bList.length > 0 && !selectedBankId) {
         setSelectedBankId(bList[0].id);
       }
     };
     fetchData();
-  }, [open, prefillVendorId]);
+  }, [open, prefillVendorId, paymentToEdit]);
+
+  // Pre-fill state when editing payment
+  useEffect(() => {
+    if (open && paymentToEdit) {
+      setAmount(String(paymentToEdit.amount || ''));
+      setMode(paymentToEdit.mode || 'CASH');
+      setDescription(paymentToEdit.description || '');
+      setPaymentDate(paymentToEdit.payment_date || new Date().toISOString().split('T')[0]);
+      setNotes(paymentToEdit.notes || '');
+      setSelectedBankId(paymentToEdit.bank_account_id || '');
+    } else if (open && !paymentToEdit) {
+      setAmount('');
+      setDescription('');
+      setNotes('');
+      setReference('');
+      setPaymentDate(new Date().toISOString().split('T')[0]);
+    }
+  }, [open, paymentToEdit]);
 
   const handleCreateVendorInline = async () => {
     if (!vendorSearch.trim()) return;
@@ -153,21 +177,41 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
 
       const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
 
-      const { error } = await supabase.from('payments').insert({
-        vendor_id: vendorToUse.id,
-        amount: amtNum,
-        mode,
-        payment_date: paymentDate,
-        description: description.trim(),
-        bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
-        bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
-        notes: notes.trim() ? (reference ? `${notes.trim()} (Ref: ${reference.trim()})` : notes.trim()) : (reference ? `Ref: ${reference.trim()}` : null),
-        fy_label: '', // will be set by DB trigger
-      });
+      if (paymentToEdit) {
+        const { error } = await supabase
+          .from('payments')
+          .update({
+            vendor_id: vendorToUse.id,
+            amount: amtNum,
+            mode,
+            payment_date: paymentDate,
+            description: description.trim(),
+            bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
+            bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
+            notes: notes.trim() ? (reference ? `${notes.trim()} (Ref: ${reference.trim()})` : notes.trim()) : (reference ? `Ref: ${reference.trim()}` : null),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', paymentToEdit.id);
 
-      if (error) throw error;
+        if (error) throw error;
+        showToast('Vendor payment updated successfully', 'success');
+      } else {
+        const { error } = await supabase.from('payments').insert({
+          vendor_id: vendorToUse.id,
+          amount: amtNum,
+          mode,
+          payment_date: paymentDate,
+          description: description.trim(),
+          bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
+          bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
+          notes: notes.trim() ? (reference ? `${notes.trim()} (Ref: ${reference.trim()})` : notes.trim()) : (reference ? `Ref: ${reference.trim()}` : null),
+          fy_label: '', // will be set by DB trigger
+        });
 
-      showToast('Vendor payment recorded successfully', 'success');
+        if (error) throw error;
+        showToast('Vendor payment recorded successfully', 'success');
+      }
+
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
@@ -185,8 +229,8 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Record Vendor Payment (Money OUT)"
-      description="Record payments made to workers, printers, or materials vendors"
+      title={paymentToEdit ? 'Edit Vendor Payment' : 'Record Vendor Payment (Money OUT)'}
+      description={paymentToEdit ? 'Update vendor, payment method, date or notes' : 'Record payments made to workers, printers, or materials vendors'}
     >
       <form onSubmit={handleSave} className="space-y-4">
         {/* Vendor Selection */}
@@ -196,21 +240,20 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
           </label>
 
           {selectedVendor ? (
-            <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
-              <div>
-                <div className="font-bold text-slate-900 text-sm">{selectedVendor.name}</div>
+            <div className="flex items-center justify-between p-3.5 bg-[#EEF0F3] border-0 shadow-2xs rounded-xl gap-2">
+              <div className="min-w-0 flex-1 pr-2">
+                <div className="font-bold text-slate-900 text-sm break-words">{selectedVendor.name}</div>
                 {selectedVendor.mobile && (
                   <div className="text-xs text-slate-500">{selectedVendor.mobile}</div>
                 )}
               </div>
-              <Button
+              <button
                 type="button"
-                variant="ghost"
-                size="sm"
                 onClick={() => setSelectedVendor(null)}
+                className="text-xs font-semibold px-2.5 py-1 rounded-lg border-0 bg-white hover:bg-slate-100 text-slate-700 shadow-2xs transition-all cursor-pointer shrink-0"
               >
                 Change
-              </Button>
+              </button>
             </div>
           ) : (
             <div className="space-y-2">
@@ -243,7 +286,7 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
                   ))}
 
                   {/* Create New Vendor Option */}
-                  <div className="p-2.5 bg-slate-50 space-y-2">
+                  <div className="p-3 bg-[#EEF0F3] rounded-xl border-0 shadow-2xs space-y-2">
                     <div className="text-[11px] font-bold text-slate-700">
                       Create new vendor: "{vendorSearch.trim()}"
                     </div>
@@ -299,53 +342,49 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
 
         {/* Payment Mode Selection */}
         <div className="space-y-1.5">
-          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
+          <label className="text-xs font-medium text-text-muted block">
             Payment Mode
           </label>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {PAYMENT_MODES.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setMode(m.id as any)}
-                className={`p-2.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-2 ${
-                  mode === m.id
-                    ? 'bg-primary text-white border-primary shadow-xs'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                <span>{m.icon}</span>
-                <span className="truncate">{m.label}</span>
-              </button>
-            ))}
+            {PAYMENT_MODES.map((m) => {
+              const Icon = m.icon;
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setMode(m.id as any)}
+                  className={`p-2.5 rounded-control border text-xs font-medium transition-all flex items-center gap-2 ${
+                    mode === m.id
+                      ? 'bg-surface-2 text-text border-accent ring-1 ring-accent'
+                      : 'bg-surface text-text-muted border-hair hover:bg-surface-2 hover:text-text'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0 text-text-muted" />
+                  <span className="truncate">{m.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
         {/* Bank Account Selection (when Bank, UPI, Card, or Cheque) */}
         {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
-          <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-3">
-            <div>
-              <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between mb-1">
-                <span>
-                  Paid from Bank Account <span className="text-danger">*</span>
-                </span>
-                <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                  Compulsory
-                </span>
-              </label>
-              <select
-                value={selectedBankId}
-                onChange={(e) => setSelectedBankId(e.target.value)}
-                className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
-              >
-                <option value="">-- Select Bank Account * --</option>
-                {bankAccounts.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="p-3.5 bg-surface-2 rounded-control border border-hair space-y-3">
+            <Select
+              label="Paid from Bank Account"
+              required
+              value={selectedBankId}
+              onChange={setSelectedBankId}
+              options={[
+                { value: '', label: '-- Select Bank Account * --' },
+                ...bankAccounts.map((b) => ({
+                  value: b.id,
+                  label: `${b.bank_name} (${b.account_name} - ${b.account_number || 'General'})`,
+                })),
+              ]}
+              size="sm"
+              searchable={bankAccounts.length > 5}
+            />
 
             <Input
               label="Transaction UTR / Ref No / Cheque No"
@@ -364,13 +403,14 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
         />
 
         {/* Form Actions */}
-        <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+        <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 pt-2 border-t border-slate-100">
           <Button
             type="button"
             variant="ghost"
             size="sm"
             onClick={() => onOpenChange(false)}
             disabled={saving}
+            className="w-full sm:w-auto"
           >
             Cancel
           </Button>
@@ -379,9 +419,9 @@ export const NewPaymentModal: React.FC<NewPaymentModalProps> = ({
             variant="primary"
             size="sm"
             disabled={saving || !amount || parseFloat(amount) <= 0}
-            className="font-bold"
+            className="font-bold w-full sm:w-auto"
           >
-            {saving ? 'Recording...' : 'Record Payment'}
+            {saving ? (paymentToEdit ? 'Updating...' : 'Recording...') : (paymentToEdit ? 'Save Changes' : 'Record Payment')}
           </Button>
         </div>
       </form>

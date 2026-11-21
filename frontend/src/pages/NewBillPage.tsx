@@ -1,40 +1,37 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { computeBillTotals, computeLineAmount, formatINR } from '../lib/money';
 import { formatInputDate, getFYLabel } from '../lib/dates';
-import { normaliseMobile } from '../lib/auth';
+import { addDays, parseISO } from 'date-fns';
+import { normaliseMobile, isValidIndianMobile } from '../lib/auth';
 import { getErrorMessage } from '../i18n';
 import { useToast } from '../components/ui/Toast';
+import { useAuth } from '../context/AuthContext';
+import { QRCodeSVG } from 'qrcode.react';
 import { BillDetailModal } from '../components/bills/BillDetailModal';
+import { AddNewCustomerModal } from '../components/bills/AddNewCustomerModal';
 import { ReceivePaymentSheet } from '../components/receipts/ReceivePaymentSheet';
 import { ReceiptDetailModal } from '../components/receipts/ReceiptDetailModal';
+import { useKeyboardShortcuts } from '../context/KeyboardShortcutContext';
+import { Kbd } from '../components/ui/Kbd';
+import { Select } from '../components/ui/Select';
 import {
-  FileText,
   CreditCard,
   Building,
   Smartphone,
   Banknote,
   Receipt,
-  CheckCircle2,
-  Zap,
-  Plus,
-  Trash2,
-  ChevronDown,
-  ChevronUp,
-  ChevronRight,
-  User,
   Search,
-  Calculator,
-  Percent,
   Check,
-  Minus,
-  Rows3,
-  Printer,
-  FileCheck,
-  Layers,
-  BookUser,
+  Briefcase,
+  Copy,
+  RotateCcw,
+  User,
   UserCheck,
+  X,
+  Lock,
+  Plus,
 } from 'lucide-react';
 import { Database } from '../types/supabase';
 
@@ -43,96 +40,103 @@ type Customer = Database['public']['Tables']['customers']['Row'];
 type Invoice = Database['public']['Tables']['invoices']['Row'];
 type InvoiceItem = Database['public']['Tables']['invoice_items']['Row'];
 
-// Single unified item state for all items & jobs
 interface BillItemState {
   id: string;
   service_id?: string | null;
   description: string;
-  particular: string; // Extra field for Particular / Applicant / Order Details
-  create_job: boolean; // Create Job in Queue checkbox, DEFAULT IS ALWAYS TRUE (checked)
+  particular: string; // Applicant / Order details
+  create_job: boolean; // Default true for job tracking
   quantity: string;
   rate: string;
 }
 
-const DRAFT_STORAGE_KEY = 'simplify_new_bill_draft_v3';
+const DRAFT_STORAGE_KEY = 'simplify_new_bill_draft_v7';
 const LAST_PAYMENT_MODE_KEY = 'simplify_last_payment_mode';
 
 const PAYMENT_MODES = [
   { id: 'CASH', label: 'Cash', icon: Banknote },
-  { id: 'BANK', label: 'Bank', icon: Building },
   { id: 'UPI', label: 'UPI', icon: Smartphone },
   { id: 'CARD', label: 'Card', icon: CreditCard },
+  { id: 'BANK', label: 'Bank', icon: Building },
   { id: 'CHEQUE', label: 'Cheque', icon: Receipt },
 ] as const;
 
-// Pastel theme mapping for quick service cards matching user design
-const SERVICE_THEMES = [
-  {
-    bg: 'bg-[#F0F7FF]',
-    border: 'border-[#D6E8FD]',
-    iconBg: 'bg-blue-100 text-[#0862EC]',
-    plusBg: 'bg-blue-100 text-[#0862EC] hover:bg-[#0862EC] hover:text-white',
-    icon: BookUser,
-  },
-  {
-    bg: 'bg-[#F0FDF4]',
-    border: 'border-[#DCFCE7]',
-    iconBg: 'bg-emerald-100 text-emerald-600',
-    plusBg: 'bg-emerald-100 text-emerald-600 hover:bg-emerald-600 hover:text-white',
-    icon: UserCheck,
-  },
-  {
-    bg: 'bg-[#FBF5FF]',
-    border: 'border-[#F3E8FF]',
-    iconBg: 'bg-purple-100 text-purple-600',
-    plusBg: 'bg-purple-100 text-purple-600 hover:bg-purple-600 hover:text-white',
-    icon: CreditCard,
-  },
-  {
-    bg: 'bg-[#FFF9F2]',
-    border: 'border-[#FEEDDC]',
-    iconBg: 'bg-orange-100 text-orange-600',
-    plusBg: 'bg-orange-100 text-orange-600 hover:bg-orange-600 hover:text-white',
-    icon: Printer,
-  },
-  {
-    bg: 'bg-[#FFF1F2]',
-    border: 'border-[#FFE4E6]',
-    iconBg: 'bg-rose-100 text-rose-600',
-    plusBg: 'bg-rose-100 text-rose-600 hover:bg-rose-600 hover:text-white',
-    icon: Layers,
-  },
-  {
-    bg: 'bg-[#F0FDFA]',
-    border: 'border-[#CCFBF1]',
-    iconBg: 'bg-teal-100 text-teal-600',
-    plusBg: 'bg-teal-100 text-teal-600 hover:bg-teal-600 hover:text-white',
-    icon: FileCheck,
-  },
-];
-
 export const NewBillPage: React.FC = () => {
   const navigate = useNavigate();
+  const params = useParams<{ id?: string }>();
+  const [searchParams] = useSearchParams();
+  const editInvoiceId = params.id || searchParams.get('edit') || null;
+
+  const { business } = useAuth();
   const { showToast } = useToast();
-  const quickScrollRef = useRef<HTMLDivElement>(null);
+  const jobsScrollRef = useRef<HTMLDivElement>(null);
+
+  // Prevent vertical page scroll when mouse-scrolling over the horizontal frequent items capsule bar
+  useEffect(() => {
+    const el = jobsScrollRef.current;
+    if (!el) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (el.scrollWidth > el.clientWidth) {
+        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        if (delta !== 0) {
+          e.preventDefault();
+          el.scrollLeft += delta;
+        }
+      }
+    };
+
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+    };
+  }, []);
+
+  // Edit mode state
+  const [editingInvoiceNumber, setEditingInvoiceNumber] = useState<string | null>(null);
+  const [nextInvoiceNumber, setNextInvoiceNumber] = useState<string>('INV-1001');
+  const [loadingEdit, setLoadingEdit] = useState(false);
+  const [copiedUpi, setCopiedUpi] = useState(false);
+  const [draftSaved, setDraftSaved] = useState(false);
 
   // Reference data
   const [services, setServices] = useState<Service[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerBalances, setCustomerBalances] = useState<Record<string, number>>({});
 
-  // Customer selection state
-  const [isWalkIn, setIsWalkIn] = useState(true);
+  // Customer State: ONLY 2 Concepts (Walk-in vs Regular)
+  const { registerSaveHandler } = useKeyboardShortcuts();
+  const walkInNameRef = useRef<HTMLInputElement>(null);
+  const customerSearchRef = useRef<HTMLInputElement>(null);
+
+  const [isWalkIn, setIsWalkIn] = useState(true); // Default Walk-in for rapid POS billing
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [walkInName, setWalkInName] = useState('');
   const [walkInMobile, setWalkInMobile] = useState('');
+  const [showCustomerSearch, setShowCustomerSearch] = useState(false);
+  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
+  const [isAddCustomerModalOpen, setIsAddCustomerModalOpen] = useState(false);
 
-  // Single unified items list (Jobs & Items combined with 'create_job' default true)
+  // Auto-focus customer input on mount
+  useEffect(() => {
+    if (!editInvoiceId) {
+      setTimeout(() => {
+        if (isWalkIn) {
+          walkInNameRef.current?.focus();
+        } else {
+          customerSearchRef.current?.focus();
+        }
+      }, 100);
+    }
+  }, [editInvoiceId]);
+
+  // Single unified items list
   const [items, setItems] = useState<BillItemState[]>([
     {
       id: '1',
       description: '',
       particular: '',
-      create_job: true, // Default ALWAYS checked per user requirement!
+      create_job: true, // Default ALWAYS true per user requirement
       quantity: '1',
       rate: '',
     },
@@ -144,15 +148,56 @@ export const NewBillPage: React.FC = () => {
 
   // Payment state
   const [paidNow, setPaidNow] = useState('');
-  const [paymentMode, setPaymentMode] = useState<string>('CASH');
-  const [bankAccounts, setBankAccounts] = useState<Array<{ id: string; bank_name: string; account_name: string; account_number?: string | null }>>([]);
+  const [paymentMode, setPaymentMode] = useState<string>('UPI');
+  const [bankAccounts, setBankAccounts] = useState<
+    Array<{
+      id: string;
+      bank_name: string;
+      account_name: string;
+      account_number?: string | null;
+      upi_id?: string | null;
+    }>
+  >([]);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
 
   // Dates and Notes
   const [invoiceDate, setInvoiceDate] = useState(formatInputDate());
-  const [dueDate, setDueDate] = useState(formatInputDate());
+  const [dueDate, setDueDate] = useState(() => {
+    const terms = Number(business?.default_terms_days) || 0;
+    return terms > 0 ? formatInputDate(addDays(new Date(), terms)) : formatInputDate();
+  });
   const [notes, setNotes] = useState('');
   const [showNotes, setShowNotes] = useState(false);
+
+  // Sync default due date based on business terms (e.g. Invoice Date + default_terms_days)
+  useEffect(() => {
+    if (!editInvoiceId && business) {
+      const terms = Number(business.default_terms_days) || 0;
+      if (terms > 0) {
+        try {
+          const invD = invoiceDate ? parseISO(invoiceDate) : new Date();
+          setDueDate(formatInputDate(addDays(invD, terms)));
+        } catch {}
+      }
+    }
+  }, [business?.default_terms_days, editInvoiceId]);
+
+  const handleInvoiceDateChange = (newDate: string) => {
+    setInvoiceDate(newDate);
+    if (!editInvoiceId) {
+      const terms = Number(business?.default_terms_days) || 0;
+      if (terms > 0) {
+        try {
+          const invD = newDate ? parseISO(newDate) : new Date();
+          setDueDate(formatInputDate(addDays(invD, terms)));
+        } catch {
+          setDueDate(newDate);
+        }
+      } else {
+        setDueDate(newDate);
+      }
+    }
+  };
 
   // Status & Bill Detail Modal
   const [saving, setSaving] = useState(false);
@@ -168,7 +213,7 @@ export const NewBillPage: React.FC = () => {
     localStorage.removeItem(DRAFT_STORAGE_KEY);
     setItems([
       {
-        id: '1',
+        id: Math.random().toString(36).substring(2, 9),
         description: '',
         particular: '',
         create_job: true,
@@ -182,11 +227,56 @@ export const NewBillPage: React.FC = () => {
     setDiscountValue('');
     setPaidNow('');
     setNotes('');
-    setSelectedCustomerId(null);
+    setShowNotes(false);
     setIsWalkIn(true);
+    setSelectedCustomerId(null);
+    const today = formatInputDate();
+    setInvoiceDate(today);
+    const terms = Number(business?.default_terms_days) || 0;
+    setDueDate(terms > 0 ? formatInputDate(addDays(new Date(), terms)) : today);
   };
 
-  // Load services & customers
+  // Fetch next invoice number preview & customer balances
+  useEffect(() => {
+    supabase
+      .from('invoices')
+      .select('number')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .then(({ data }) => {
+        if (data && data.length > 0 && data[0].number) {
+          const match = data[0].number.match(/(\d+)$/);
+          if (match) {
+            const nextNum = parseInt(match[1], 10) + 1;
+            const prefix = data[0].number.slice(0, match.index);
+            setNextInvoiceNumber(`${prefix}${nextNum}`);
+          } else {
+            setNextInvoiceNumber(data[0].number);
+          }
+        }
+      });
+
+    // Customer dues across invoices
+    supabase
+      .from('invoices')
+      .select('customer_id, total, paid_amount')
+      .eq('status', 'ACTIVE')
+      .not('customer_id', 'is', null)
+      .then(({ data }) => {
+        if (data) {
+          const dues: Record<string, number> = {};
+          data.forEach((inv: any) => {
+            const bal = Math.max(0, Number(inv.total || 0) - Number(inv.paid_amount || 0));
+            if (bal > 0 && inv.customer_id) {
+              dues[inv.customer_id] = (dues[inv.customer_id] || 0) + bal;
+            }
+          });
+          setCustomerBalances(dues);
+        }
+      });
+  }, []);
+
+  // Load services, customers, bank accounts
   useEffect(() => {
     const lastMode = localStorage.getItem(LAST_PAYMENT_MODE_KEY);
     if (lastMode) setPaymentMode(lastMode);
@@ -213,7 +303,7 @@ export const NewBillPage: React.FC = () => {
 
     supabase
       .from('bank_accounts')
-      .select('id, bank_name, account_name, account_number')
+      .select('id, bank_name, account_name, account_number, upi_id')
       .is('deleted_at', null)
       .order('bank_name')
       .then(({ data }) => {
@@ -224,23 +314,140 @@ export const NewBillPage: React.FC = () => {
         }
       });
 
-    // Check saved draft
-    const draft = localStorage.getItem(DRAFT_STORAGE_KEY);
-    if (draft) {
-      try {
-        const parsed = JSON.parse(draft);
-        if (parsed.items && parsed.items.length > 0) setItems(parsed.items);
-        if (parsed.walkInName) setWalkInName(parsed.walkInName);
-        if (parsed.walkInMobile) setWalkInMobile(parsed.walkInMobile);
-        if (parsed.discountType) setDiscountType(parsed.discountType);
-        if (parsed.discountValue) setDiscountValue(parsed.discountValue);
-        if (parsed.paidNow) setPaidNow(parsed.paidNow);
-      } catch (e) {}
+    // Check saved draft only if not editing
+    if (!editInvoiceId) {
+      const draft = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (draft) {
+        try {
+          const parsed = JSON.parse(draft);
+          if (parsed.items && parsed.items.length > 0) setItems(parsed.items);
+          if (parsed.isWalkIn !== undefined) setIsWalkIn(parsed.isWalkIn);
+          if (parsed.selectedCustomerId) setSelectedCustomerId(parsed.selectedCustomerId);
+          if (parsed.walkInName) setWalkInName(parsed.walkInName);
+          if (parsed.walkInMobile) setWalkInMobile(parsed.walkInMobile);
+          if (parsed.discountType) setDiscountType(parsed.discountType);
+          if (parsed.discountValue) setDiscountValue(parsed.discountValue);
+          if (parsed.paidNow) setPaidNow(parsed.paidNow);
+          if (parsed.notes) {
+            setNotes(parsed.notes);
+            setShowNotes(true);
+          }
+          setDraftSaved(true);
+        } catch (e) {}
+      }
     }
-  }, []);
+  }, [editInvoiceId]);
+
+  // Load existing invoice for editing
+  useEffect(() => {
+    if (!editInvoiceId) return;
+
+    let isMounted = true;
+    setLoadingEdit(true);
+
+    const loadInvoice = async () => {
+      try {
+        const { data: inv, error: invError } = await supabase
+          .from('invoices')
+          .select('*')
+          .eq('id', editInvoiceId)
+          .single();
+
+        if (invError || !inv) {
+          showToast('Invoice not found', 'error');
+          navigate('/bills');
+          return;
+        }
+
+        if (inv.status === 'CANCELLED') {
+          showToast('Cancelled bills cannot be edited', 'error');
+          navigate('/bills');
+          return;
+        }
+
+        if (Number(inv.paid_amount || 0) > 0) {
+          showToast('Bills with payments are locked and cannot be edited. You can cancel instead.', 'error');
+          navigate('/bills');
+          return;
+        }
+
+        // Check if any job steps are already ticked
+        const { data: jobs } = await supabase
+          .from('jobs')
+          .select('id, job_steps(id, ticked)')
+          .eq('invoice_id', editInvoiceId);
+
+        const hasTickedSteps = (jobs || []).some((j: any) =>
+          (j.job_steps || []).some((s: any) => s.ticked)
+        );
+
+        if (hasTickedSteps) {
+          showToast('This bill has jobs with progressed steps and cannot be edited.', 'error');
+          navigate('/bills');
+          return;
+        }
+
+        // Fetch invoice items
+        const { data: rawItems } = await supabase
+          .from('invoice_items')
+          .select('*')
+          .eq('invoice_id', editInvoiceId);
+
+        if (!isMounted) return;
+
+        setEditingInvoiceNumber(inv.number);
+        setInvoiceDate(inv.invoice_date);
+        setDueDate(inv.due_date || inv.invoice_date);
+        setNotes(inv.notes || '');
+        if (inv.notes) setShowNotes(true);
+        setDiscountType((inv.discount_type as any) || 'NONE');
+        setDiscountValue(inv.discount_value ? String(inv.discount_value) : '');
+        setPaidNow('');
+
+        if (inv.customer_id) {
+          setIsWalkIn(false);
+          setSelectedCustomerId(inv.customer_id);
+          setWalkInName('');
+          setWalkInMobile('');
+        } else {
+          setIsWalkIn(true);
+          setSelectedCustomerId(null);
+          setWalkInName(inv.party_name && inv.party_name !== 'Walk-in' ? inv.party_name : '');
+          setWalkInMobile(inv.party_mobile || '');
+        }
+
+        if (rawItems && rawItems.length > 0) {
+          setItems(
+            rawItems.map((it: any) => ({
+              id: it.id,
+              service_id: it.service_id,
+              description: it.description || '',
+              particular: it.applicant_name || '',
+              create_job: !!it.is_job,
+              quantity: String(it.quantity || 1),
+              rate: String(it.rate || 0),
+            }))
+          );
+        }
+      } catch (err: any) {
+        showToast(err.message || 'Failed to load bill', 'error');
+        navigate('/bills');
+      } finally {
+        if (isMounted) setLoadingEdit(false);
+      }
+    };
+
+    loadInvoice();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [editInvoiceId, navigate, showToast]);
 
   // Auto-save draft locally on change
   useEffect(() => {
+    if (editInvoiceId) return;
+
     const draft = {
       isWalkIn,
       selectedCustomerId,
@@ -253,7 +460,9 @@ export const NewBillPage: React.FC = () => {
       notes,
     };
     localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    setDraftSaved(true);
   }, [
+    editInvoiceId,
     isWalkIn,
     selectedCustomerId,
     walkInName,
@@ -265,29 +474,141 @@ export const NewBillPage: React.FC = () => {
     notes,
   ]);
 
-  // Combined line preview items for decimal.js live calculation
+  // Live bill totals
   const allLines = items.map((it) => ({
     quantity: it.quantity || '0',
     rate: it.rate || '0',
   }));
-
   const totals = computeBillTotals(allLines, discountType, discountValue, paidNow);
 
-  // Quick service scroll helper
-  const handleScrollRight = () => {
-    if (quickScrollRef.current) {
-      quickScrollRef.current.scrollBy({ left: 240, behavior: 'smooth' });
+  // Does the bill have any tracked jobs?
+  const hasTrackedJobs = items.some((it) => it.create_job);
+
+  // Selected customer object for Regular mode
+  const selectedCustomerObj = customers.find((c) => c.id === selectedCustomerId);
+  const regularCustomers = customers.filter((c) => c.type === 'REGULAR');
+
+  // Filtered customer list for instant type-ahead search
+  const filteredCustomerList = useMemo(() => {
+    const q = customerSearchQuery.trim().toLowerCase();
+    if (!q) return regularCustomers;
+    return customers.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.mobile && c.mobile.includes(q))
+    );
+  }, [customers, regularCustomers, customerSearchQuery]);
+
+  // Customer display name for summary
+  const customerDisplayName = isWalkIn
+    ? (walkInName.trim() || 'Walk-in')
+    : (selectedCustomerObj?.name || 'Regular Customer');
+
+  // Customer outstanding display
+  const customerOutstanding = selectedCustomerObj
+    ? (customerBalances[selectedCustomerObj.id] || 0)
+    : 0;
+
+  // Initials for avatar
+  const customerInitials = (customerDisplayName || 'C')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0].toUpperCase())
+    .join('');
+
+  // Payment mode label
+  const currentModeObj = PAYMENT_MODES.find((m) => m.id === paymentMode);
+  const currentModeLabel = currentModeObj?.label || paymentMode;
+
+  // Dynamic QR Code computations based on selected bank account
+  const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
+  const activeUpiId = selectedBank?.upi_id?.trim() || business?.upi_id?.trim() || 'bservices@upi';
+  const qrPayableAmount = Number(paidNow) > 0
+    ? Number(paidNow)
+    : (totals.balance.greaterThan(0) ? totals.balance.toNumber() : totals.total.toNumber());
+
+  const upiQrString = `upi://pay?pa=${encodeURIComponent(activeUpiId)}&pn=${encodeURIComponent(business?.name || 'Simplify Merchant')}&am=${qrPayableAmount.toFixed(2)}&cu=INR&tn=${encodeURIComponent('Bill Payment')}`;
+
+  const handleCopyUpi = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(activeUpiId);
+      setCopiedUpi(true);
+      setTimeout(() => setCopiedUpi(false), 2000);
+      showToast('UPI ID copied to clipboard', 'success');
+    }
+  };
+
+  // Check duplicate customer by 10-digit mobile
+  const checkDuplicateMobile = (mobile: string) => {
+    const clean = normaliseMobile(mobile);
+    if (!clean || clean.length !== 10) return null;
+    return customers.find((c) => c.mobile && normaliseMobile(c.mobile) === clean) || null;
+  };
+
+  const walkInDuplicate = isWalkIn ? checkDuplicateMobile(walkInMobile) : null;
+
+  // "Same as previous bill" loader
+  const handleSameAsPreviousBill = async () => {
+    try {
+      const { data: latestInv } = await supabase
+        .from('invoices')
+        .select('*, invoice_items(*)')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (!latestInv) {
+        showToast('No previous bill found', 'info');
+        return;
+      }
+
+      if (latestInv.customer_id) {
+        setIsWalkIn(false);
+        setSelectedCustomerId(latestInv.customer_id);
+        setWalkInName('');
+        setWalkInMobile('');
+      } else {
+        setIsWalkIn(true);
+        setSelectedCustomerId(null);
+        setWalkInName(latestInv.party_name && latestInv.party_name !== 'Walk-in' ? latestInv.party_name : '');
+        setWalkInMobile(latestInv.party_mobile || '');
+      }
+
+      if (latestInv.invoice_items && latestInv.invoice_items.length > 0) {
+        setItems(
+          latestInv.invoice_items.map((it: any) => ({
+            id: Math.random().toString(36).substring(2, 9),
+            service_id: it.service_id,
+            description: it.description || '',
+            particular: it.applicant_name || '',
+            create_job: !!it.is_job,
+            quantity: String(it.quantity || 1),
+            rate: String(it.rate || 0),
+          }))
+        );
+      }
+
+      if (latestInv.discount_type && latestInv.discount_type !== 'NONE') {
+        setDiscountType(latestInv.discount_type as any);
+        setDiscountValue(latestInv.discount_value ? String(latestInv.discount_value) : '');
+      }
+
+      showToast('Loaded details from previous bill', 'success');
+    } catch (e: any) {
+      showToast('Failed to load previous bill', 'error');
     }
   };
 
   // Item handlers
   const handleAddItem = (service?: Service) => {
+    const newItemId = Math.random().toString(36).substring(2, 9);
     const newItem: BillItemState = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: newItemId,
       service_id: service?.id || null,
       description: service?.name || '',
       particular: '',
-      create_job: true, // Default ALWAYS checked (true) per user requirement!
+      create_job: !!service?.is_job_type, // If it's a job service, default ON!
       quantity: '1',
       rate: service?.default_rate ? String(service.default_rate) : '',
     };
@@ -297,6 +618,12 @@ export const NewBillPage: React.FC = () => {
     } else {
       setItems((prev) => [...prev, newItem]);
     }
+
+    // Auto-focus new item description field
+    setTimeout(() => {
+      const el = document.getElementById(`item-desc-${newItemId}`);
+      if (el) el.focus();
+    }, 60);
   };
 
   const handleUpdateItem = (id: string, updates: Partial<BillItemState>) => {
@@ -304,13 +631,13 @@ export const NewBillPage: React.FC = () => {
   };
 
   const handleRemoveItem = (id: string) => {
-    if (items.length === 1) {
+    if (items.length <= 1) {
       setItems([
         {
-          id: '1',
+          id: Math.random().toString(36).substring(2, 9),
           description: '',
           particular: '',
-          create_job: true,
+          create_job: false,
           quantity: '1',
           rate: '',
         },
@@ -320,815 +647,1263 @@ export const NewBillPage: React.FC = () => {
     setItems((prev) => prev.filter((it) => it.id !== id));
   };
 
-  const handleQtyChange = (id: string, delta: number) => {
-    setItems((prev) =>
-      prev.map((it) => {
-        if (it.id !== id) return it;
-        const currentQty = parseFloat(it.quantity || '1') || 1;
-        const newQty = Math.max(1, currentQty + delta);
-        return { ...it, quantity: String(newQty) };
-      })
-    );
-  };
-
   const handlePaidInFull = () => {
     setPaidNow(totals.total.toString());
   };
 
-  const handleSave = async (saveAndNew = false) => {
-    // Collect valid items
-    const validItems = items.filter((it) => it.description.trim() !== '');
+  const handleSave = useCallback(
+    async (saveAndNew = false) => {
+      // 1. Collect valid items
+      const validItems = items.filter((it) => it.description.trim() !== '');
 
-    if (validItems.length === 0) {
-      showToast('Please add at least one item to the bill', 'error');
-      return;
-    }
-
-    // Client-side BR-5 Validation: if balance > 0, customer name and mobile are mandatory
-    if (totals.balance.greaterThan(0)) {
-      if (isWalkIn && (!walkInName.trim() || !walkInMobile.trim())) {
-        showToast('Customer Name and 10-digit Mobile are required for bills with due balance', 'error');
+      if (validItems.length === 0) {
+        showToast('Please add at least one item to the bill', 'error');
         return;
       }
-    }
 
-    const hasJobTicked = validItems.some((it) => it.create_job);
-    if (hasJobTicked && isWalkIn && !walkInMobile.trim()) {
-      showToast('Tip: Enter customer mobile to enable WhatsApp updates for tracked jobs', 'info');
-    }
-
-    setSaving(true);
-    try {
-      // Map items with Particular -> applicant_name & create_job -> is_job
-      const mappedItems = validItems.map((it) => ({
-        service_id: it.service_id && it.service_id !== 'null' && it.service_id !== 'undefined' ? it.service_id : null,
-        description: it.description.trim(),
-        quantity: parseFloat(it.quantity || '1'),
-        rate: parseFloat(it.rate || '0'),
-        is_job: it.create_job, // Explicitly respects user's checkbox (default true)
-        applicant_name: it.particular.trim() || walkInName.trim() || null,
-      }));
-
-      const payload: any = {
-        invoice_date: invoiceDate,
-        due_date: dueDate,
-        discount_type: discountType,
-        discount_value: discountValue ? parseFloat(discountValue) : 0,
-        notes: notes.trim() || null,
-        items: mappedItems,
-      };
-
-      if (!isWalkIn && selectedCustomerId) {
-        payload.customer_id = selectedCustomerId;
-      } else {
-        payload.walk_in = {
-          name: walkInName.trim() || undefined,
-          mobile: walkInMobile ? normaliseMobile(walkInMobile) : undefined,
-        };
+      // 2. USER MANDATORY RULE: If ANY item has Job ON, Job Service selection is mandatory!
+      const invalidJobItem = validItems.find((it) => it.create_job && !it.description.trim());
+      if (invalidJobItem) {
+        showToast('Please select or specify a Job Service for all tracked jobs.', 'error');
+        return;
       }
 
-      if (paidNow && parseFloat(paidNow) > 0) {
-        if (paymentMode !== 'CASH' && !selectedBankId) {
-          showToast(`Please select a Bank Account for ${paymentMode} payment`, 'error');
-          setSaving(false);
+      // 3. USER MANDATORY RULE: If ANY item has Job created (create_job = true), Customer Name & 10-digit Mobile are MANDATORY
+      const hasJob = validItems.some((it) => it.create_job);
+      if (hasJob && isWalkIn && (!walkInName.trim() || !walkInMobile.trim() || !isValidIndianMobile(walkInMobile))) {
+        showToast(
+          'Customer Name & 10-digit Mobile are mandatory for Job Tracking & WhatsApp updates.',
+          'error'
+        );
+        return;
+      }
+
+      // 4. USER MANDATORY RULE: If bill has due balance (totals.balance > 0), Customer Name & 10-digit Mobile are MANDATORY
+      if (totals.balance.greaterThan(0)) {
+        if (isWalkIn && (!walkInName.trim() || !walkInMobile.trim() || !isValidIndianMobile(walkInMobile))) {
+          showToast(
+            'Customer Name & 10-digit Mobile are mandatory for bills with due balance.',
+            'error'
+          );
+          return;
+        }
+        if (!isWalkIn && !selectedCustomerId) {
+          showToast('Please select a Regular Customer for dues.', 'error');
+          return;
+        }
+      }
+
+      setSaving(true);
+      try {
+        // Ensure every job item has a valid service_id in the database so RPC never fails
+        const mappedItems = await Promise.all(
+          validItems.map(async (it) => {
+            let resolvedServiceId =
+              it.service_id && it.service_id !== 'null' && it.service_id !== 'undefined'
+                ? it.service_id
+                : null;
+
+            // Try matching with existing services by name
+            if (!resolvedServiceId) {
+              const matched = services.find(
+                (s) => s.name.toLowerCase().trim() === it.description.toLowerCase().trim()
+              );
+              if (matched) {
+                resolvedServiceId = matched.id;
+              }
+            }
+
+            // If it's a tracked job and still has no service_id, auto-create the service on the fly
+            if (it.create_job && !resolvedServiceId) {
+              const { data: newSrv } = await supabase
+                .from('services')
+                .insert({
+                  name: it.description.trim(),
+                  is_job_type: true,
+                  default_rate: parseFloat(it.rate || '0') || null,
+                  active: true,
+                })
+                .select('*')
+                .single();
+
+              if (newSrv) {
+                resolvedServiceId = newSrv.id;
+                setServices((prev) => [...prev, newSrv as Service]);
+              }
+            }
+
+            return {
+              service_id: resolvedServiceId,
+              description: it.description.trim(),
+              quantity: parseFloat(it.quantity || '1'),
+              rate: parseFloat(it.rate || '0'),
+              is_job: it.create_job,
+              applicant_name: it.particular.trim() || walkInName.trim() || null,
+            };
+          })
+        );
+
+        const payload: any = {
+          invoice_date: invoiceDate,
+          due_date: dueDate,
+          discount_type: discountType,
+          discount_value: discountValue ? parseFloat(discountValue) : 0,
+          notes: notes.trim() || null,
+          items: mappedItems,
+        };
+
+        if (!isWalkIn && selectedCustomerId) {
+          payload.customer_id = selectedCustomerId;
+        } else {
+          payload.walk_in = {
+            name: walkInName.trim() || undefined,
+            mobile: walkInMobile ? normaliseMobile(walkInMobile) : undefined,
+          };
+        }
+
+        if (paidNow && parseFloat(paidNow) > 0) {
+          if (paymentMode !== 'CASH' && !selectedBankId) {
+            showToast(`Please select a Bank Account for ${paymentMode} payment`, 'error');
+            setSaving(false);
+            return;
+          }
+
+          const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
+          payload.paid = {
+            amount: parseFloat(paidNow),
+            mode: paymentMode,
+            bank_account_id: paymentMode !== 'CASH' ? selectedBankId || null : null,
+            bank_name: paymentMode !== 'CASH' ? selectedBank?.bank_name || null : null,
+          };
+          localStorage.setItem(LAST_PAYMENT_MODE_KEY, paymentMode);
+        }
+
+        if (editInvoiceId) {
+          const { error } = await supabase.rpc('update_invoice', {
+            p_invoice_id: editInvoiceId,
+            payload,
+          });
+          if (error) throw error;
+
+          showToast(`Bill #${editingInvoiceNumber || ''} updated successfully!`, 'success');
+          navigate('/bills');
           return;
         }
 
-        const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
-        payload.paid = {
-          amount: parseFloat(paidNow),
-          mode: paymentMode,
-          bank_account_id: paymentMode !== 'CASH' ? selectedBankId || null : null,
-          bank_name: paymentMode !== 'CASH' ? selectedBank?.bank_name || null : null,
+        const { data, error } = await supabase.rpc('create_invoice', { payload });
+        if (error) throw error;
+
+        // Clear local draft
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+
+        // Fetch complete invoice data and items
+        const { data: invData } = await supabase
+          .from('invoices')
+          .select('*')
+          .eq('id', data.id)
+          .single();
+
+        const { data: itemsData } = await supabase
+          .from('invoice_items')
+          .select('*')
+          .eq('invoice_id', data.id);
+
+        const fullInvoice: Invoice & { invoice_items?: InvoiceItem[] } = {
+          ...(invData || data),
+          invoice_items: (itemsData as InvoiceItem[]) || [],
         };
-        localStorage.setItem(LAST_PAYMENT_MODE_KEY, paymentMode);
+
+        setSavedInvoice(fullInvoice);
+        setIsDetailModalOpen(true);
+        resetForm();
+        showToast(
+          saveAndNew
+            ? `Bill #${data.number} saved! Ready for next bill.`
+            : `Bill #${data.number} created successfully!`,
+          'success'
+        );
+      } catch (err: any) {
+        showToast(getErrorMessage(err.message), 'error');
+      } finally {
+        setSaving(false);
       }
+    },
+    [
+      items,
+      totals,
+      isWalkIn,
+      walkInName,
+      walkInMobile,
+      invoiceDate,
+      dueDate,
+      discountType,
+      discountValue,
+      notes,
+      selectedCustomerId,
+      paidNow,
+      paymentMode,
+      selectedBankId,
+      bankAccounts,
+      editInvoiceId,
+      editingInvoiceNumber,
+      services,
+      showToast,
+      navigate,
+    ]
+  );
 
-      const { data, error } = await supabase.rpc('create_invoice', { payload });
-      if (error) throw error;
+  // Register global save handler for Ctrl+S / Cmd+S
+  useEffect(() => {
+    const unregister = registerSaveHandler(() => {
+      handleSave(false);
+    });
+    return unregister;
+  }, [registerSaveHandler, handleSave]);
 
-      // Clear local draft
-      localStorage.removeItem(DRAFT_STORAGE_KEY);
+  // Keyboard shortcut Ctrl+Enter to save, Ctrl+Shift+S for save & new, Alt+A to add item
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        handleSave(true);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleSave(false);
+      } else if (e.altKey && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault();
+        handleAddItem();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleSave, handleAddItem]);
 
-      // Fetch complete invoice data and items so BillDetailModal displays full document
-      const { data: invData } = await supabase
-        .from('invoices')
-        .select('*')
-        .eq('id', data.id)
-        .single();
+  if (editInvoiceId && loadingEdit) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="text-sm font-medium text-slate-500 animate-pulse">Loading bill details...</div>
+      </div>
+    );
+  }
 
-      const { data: itemsData } = await supabase
-        .from('invoice_items')
-        .select('*')
-        .eq('invoice_id', data.id);
-
-      const fullInvoice: Invoice & { invoice_items?: InvoiceItem[] } = {
-        ...(invData || data),
-        invoice_items: (itemsData as InvoiceItem[]) || [],
-      };
-
-      setSavedInvoice(fullInvoice);
-      setIsDetailModalOpen(true);
-      resetForm();
-      showToast(
-        saveAndNew
-          ? `Bill #${data.number} saved! Form ready for next bill.`
-          : `Bill #${data.number} created successfully!`,
-        'success'
-      );
-    } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const billHeaderNumber = editInvoiceId
+    ? `Bill #${editingInvoiceNumber || ''}`
+    : nextInvoiceNumber;
+  const billHeaderDate = new Date().toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
 
   return (
-    <div className="w-full max-w-[1600px] mx-auto p-3 sm:p-5 flex flex-col gap-3.5 min-h-screen lg:h-[calc(100vh-64px)] lg:overflow-hidden font-sans">
-      {/* 1. TOP HEADER: Title, Date, FY, and Customer Single Row Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
-        {/* Left: Title & FY Subtitle */}
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="w-10 h-10 rounded-2xl bg-[#0862EC] text-white flex items-center justify-center shadow-md shadow-blue-500/20">
-            <FileText className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-900 leading-tight">
-              Create Bill
-            </h1>
-            <p className="text-xs text-slate-400 font-medium">
-              {formatInputDate()} · FY {getFYLabel()}
-            </p>
-          </div>
+    <div className="w-full max-w-[1340px] mx-auto space-y-4 select-none">
+      {/* TOP PAGE HEADER: Title, Date, Subtitle, and Shortcuts */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1">
+        <div>
+          <h1 className="text-[26px] font-bold tracking-tight text-[#0F172A] leading-tight">
+            {editInvoiceId ? `Edit bill` : 'New bill'}
+          </h1>
+          <p className="text-[13px] text-[#64748B] font-normal mt-0.5">
+            {billHeaderNumber} · {billHeaderDate} · FY {getFYLabel()}
+          </p>
         </div>
 
-        {/* Right: Customer Segmented Pill + Inline Customer Inputs */}
-        <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap flex-1 justify-end max-w-2xl">
-          {/* Segmented Switch: Walk-in vs Existing */}
-          <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200/60 shrink-0">
+        <div className="flex items-center gap-3 self-start sm:self-auto">
+          {draftSaved && (
+            <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-[#64748B]">
+              <Check className="w-4 h-4 text-[#0F766E]" />
+              <span>Draft saved</span>
+            </div>
+          )}
+
+          {!editInvoiceId && (
             <button
               type="button"
-              onClick={() => {
-                setIsWalkIn(true);
-                setSelectedCustomerId(null);
-              }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                isWalkIn
-                  ? 'bg-[#0862EC] text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
+              onClick={handleSameAsPreviousBill}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border-0 bg-white text-[13px] font-medium text-[#0F172A] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_14px_rgba(0,0,0,0.06)] hover:bg-[#F8FAFC] active:scale-[0.98] transition-all cursor-pointer select-none"
             >
-              Walk-in
+              <RotateCcw className="w-3.5 h-3.5 text-[#64748B]" />
+              <span>Same as previous bill</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setIsWalkIn(false)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                !isWalkIn
-                  ? 'bg-[#0862EC] text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Existing
-            </button>
-          </div>
-
-          {isWalkIn ? (
-            <div className="flex items-center gap-2 flex-1">
-              {/* Customer Name */}
-              <div className="relative flex-1">
-                <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  placeholder="Customer Name (optional if fully paid)"
-                  value={walkInName}
-                  onChange={(e) => setWalkInName(e.target.value)}
-                  className="w-full h-10 pl-9 pr-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC] focus:outline-none transition-all shadow-2xs"
-                />
-              </div>
-
-              {/* Customer Mobile */}
-              <div className="relative w-44 shrink-0">
-                <Smartphone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="tel"
-                  inputMode="tel"
-                  placeholder="10-digit Mobile"
-                  value={walkInMobile}
-                  onChange={(e) => setWalkInMobile(e.target.value)}
-                  className="w-full h-10 pl-9 pr-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC] focus:outline-none transition-all shadow-2xs"
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1">
-              <select
-                value={selectedCustomerId || ''}
-                onChange={(e) => setSelectedCustomerId(e.target.value || null)}
-                className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-900 focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC] focus:outline-none shadow-2xs"
-              >
-                <option value="">-- Choose Existing Customer --</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} {c.mobile ? `(${c.mobile})` : ''} - {c.type}
-                  </option>
-                ))}
-              </select>
-            </div>
           )}
         </div>
       </div>
 
-      {/* 2. MAIN 2-COLUMN WORKSPACE */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 lg:overflow-hidden min-h-0">
-        {/* LEFT COLUMN: Quick Services + Bill Items Table (approx 68% width) */}
-        <div className="lg:col-span-8 flex flex-col gap-3.5 lg:overflow-hidden min-h-0">
-          {/* Card 1: Quick Add Service / Job */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs shrink-0">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-blue-50 text-[#0862EC] flex items-center justify-center">
-                  <Zap className="w-4 h-4 fill-current" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-bold text-slate-900 leading-tight">
-                    Quick Add Service / Job
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Click to add common services (Auto-fills item below)
-                  </p>
-                </div>
-              </div>
-
-              {/* Add Empty Row Button */}
-              <button
-                type="button"
-                onClick={() => handleAddItem()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer shadow-2xs"
-              >
-                <Rows3 className="w-3.5 h-3.5 text-slate-500" />
-                <span>Add Empty Row</span>
-              </button>
+      {/* 2-COLUMN MAIN LAYOUT */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        {/* LEFT COLUMN: Customer + Items + Payment (~65% width) */}
+        <div className="lg:col-span-8 space-y-4">
+          {/* CARD 1: LUXURY CUSTOMER CARD (Crisp White Card on #F6F7F9 Canvas) */}
+          <div className="bg-white border-0 rounded-2xl p-5 sm:p-6 shadow-[0_2px_12px_rgba(0,0,0,0.03)] space-y-3.5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-[15px] font-bold text-[#0F172A]">Customer</h2>
             </div>
 
-            {/* Quick Cards Scroll Container */}
-            <div className="relative">
-              <div
-                ref={quickScrollRef}
-                className="flex items-center gap-2.5 overflow-x-auto no-scrollbar scroll-smooth py-1"
-                style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-              >
-                {services.slice(0, 10).map((srv, idx) => {
-                  const theme = SERVICE_THEMES[idx % SERVICE_THEMES.length];
-                  const IconComp = theme.icon;
-                  return (
-                    <div
-                      key={srv.id}
-                      onClick={() => handleAddItem(srv)}
-                      className={`shrink-0 flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-2xl border ${theme.bg} ${theme.border} hover:shadow-xs transition-all cursor-pointer min-w-[170px] select-none`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div
-                          className={`w-8 h-8 rounded-xl ${theme.iconBg} flex items-center justify-center shrink-0 shadow-2xs`}
-                        >
-                          <IconComp className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-slate-900 truncate leading-snug">
-                            {srv.name}
-                          </p>
-                          <p className="text-xs font-extrabold text-slate-800">
-                            {formatINR(srv.default_rate || 0)}
-                          </p>
-                        </div>
+            {/* STATE 1: Selected Customer Preview */}
+            {selectedCustomerObj ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-4 rounded-2xl bg-[#F6F7F9] border-0 shadow-2xs">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-full bg-[#E6F4EA] text-[#0F766E] font-bold text-[13px] flex items-center justify-center shrink-0">
+                      {customerInitials}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[14.5px] font-bold text-[#0F172A] truncate">
+                        {selectedCustomerObj.name}
                       </div>
-
-                      <button
-                        type="button"
-                        className={`w-6 h-6 rounded-full ${theme.plusBg} flex items-center justify-center shrink-0 text-xs font-bold transition-all shadow-2xs`}
-                        title="Add to Bill"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Right Arrow Carousel Button */}
-              {services.length > 5 && (
-                <button
-                  type="button"
-                  onClick={handleScrollRight}
-                  className="absolute -right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white border border-slate-200 shadow-md text-slate-500 hover:text-slate-800 flex items-center justify-center z-10 transition-all"
-                  title="Scroll right"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Card 2: Bill Items Table */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex-1 flex flex-col min-h-0 lg:overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-3 shrink-0">
-              <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-blue-50 text-[#0862EC] flex items-center justify-center">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-bold text-slate-900 leading-tight">
-                    Bill Items
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Add items or select from above services
-                  </p>
-                </div>
-              </div>
-
-              {/* Add Item Button */}
-              <button
-                type="button"
-                onClick={() => handleAddItem()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0862EC] text-white hover:bg-blue-700 text-xs font-bold transition-all cursor-pointer shadow-xs shadow-blue-500/20"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Item</span>
-                <ChevronDown className="w-3 h-3 opacity-80" />
-              </button>
-            </div>
-
-            {/* Table Header Row */}
-            <div className="hidden sm:grid grid-cols-12 gap-2 text-[11px] font-bold text-slate-500 px-3 py-2 bg-slate-50/70 rounded-xl shrink-0">
-              <div className="col-span-1 text-center">#</div>
-              <div className="col-span-3">Item / Service / Job</div>
-              <div className="col-span-3">Particular (Applicant / Order Details)</div>
-              <div className="col-span-1 text-center">Create Job</div>
-              <div className="col-span-1 text-center">Qty</div>
-              <div className="col-span-1 text-center">Rate (₹)</div>
-              <div className="col-span-1 text-right">Amount (₹)</div>
-              <div className="col-span-1 text-center">Action</div>
-            </div>
-
-            {/* Table Body (Internal Scroll for 100+ items) */}
-            <div className="flex-1 overflow-y-auto space-y-2 py-1 pr-1 min-h-[160px]">
-              {items.map((item, idx) => {
-                const lineAmt = computeLineAmount(item.quantity, item.rate);
-                return (
-                  <div
-                    key={item.id}
-                    className="p-2 sm:px-3 sm:py-2 rounded-xl border border-slate-200/80 bg-white hover:border-slate-300 transition-all flex flex-col sm:grid sm:grid-cols-12 gap-2 items-center text-xs shadow-2xs"
-                  >
-                    {/* # Index */}
-                    <div className="hidden sm:block col-span-1 text-center font-bold text-slate-400">
-                      {idx + 1}
-                    </div>
-
-                    {/* Item / Service / Job (Search / Type-ahead select) */}
-                    <div className="w-full sm:col-span-3 relative">
-                      <div className="relative flex items-center">
-                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
-                        <input
-                          type="text"
-                          list={`service-list-${item.id}`}
-                          placeholder="Select or Type Service..."
-                          value={item.description}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const matched = services.find(
-                              (s) => s.name.toLowerCase() === val.toLowerCase()
-                            );
-                            if (matched) {
-                              handleUpdateItem(item.id, {
-                                description: matched.name,
-                                service_id: matched.id,
-                                rate: matched.default_rate
-                                  ? String(matched.default_rate)
-                                  : item.rate,
-                                create_job: true, // Default ALWAYS checked true!
-                              });
-                            } else {
-                              handleUpdateItem(item.id, { description: val });
-                            }
-                          }}
-                          className="w-full h-9 pl-8 pr-7 rounded-xl border border-slate-200 text-xs font-semibold text-slate-900 bg-white focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC] focus:outline-none"
-                        />
-                        <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 pointer-events-none" />
-                        <datalist id={`service-list-${item.id}`}>
-                          {services.map((s) => (
-                            <option key={s.id} value={s.name}>
-                              {s.is_job_type ? '[Job]' : '[Item]'} Rate: ₹{s.default_rate || 0}
-                            </option>
-                          ))}
-                        </datalist>
+                      <div className="text-[12.5px] text-[#64748B] mt-0.5 truncate">
+                        {selectedCustomerObj.mobile || 'No mobile'} · Outstanding:{' '}
+                        <strong className={customerOutstanding > 0 ? 'text-amber-700 font-bold' : 'text-[#0F172A]'}>
+                          {formatINR(customerOutstanding)}
+                        </strong>
                       </div>
                     </div>
-
-                    {/* Particular (Applicant / Order Details) */}
-                    <div className="w-full sm:col-span-3">
-                      <input
-                        type="text"
-                        placeholder="e.g. Meena Kumari"
-                        value={item.particular}
-                        onChange={(e) => handleUpdateItem(item.id, { particular: e.target.value })}
-                        className="w-full h-9 px-3 rounded-xl border border-slate-200 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC] focus:outline-none"
-                      />
-                    </div>
-
-                    {/* Create Job Checkbox (Default checked true, click to toggle) */}
-                    <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-center">
-                      <span className="sm:hidden text-slate-500 font-medium">Create Job:</span>
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateItem(item.id, { create_job: !item.create_job })}
-                        className={`w-4 h-4 rounded flex items-center justify-center transition-all cursor-pointer ${
-                          item.create_job
-                            ? 'bg-[#0862EC] text-white'
-                            : 'border border-slate-300 bg-white hover:border-slate-400'
-                        }`}
-                        title="Default checked: creates live job in Queue. Uncheck for random non-job entry."
-                      >
-                        {item.create_job && <Check className="w-3 h-3 stroke-[3]" />}
-                      </button>
-                    </div>
-
-                    {/* Qty Stepper [ - ] 1 [ + ] */}
-                    <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-center">
-                      <span className="sm:hidden text-slate-500 font-medium">Qty:</span>
-                      <div className="inline-flex items-center border border-slate-200 rounded-xl overflow-hidden bg-white h-9 shadow-2xs">
-                        <button
-                          type="button"
-                          onClick={() => handleQtyChange(item.id, -1)}
-                          className="px-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-xs font-bold transition-colors cursor-pointer"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                        <input
-                          type="number"
-                          step="any"
-                          min="1"
-                          value={item.quantity}
-                          onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
-                          className="w-7 text-center text-xs font-bold text-slate-900 border-none outline-none focus:ring-0"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleQtyChange(item.id, 1)}
-                          className="px-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 text-xs font-bold transition-colors cursor-pointer"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Rate (₹) */}
-                    <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-center">
-                      <span className="sm:hidden text-slate-500 font-medium">Rate (₹):</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="0"
-                        value={item.rate}
-                        onChange={(e) => handleUpdateItem(item.id, { rate: e.target.value })}
-                        className="w-20 sm:w-full h-9 px-2 rounded-xl border border-slate-200 text-xs font-semibold text-center text-slate-900 focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC] focus:outline-none"
-                      />
-                    </div>
-
-                    {/* Amount (₹) */}
-                    <div className="w-full sm:col-span-1 flex items-center justify-between sm:justify-end">
-                      <span className="sm:hidden text-slate-500 font-medium">Amount:</span>
-                      <span className="font-extrabold text-xs text-[#0862EC] text-right truncate">
-                        {formatINR(lineAmt)}
-                      </span>
-                    </div>
-
-                    {/* Action (Delete) */}
-                    <div className="w-full sm:col-span-1 flex items-center justify-end sm:justify-center">
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveItem(item.id)}
-                        className="p-1.5 rounded-lg text-rose-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                        title="Remove row"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
                   </div>
-                );
-              })}
 
-              {/* Centered Add Another Item Button */}
-              <div className="pt-2 text-center">
-                <button
-                  type="button"
-                  onClick={() => handleAddItem()}
-                  className="inline-flex items-center gap-1.5 text-xs font-bold text-[#0862EC] hover:text-blue-700 hover:underline cursor-pointer py-1"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add Another Item</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN: POS Billing Terminal Sidebar (approx 32% width) */}
-        <div className="lg:col-span-4 flex flex-col justify-between gap-3 lg:overflow-y-auto pr-0.5">
-          <div className="space-y-3">
-            {/* Card 1: Total Bill Amount Banner */}
-            <div className="bg-[#F0F7FF] border border-[#D6E8FD] rounded-2xl p-4 shadow-2xs">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-white border border-blue-100 text-[#0862EC] flex items-center justify-center shrink-0 shadow-2xs">
-                  <Calculator className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
-                    Total Bill Amount
-                  </div>
-                  <div className="text-3xl font-extrabold text-[#0862EC] tracking-tight leading-tight">
-                    {formatINR(totals.total)}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center justify-between text-xs text-slate-500 font-medium mt-2.5 pt-2 border-t border-blue-100/70">
-                <span>Subtotal: {formatINR(totals.subtotal)}</span>
-                <span>Items: {items.filter((i) => i.description.trim()).length || items.length}</span>
-              </div>
-            </div>
-
-            {/* Card 2: % Discount */}
-            <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 shadow-2xs">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
-                  <Percent className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Discount</span>
-                </div>
-
-                <div className="inline-flex bg-slate-100 p-0.5 rounded-xl border border-slate-200/60">
                   <button
                     type="button"
                     onClick={() => {
-                      setDiscountType('NONE');
-                      setDiscountValue('');
+                      setShowCustomerSearch(true);
+                      setCustomerSearchQuery('');
                     }}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      discountType === 'NONE'
-                        ? 'bg-[#0862EC] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+                    className="text-[13px] font-semibold text-[#0F766E] hover:underline cursor-pointer shrink-0 ml-2"
                   >
-                    None
+                    Change
+                  </button>
+                </div>
+
+                {/* Actions below the selected customer card */}
+                <div className="flex items-center gap-2 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsWalkIn(true);
+                      setSelectedCustomerId(null);
+                      setShowCustomerSearch(false);
+                    }}
+                    className="px-4 py-1.5 rounded-full bg-[#EEF0F3] hover:bg-[#E5E8ED] text-[#1E293B] text-[13px] font-medium transition-all cursor-pointer shadow-2xs"
+                  >
+                    Walk-in
                   </button>
                   <button
                     type="button"
-                    onClick={() => setDiscountType('FLAT')}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      discountType === 'FLAT'
-                        ? 'bg-[#0862EC] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+                    onClick={() => setIsAddCustomerModalOpen(true)}
+                    className="px-4 py-1.5 rounded-full bg-[#EEF0F3] hover:bg-[#E5E8ED] text-[#1E293B] text-[13px] font-medium transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
                   >
-                    ₹ Flat
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDiscountType('PERCENT')}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      discountType === 'PERCENT'
-                        ? 'bg-[#0862EC] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    % Percent
+                    <Plus className="w-3.5 h-3.5 text-[#64748B]" />
+                    <span>New customer</span>
                   </button>
                 </div>
               </div>
+            ) : showCustomerSearch ? (
+              /* STATE 2: Fast Type-Ahead Customer Search List */
+              <div className="space-y-3 animate-in fade-in duration-150">
+                {/* Search Input */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-[#94A3B8] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder="Search regular customer by name or mobile..."
+                    value={customerSearchQuery}
+                    onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                    className="w-full h-11 pl-10 pr-9 rounded-xl border border-[#E2E8F0] bg-white text-[14px] font-medium text-[#0F172A] placeholder:text-[#94A3B8] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none transition-all shadow-2xs"
+                  />
+                  {customerSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setCustomerSearchQuery('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
 
-              {discountType !== 'NONE' && (
-                <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-xs text-slate-500 font-medium">
-                    {discountType === 'FLAT' ? 'Flat ₹ Off:' : 'Percentage % Off:'}
-                  </span>
-                  <div className="flex items-center gap-1">
+                {/* Instant Filtered Customer List */}
+                <div className="max-h-60 overflow-y-auto rounded-xl border border-[#E2E8F0] bg-white divide-y divide-[#F1F5F9] shadow-2xs">
+                  {filteredCustomerList.length > 0 ? (
+                    filteredCustomerList.map((c) => {
+                      const bal = customerBalances[c.id] || 0;
+                      const initials = c.name
+                        .split(' ')
+                        .map((n) => n[0])
+                        .join('')
+                        .toUpperCase()
+                        .slice(0, 2);
+                      const isReg = c.type === 'REGULAR';
+
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={() => {
+                            setSelectedCustomerId(c.id);
+                            setIsWalkIn(false);
+                            setShowCustomerSearch(false);
+                            setCustomerSearchQuery('');
+                          }}
+                          className="p-3 hover:bg-[#F8FAFC] transition-colors cursor-pointer flex items-center justify-between gap-3 group"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div
+                              className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                                isReg
+                                  ? 'bg-[#E6F4EA] text-[#0F766E]'
+                                  : 'bg-[#FEF3C7] text-amber-800'
+                              }`}
+                            >
+                              {initials}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-[13.5px] text-[#0F172A] group-hover:text-[#0F766E] transition-colors truncate">
+                                  {c.name}
+                                </span>
+                                <span
+                                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                    isReg
+                                      ? 'bg-emerald-50 text-[#0F766E] border border-emerald-200/60'
+                                      : 'bg-amber-50 text-amber-800 border border-amber-200/60'
+                                  }`}
+                                >
+                                  {isReg ? 'Regular' : 'Walk-in'}
+                                </span>
+                              </div>
+                              <div className="text-[12px] text-[#64748B] mt-0.5">
+                                {c.mobile || 'No mobile'}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <div
+                              className={`text-[12px] font-semibold tabular-nums ${
+                                bal > 0 ? 'text-amber-700' : 'text-[#64748B]'
+                              }`}
+                            >
+                              {bal > 0 ? `${formatINR(bal)} due` : 'No dues'}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="p-4 text-center">
+                      <p className="text-xs text-slate-500 mb-2">
+                        No customers found matching "{customerSearchQuery}"
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWalkInName(customerSearchQuery);
+                          setIsAddCustomerModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0F766E] text-white text-xs font-semibold shadow-2xs hover:bg-[#0D655E]"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add "{customerSearchQuery}" as customer</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsWalkIn(true);
+                        setShowCustomerSearch(false);
+                        setCustomerSearchQuery('');
+                      }}
+                      className="px-4 py-1.5 rounded-full bg-[#EEF0F3] hover:bg-[#E5E8ED] text-[#1E293B] text-[13px] font-medium cursor-pointer shadow-2xs"
+                    >
+                      Walk-in
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsAddCustomerModalOpen(true)}
+                      className="px-4 py-1.5 rounded-full bg-[#EEF0F3] hover:bg-[#E5E8ED] text-[#1E293B] text-[13px] font-medium cursor-pointer flex items-center gap-1 shadow-2xs"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-[#64748B]" />
+                      <span>New customer</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCustomerSearch(false);
+                      setCustomerSearchQuery('');
+                    }}
+                    className="text-[12.5px] text-[#64748B] hover:text-[#0F172A] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* STATE 3: Walk-in Mode (Direct Inputs + Suggestions) */
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="relative">
+                    <User className="w-4 h-4 text-[#94A3B8] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      placeholder={discountType === 'FLAT' ? '0.00' : '0%'}
-                      value={discountValue}
-                      onChange={(e) => setDiscountValue(e.target.value)}
-                      className="w-24 h-8 px-2 rounded-lg border border-slate-200 text-xs font-bold text-right text-slate-900 focus:border-[#0862EC] focus:outline-none"
+                      ref={walkInNameRef}
+                      type="text"
+                      placeholder={
+                        hasTrackedJobs || totals.balance.greaterThan(0)
+                          ? 'Customer Name (Required)'
+                          : 'Customer Name (Optional if paid)'
+                      }
+                      value={walkInName}
+                      onChange={(e) => setWalkInName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (walkInMobile.trim()) {
+                            const firstItemEl = document.getElementById(`item-desc-${items[0]?.id}`);
+                            firstItemEl?.focus();
+                          } else {
+                            const mobileEl = document.getElementById('walkin-mobile-input');
+                            mobileEl?.focus();
+                          }
+                        }
+                      }}
+                      className={`w-full h-11 pl-10 pr-3.5 rounded-xl border bg-white text-[14px] font-medium text-[#0F172A] placeholder:text-[#94A3B8] focus:outline-none transition-all shadow-2xs ${
+                        (hasTrackedJobs || totals.balance.greaterThan(0)) && !walkInName.trim()
+                          ? 'border-[#0F766E]/40 focus:border-[#0F766E] focus:ring-2 focus:ring-[#0F766E]/15'
+                          : 'border-[#E2E8F0] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20'
+                      }`}
                     />
-                    {totals.discountAmount.greaterThan(0) && (
-                      <span className="text-xs font-bold text-emerald-600">
-                        (-{formatINR(totals.discountAmount)})
-                      </span>
-                    )}
+                  </div>
+
+                  <div className="relative">
+                    <Smartphone className="w-4 h-4 text-[#94A3B8] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      id="walkin-mobile-input"
+                      type="tel"
+                      inputMode="tel"
+                      placeholder={
+                        hasTrackedJobs || totals.balance.greaterThan(0)
+                          ? '10-digit Mobile (Required)'
+                          : '10-digit Mobile (for WhatsApp)'
+                      }
+                      value={walkInMobile}
+                      onChange={(e) => setWalkInMobile(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const firstItemEl = document.getElementById(`item-desc-${items[0]?.id}`);
+                          firstItemEl?.focus();
+                        }
+                      }}
+                      className={`w-full h-11 pl-10 pr-3.5 rounded-xl border bg-white text-[14px] font-medium text-[#0F172A] placeholder:text-[#94A3B8] focus:outline-none transition-all shadow-2xs ${
+                        (hasTrackedJobs || totals.balance.greaterThan(0)) && (!walkInMobile.trim() || !isValidIndianMobile(walkInMobile))
+                          ? 'border-[#0F766E]/40 focus:border-[#0F766E] focus:ring-2 focus:ring-[#0F766E]/15'
+                          : 'border-[#E2E8F0] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20'
+                      }`}
+                    />
                   </div>
                 </div>
-              )}
-            </div>
 
-            {/* Card 3: Payment Received */}
-            <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 shadow-2xs">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                  <div className="w-5 h-5 rounded-md bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
-                    ₹
+                {/* Contextual Helpful Hint (Smooth, Border-less, Quiet Luxury) */}
+                {(hasTrackedJobs || totals.balance.greaterThan(0)) && (
+                  <div className="flex items-center gap-2 text-[12px] text-[#0F766E] bg-[#EAF2F1] px-3.5 py-2 rounded-xl border-0 shadow-[0_1px_4px_rgba(15,118,110,0.06)] animate-in fade-in">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#0F766E] shrink-0" />
+                    <span className="font-medium">
+                      {hasTrackedJobs
+                        ? 'Customer Name & 10-digit Mobile are required for Job Tracking & WhatsApp updates.'
+                        : 'Customer Name & 10-digit Mobile are required for bills with due balance.'}
+                    </span>
                   </div>
-                  <span>Payment Received</span>
-                </div>
+                )}
 
-                {totals.total.greaterThan(0) && (
+                {/* LUXURY FOUND CUSTOMER SUGGESTION CARD (Border-less & Smooth) */}
+                {walkInDuplicate && (
+                  <div className="p-3.5 rounded-2xl bg-[#F6F7F9] border-0 flex items-center justify-between gap-3 text-xs transition-all shadow-2xs animate-in fade-in">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-full bg-[#E6F4EA] text-[#0F766E] font-bold text-[12.5px] flex items-center justify-center shrink-0">
+                        {walkInDuplicate.name.slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-[13.5px] text-[#0F172A] truncate">
+                            {walkInDuplicate.name}
+                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                            {walkInDuplicate.type === 'REGULAR' ? 'Regular Customer' : 'Walk-in'}
+                          </span>
+                        </div>
+                        <div className="text-[12px] text-[#64748B] mt-0.5">
+                          {walkInDuplicate.mobile}
+                          {customerBalances[walkInDuplicate.id] > 0
+                            ? ` · Outstanding: ${formatINR(customerBalances[walkInDuplicate.id])}`
+                            : ' · No dues'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCustomerId(walkInDuplicate.id);
+                        setIsWalkIn(false);
+                        setWalkInName(walkInDuplicate.name);
+                        setWalkInMobile(walkInDuplicate.mobile || '');
+                        showToast(`Selected customer: ${walkInDuplicate.name}`, 'info');
+                      }}
+                      className="px-3.5 py-1.5 rounded-xl bg-[#0F766E] hover:bg-[#0D635C] text-white font-semibold text-[11.5px] shrink-0 cursor-pointer shadow-2xs transition-all active:scale-95"
+                    >
+                      Use Customer
+                    </button>
+                  </div>
+                )}
+
+                {/* Actions: Choose Regular & + New Customer */}
+                <div className="flex items-center gap-2 pt-0.5">
                   <button
                     type="button"
-                    onClick={handlePaidInFull}
-                    className="text-[11px] font-bold text-[#0862EC] hover:underline px-2 py-0.5 rounded-lg bg-blue-50 cursor-pointer"
+                    onClick={() => {
+                      setShowCustomerSearch(true);
+                      setCustomerSearchQuery('');
+                    }}
+                    className="px-4 py-1.5 rounded-full bg-[#EEF0F3] hover:bg-[#E5E8ED] text-[#1E293B] text-[13px] font-medium transition-all cursor-pointer shadow-2xs flex items-center gap-1.5"
                   >
-                    1-Tap Paid in Full
+                    <UserCheck className="w-3.5 h-3.5 text-[#0F766E]" />
+                    <span>Choose Regular</span>
                   </button>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => setIsAddCustomerModalOpen(true)}
+                    className="px-4 py-1.5 rounded-full bg-[#EEF0F3] hover:bg-[#E5E8ED] text-[#1E293B] text-[13px] font-medium transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-[#64748B]" />
+                    <span>New customer</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+            {/* CARD 2: ITEMS CARD (Crisp White Card on #F6F7F9 Canvas) */}
+            <div className="bg-white border-0 rounded-2xl p-6 shadow-[0_2px_12px_rgba(0,0,0,0.03)] space-y-4">
+              {/* Header with Horizontal Mouse Scrollable Capsule Buttons (Matching Screenshot) */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1">
+                <h2 className="text-[15px] font-bold text-[#0F172A]">Items</h2>
+
+                {/* Natural Horizontal Mouse-Wheel Scrollable Capsule Bar (Matching Screenshot) */}
+                <div
+                  ref={jobsScrollRef}
+                  className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1 max-w-[500px]"
+                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', overscrollBehaviorX: 'contain' }}
+                >
+                  <span className="text-[12px] font-medium text-[#64748B] shrink-0 mr-1 hidden sm:inline">
+                    Frequent
+                  </span>
+
+                  {services.slice(0, 10).map((srv) => (
+                    <button
+                      key={srv.id}
+                      type="button"
+                      onClick={() => handleAddItem(srv)}
+                      className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#EEF0F3] hover:bg-[#E5E8ED] text-[#1E293B] text-[13px] font-medium transition-all cursor-pointer active:scale-95 shadow-2xs select-none"
+                    >
+                      {srv.is_job_type && <Briefcase className="w-3.5 h-3.5 text-[#0F766E] shrink-0" />}
+                      <span>{srv.name}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">
-                  ₹
-                </span>
-                <input
-                  type="number"
-                  step="any"
-                  min="0"
-                  placeholder="0.00"
-                  value={paidNow}
-                  onChange={(e) => setPaidNow(e.target.value)}
-                  className="w-full h-11 pl-8 pr-3 rounded-xl border border-slate-200 bg-white text-base font-extrabold text-slate-900 placeholder:text-slate-300 focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC] focus:outline-none transition-all shadow-2xs"
-                />
+              {/* Column Headers (Matching Mockup Screenshot Image 4) */}
+              <div className="grid grid-cols-12 gap-3 px-1 text-[13px] font-medium text-[#64748B] select-none">
+                <div className="col-span-6 sm:col-span-5">Item</div>
+                <div className="col-span-2 text-center">Qty</div>
+                <div className="col-span-2 text-center">Rate</div>
+                <div className="col-span-2 sm:col-span-3 text-right pr-6">Amount</div>
               </div>
 
-              {totals.balance.greaterThan(0) ? (
-                <div className="flex items-center justify-between mt-2 pt-1 text-xs">
-                  <span className="text-amber-700 font-semibold">Balance Due:</span>
-                  <span className="font-extrabold text-amber-700">{formatINR(totals.balance)}</span>
+              {/* Items List: Clean Light Grey Wells Matching SaaS Quality with Job & Applicant Functionality */}
+              <div className="space-y-3">
+                {items.map((item) => {
+                  const lineAmt = computeLineAmount(item.quantity, item.rate);
+                  const isJob = item.create_job;
+                  const isJobServiceMissing = isJob && !item.description.trim();
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="p-3.5 sm:p-4 rounded-xl bg-[#F8FAFC] border-0 space-y-3 transition-all"
+                    >
+                      {/* Main Item Row: Item, Qty, Rate, Amount & Delete */}
+                      <div className="grid grid-cols-12 gap-3 items-center">
+                        {/* Item Service Input */}
+                        <div className="col-span-6 sm:col-span-5 relative">
+                          <div className="relative flex items-center">
+                            {isJob && (
+                              <Briefcase className="w-4 h-4 text-[#0F766E] absolute left-3.5 pointer-events-none shrink-0" />
+                            )}
+                            <input
+                              id={`item-desc-${item.id}`}
+                              type="text"
+                              list={`service-list-${item.id}`}
+                              placeholder={isJob ? 'Select Job Service (Required) *' : 'Service or item name'}
+                              value={item.description}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  if (isJob) {
+                                    document.getElementById(`item-rate-${item.id}`)?.focus();
+                                  } else {
+                                    document.getElementById(`item-qty-${item.id}`)?.focus();
+                                  }
+                                }
+                              }}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const matched = services.find(
+                                  (s) => s.name.toLowerCase() === val.toLowerCase()
+                                );
+                                if (matched) {
+                                  handleUpdateItem(item.id, {
+                                    description: matched.name,
+                                    service_id: matched.id,
+                                    rate: matched.default_rate
+                                      ? String(matched.default_rate)
+                                      : item.rate,
+                                    create_job: !!matched.is_job_type,
+                                  });
+                                } else {
+                                  handleUpdateItem(item.id, { description: val });
+                                }
+                              }}
+                              className={`w-full h-11 ${isJob ? 'pl-10' : 'pl-3.5'} pr-3.5 rounded-xl border bg-white text-[14px] font-medium text-[#0F172A] placeholder:text-[#94A3B8] focus:outline-none transition-colors shadow-2xs ${
+                                isJobServiceMissing
+                                  ? 'border-[#0F766E]/40 focus:border-[#0F766E] focus:ring-2 focus:ring-[#0F766E]/15'
+                                  : 'border-[#E2E8F0] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20'
+                              }`}
+                            />
+                            <datalist id={`service-list-${item.id}`}>
+                              {services.map((s) => (
+                                <option key={s.id} value={s.name}>
+                                  {s.is_job_type ? '[Job]' : '[Item]'} ₹{s.default_rate || 0}
+                                </option>
+                              ))}
+                            </datalist>
+                          </div>
+                        </div>
+
+                        {/* Qty Input (Locked to 1 if Job) */}
+                        <div className="col-span-2">
+                          <div className="relative flex items-center justify-center">
+                            {isJob && (
+                              <Lock className="w-3.5 h-3.5 text-[#94A3B8] absolute left-3 pointer-events-none" />
+                            )}
+                            <input
+                              id={`item-qty-${item.id}`}
+                              type="number"
+                              step="any"
+                              min="1"
+                              value={item.quantity}
+                              disabled={isJob}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  document.getElementById(`item-rate-${item.id}`)?.focus();
+                                }
+                              }}
+                              onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
+                              className={`w-full h-11 rounded-xl border border-[#E2E8F0] bg-white text-[14px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none shadow-2xs ${
+                                isJob ? 'pl-6 pr-2 bg-slate-50/70 cursor-not-allowed text-[#475569]' : 'px-2'
+                              }`}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Rate Input */}
+                        <div className="col-span-2">
+                          <input
+                            id={`item-rate-${item.id}`}
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="0"
+                            value={item.rate}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                const currentIndex = items.findIndex((it) => it.id === item.id);
+                                if (currentIndex === items.length - 1) {
+                                  handleAddItem();
+                                } else {
+                                  const nextItem = items[currentIndex + 1];
+                                  document.getElementById(`item-desc-${nextItem.id}`)?.focus();
+                                }
+                              }
+                            }}
+                            onChange={(e) => handleUpdateItem(item.id, { rate: e.target.value })}
+                            className="w-full h-11 px-2 rounded-xl border border-[#E2E8F0] bg-white text-[14px] font-semibold text-center text-[#0F172A] tabular-nums focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none shadow-2xs"
+                          />
+                        </div>
+
+                        {/* Amount & Delete */}
+                        <div className="col-span-2 sm:col-span-3 flex items-center justify-end gap-2 pr-1">
+                          <span className="font-bold text-[15px] text-[#0F172A] tabular-nums text-right truncate">
+                            {formatINR(lineAmt)}
+                          </span>
+                          {items.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveItem(item.id)}
+                              className="p-1.5 rounded-lg text-[#94A3B8] hover:text-[#EF4444] hover:bg-red-50 transition-colors cursor-pointer shrink-0"
+                              title="Remove item"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Line 2: Applicant (Job ON) / Particular (Job OFF) + Fixed-size Job Toggle */}
+                      <div className="flex items-center justify-between gap-3 pt-0.5">
+                        <div className="w-full max-w-[300px] sm:max-w-[360px] min-w-0">
+                          <input
+                            type="text"
+                            placeholder={
+                              isJob
+                                ? 'Applicant Name (e.g. Ramesh Kumar) *'
+                                : 'Particular / Notes (Optional)'
+                            }
+                            value={item.particular}
+                            onChange={(e) => handleUpdateItem(item.id, { particular: e.target.value })}
+                            className="w-full h-10 px-3.5 rounded-xl border border-[#E2E8F0] bg-white text-[13px] font-medium text-[#0F172A] placeholder:text-[#94A3B8] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none transition-colors shadow-2xs"
+                          />
+                        </div>
+
+                        {/* Fixed-size iOS-style Job ON/OFF toggle button - spacious & no cutoff */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isJob) {
+                              handleUpdateItem(item.id, { create_job: false });
+                            } else {
+                              handleUpdateItem(item.id, { create_job: true, quantity: '1' });
+                            }
+                          }}
+                          className={`h-10 w-[136px] shrink-0 px-3 rounded-xl border flex items-center justify-between text-[12px] font-semibold shadow-2xs transition-all cursor-pointer select-none ${
+                            isJob
+                              ? 'border-[#0F766E]/30 bg-white text-[#0F766E] hover:bg-[#F0FDF9]'
+                              : 'border-[#E2E8F0] bg-white text-[#64748B] hover:border-[#CBD5E1] hover:bg-[#F8FAFC]'
+                          }`}
+                          title={isJob ? 'Job tracking is ON — click to switch OFF' : 'Job tracking is OFF — click to switch ON'}
+                        >
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <Briefcase className={`w-3.5 h-3.5 shrink-0 ${isJob ? 'text-[#0F766E]' : 'text-[#94A3B8]'}`} />
+                            <span className="shrink-0">{isJob ? 'Job: ON' : 'Job: OFF'}</span>
+                          </div>
+                          <div className={`w-7 h-4 rounded-full p-0.5 transition-colors shrink-0 ${isJob ? 'bg-[#0F766E]' : 'bg-[#CBD5E1]'}`}>
+                            <div className={`w-3 h-3 rounded-full bg-white shadow-xs transition-transform ${isJob ? 'translate-x-3' : 'translate-x-0'}`} />
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Empty Item Placeholder Row matching screenshot */}
+                <div
+                  onClick={() => handleAddItem()}
+                  className="grid grid-cols-12 gap-3 items-center cursor-pointer group pt-1"
+                >
+                  <div className="col-span-6 sm:col-span-5">
+                    <div className="h-11 rounded-xl border border-[#E2E8F0] bg-white flex items-center px-3.5 text-[#94A3B8] group-hover:border-[#0F766E] group-hover:text-[#0F766E] transition-colors shadow-2xs">
+                      <Search className="w-4 h-4 mr-2.5 text-[#94A3B8] shrink-0" />
+                      <span className="text-[13.5px] font-normal truncate">Add an item or type a custom one</span>
+                    </div>
+                  </div>
+                  <div className="col-span-2">
+                    <div className="h-11 rounded-xl border border-[#E2E8F0] bg-white flex items-center justify-center text-[13.5px] font-medium text-[#94A3B8] shadow-2xs">
+                      1
+                    </div>
+                  </div>
+                  <div className="col-span-2">
+                    <div className="h-11 rounded-xl border border-[#E2E8F0] bg-white flex items-center justify-center text-[13.5px] font-medium text-[#94A3B8] shadow-2xs">
+                      0
+                    </div>
+                  </div>
+                  <div className="col-span-2 sm:col-span-3 flex items-center justify-end pr-6 text-[15px] font-bold text-[#94A3B8]">
+                    ₹0
+                  </div>
                 </div>
-              ) : totals.total.greaterThan(0) && totals.balance.isZero() ? (
-                <div className="flex items-center gap-1 mt-2 pt-1 text-xs text-emerald-700 font-bold">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Fully Paid</span>
+              </div>
+
+              {/* Discount Section */}
+              <div className="pt-4 border-t border-[#F1F5F9] flex items-center justify-between">
+                <span className="text-[14px] font-semibold text-[#0F172A]">Discount</span>
+
+                <div className="flex items-center gap-2.5">
+                  <div className="inline-flex bg-[#EEF0F3] p-1 rounded-xl shadow-2xs">
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('FLAT')}
+                      className={`px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
+                        discountType === 'FLAT'
+                          ? 'bg-white text-[#0F172A] font-semibold shadow-2xs'
+                          : 'text-[#64748B] hover:text-[#0F172A]'
+                      }`}
+                    >
+                      ₹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('PERCENT')}
+                      className={`px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
+                        discountType === 'PERCENT'
+                          ? 'bg-white text-[#0F172A] font-semibold shadow-2xs'
+                          : 'text-[#64748B] hover:text-[#0F172A]'
+                      }`}
+                    >
+                      %
+                    </button>
+                  </div>
+
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder="0"
+                    value={discountValue}
+                    onChange={(e) => {
+                      setDiscountValue(e.target.value);
+                      if (discountType === 'NONE') setDiscountType('FLAT');
+                    }}
+                    className="h-11 w-28 sm:w-32 rounded-xl border border-[#E2E8F0] bg-white text-right px-3.5 text-[15px] font-semibold text-[#0F172A] focus:border-[#0F766E] focus:outline-none shadow-2xs"
+                  />
                 </div>
-              ) : null}
+              </div>
             </div>
 
-            {/* Card 4: Payment Mode */}
-            <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 shadow-2xs">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 mb-2">
-                <CreditCard className="w-3.5 h-3.5 text-slate-500" />
-                <span>Payment Mode</span>
-              </div>
+            {/* CARD 3: PAYMENT CARD (Crisp White Card on #F6F7F9 Canvas) */}
+            <div className="bg-white border-0 rounded-2xl p-6 shadow-[0_2px_12px_rgba(0,0,0,0.03)] space-y-4">
+              <h2 className="text-[15px] font-bold text-[#0F172A]">Payment</h2>
 
-              <div className="grid grid-cols-5 gap-1.5">
+              {/* Payment Mode Pills */}
+              <div className="flex items-center gap-2 flex-wrap">
                 {PAYMENT_MODES.map((m) => {
-                  const IconComp = m.icon;
                   const isSelected = paymentMode === m.id;
                   return (
                     <button
                       key={m.id}
                       type="button"
                       onClick={() => setPaymentMode(m.id)}
-                      className={`py-2 px-1 rounded-xl border text-[11px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                      className={`px-4 py-2 rounded-xl text-[13px] font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
                         isSelected
-                          ? 'bg-[#0862EC] text-white border-[#0862EC] shadow-2xs'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                          ? 'bg-white border-2 border-[#0F766E] text-[#0F766E] font-semibold shadow-2xs'
+                          : 'bg-[#EEF0F3] border-2 border-transparent text-[#64748B] hover:bg-[#E5E8ED] hover:text-[#0F172A]'
                       }`}
                     >
-                      <IconComp className="w-4 h-4" />
-                      <span className="truncate">{m.label}</span>
+                      {isSelected && <Check className="w-3.5 h-3.5 text-[#0F766E] stroke-[3]" />}
+                      <span>{m.label}</span>
                     </button>
                   );
                 })}
               </div>
 
-              {/* Bank Account Selection (Compulsory for Online Modes) */}
+              {/* Bank selector when non-cash mode is active */}
               {paymentMode !== 'CASH' && (
-                <div className="mt-3 pt-3 border-t border-slate-100">
-                  <label className="text-[11px] font-bold text-slate-700 flex items-center justify-between mb-1.5">
-                    <span className="flex items-center gap-1">
-                      <Building className="w-3.5 h-3.5 text-[#0862EC]" />
-                      <span>Deposit to Bank Account</span>
-                      <span className="text-danger font-bold">*</span>
-                    </span>
-                    <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-semibold border border-amber-200">
-                      Compulsory for {paymentMode}
-                    </span>
-                  </label>
-
+                <div className="pt-1">
                   {bankAccounts.length > 0 ? (
-                    <select
+                    <Select
                       value={selectedBankId}
-                      onChange={(e) => setSelectedBankId(e.target.value)}
-                      className="w-full h-9 px-3 rounded-xl border border-slate-200 text-xs font-bold bg-white text-slate-800 focus:outline-none focus:border-[#0862EC] focus:ring-1 focus:ring-[#0862EC]/20 cursor-pointer"
-                    >
-                      <option value="">-- Select Bank Account * --</option>
-                      {bankAccounts.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setSelectedBankId}
+                      options={[
+                        { value: '', label: '-- Deposit to Bank Account * --' },
+                        ...bankAccounts.map((b) => ({
+                          value: b.id,
+                          label: `${b.bank_name} (${b.account_name}${b.account_number ? ` - ${b.account_number}` : ''}${b.upi_id ? ` · UPI: ${b.upi_id}` : ''})`,
+                        })),
+                      ]}
+                      placeholder="-- Deposit to Bank Account * --"
+                      searchable={bankAccounts.length > 5}
+                    />
                   ) : (
-                    <div className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between">
-                      <span>No bank account configured yet.</span>
-                      <a href="/money" className="text-primary font-bold hover:underline">Add in Money &rarr;</a>
+                    <div className="text-[12px] text-[#64748B] bg-white p-3 rounded-xl border border-[#E2E8F0] flex items-center justify-between shadow-2xs">
+                      <span>No bank account configured.</span>
+                      <a href="/money" className="text-[#0F766E] font-medium hover:underline">
+                        Add in Money &rarr;
+                      </a>
                     </div>
                   )}
                 </div>
               )}
-            </div>
 
-            {/* Card 5: Additional Details (Optional Accordion) */}
-            <div className="bg-white border border-slate-200/80 rounded-2xl p-3 shadow-2xs">
-              <button
-                type="button"
-                onClick={() => setShowNotes(!showNotes)}
-                className="w-full flex items-center justify-between text-xs font-bold text-slate-700 cursor-pointer"
-              >
-                <div className="flex items-center gap-1.5">
-                  <FileText className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Additional Details (Optional)</span>
-                </div>
-                {showNotes ? (
-                  <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
-                ) : (
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                )}
-              </button>
-
-              {showNotes && (
-                <div className="mt-2.5 pt-2.5 border-t border-slate-100 space-y-2 text-xs">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Bill Date</label>
-                      <input
-                        type="date"
-                        value={invoiceDate}
-                        onChange={(e) => setInvoiceDate(e.target.value)}
-                        className="w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Due Date</label>
-                      <input
-                        type="date"
-                        value={dueDate}
-                        onChange={(e) => setDueDate(e.target.value)}
-                        className="w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-medium"
-                      />
-                    </div>
+              {/* Paid Now Section */}
+              <div className="space-y-1.5 pt-1">
+                <label className="text-[12px] font-medium text-[#64748B]">Paid now</label>
+                <div className="flex items-center gap-3">
+                  <div className="relative flex-1">
+                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[15px] font-semibold text-[#64748B]">
+                      ₹
+                    </span>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      placeholder="0"
+                      value={paidNow}
+                      onChange={(e) => setPaidNow(e.target.value)}
+                      className="w-full h-11 pl-8 pr-3.5 rounded-xl border border-[#E2E8F0] bg-white text-[18px] font-bold text-[#0F172A] tabular-nums placeholder:text-[#94A3B8] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none shadow-2xs"
+                    />
                   </div>
 
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase">Notes & Remarks</label>
+                  {totals.total.greaterThan(0) && (
+                    <button
+                      type="button"
+                      onClick={handlePaidInFull}
+                      className="h-11 px-4 rounded-xl border border-[#E2E8F0] bg-white hover:bg-[#F1F3F5] text-[12.5px] font-medium text-[#0F172A] transition-all cursor-pointer shrink-0 shadow-2xs active:scale-95"
+                    >
+                      Paid in full
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Dates: Date & Due Date side by side */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="text-[12px] font-medium text-[#64748B] block mb-1">Date</label>
+                  <input
+                    type="date"
+                    value={invoiceDate}
+                    onChange={(e) => handleInvoiceDateChange(e.target.value)}
+                    className="w-full h-10 px-3 rounded-xl border border-[#E2E8F0] bg-white text-[13px] font-medium text-[#0F172A] focus:border-[#0F766E] focus:outline-none shadow-2xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[12px] font-medium text-[#64748B] block mb-1">Due date</label>
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    className="w-full h-10 px-3 rounded-xl border border-[#E2E8F0] bg-white text-[13px] font-medium text-[#0F172A] focus:border-[#0F766E] focus:outline-none shadow-2xs"
+                  />
+                </div>
+              </div>
+
+              {/* Add Note link / textarea */}
+              <div className="pt-1">
+                {!showNotes ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNotes(true);
+                      if (!notes && business?.default_notes) {
+                        setNotes(business.default_notes);
+                      }
+                    }}
+                    className="text-[13px] font-medium text-[#0F766E] hover:underline cursor-pointer"
+                  >
+                    + Add note / terms
+                  </button>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[12px] font-medium text-[#64748B]">Note / Terms</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowNotes(false);
+                          setNotes('');
+                        }}
+                        className="text-[11px] text-[#94A3B8] hover:text-[#EF4444]"
+                      >
+                        Remove
+                      </button>
+                    </div>
                     <textarea
                       rows={2}
-                      placeholder="Custom date, notes, reference, terms etc..."
+                      placeholder="Add custom bill notes or terms..."
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
-                      className="w-full p-2 rounded-lg border border-slate-200 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0862EC] focus:outline-none resize-none"
+                      className="w-full p-3 rounded-xl border border-[#E2E8F0] bg-white text-[13px] text-[#0F172A] placeholder:text-[#94A3B8] focus:border-[#0F766E] focus:outline-none resize-none shadow-2xs"
                     />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT COLUMN: Summary & Action Buttons (~35% width) */}
+          <div className="lg:col-span-4 space-y-4 lg:sticky lg:top-6">
+            {/* SUMMARY CARD (Crisp White Card on #F6F7F9 Canvas) */}
+            <div className="bg-white border-0 rounded-2xl p-6 shadow-[0_2px_12px_rgba(0,0,0,0.03)] space-y-3.5">
+              {/* Header row: Summary & Customer Name */}
+              <div className="flex items-center justify-between">
+                <h3 className="text-[15px] font-bold text-[#0F172A]">Summary</h3>
+                <span className="text-[13px] font-normal text-[#64748B] truncate max-w-[170px]" title={customerDisplayName}>
+                  {customerDisplayName}
+                </span>
+              </div>
+
+              {/* Subtotal & Discount rows */}
+              <div className="space-y-2 text-[14px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-[#64748B] font-normal">Subtotal</span>
+                  <span className="font-semibold text-[#0F172A] tabular-nums">{formatINR(totals.subtotal)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[#64748B] font-normal">Discount</span>
+                  <span className="font-semibold text-[#0F172A] tabular-nums">
+                    {totals.discountAmount.greaterThan(0)
+                      ? `-${formatINR(totals.discountAmount)}`
+                      : '-₹0'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Hairline Divider */}
+              <div className="border-t border-[#E2E8F0]" />
+
+              {/* Total row with large prominent typography */}
+              <div className="flex items-baseline justify-between pt-1 pb-1">
+                <span className="text-[14px] font-medium text-[#64748B]">Total</span>
+                <span className="text-[34px] font-extrabold text-[#0F172A] tracking-tight tabular-nums leading-none">
+                  {formatINR(totals.total)}
+                </span>
+              </div>
+
+              {/* Paid and Balance due rows */}
+              <div className="space-y-2 text-[14px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-[#64748B] font-normal">Paid · {currentModeLabel}</span>
+                  <span className="font-semibold text-[#0F172A] tabular-nums">
+                    {formatINR(totals.paid)}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        totals.balance.greaterThan(0)
+                          ? 'bg-[#EA580C]'
+                          : totals.total.greaterThan(0)
+                          ? 'bg-[#10B981]'
+                          : 'bg-[#94A3B8]'
+                      }`}
+                    />
+                    <span className="font-normal text-[#0F172A]">
+                      {totals.balance.greaterThan(0)
+                        ? 'Balance due'
+                        : totals.total.greaterThan(0)
+                        ? 'Fully paid'
+                        : 'Balance due'}
+                    </span>
+                  </div>
+                  <span className="text-[15px] font-bold text-[#0F172A] tabular-nums">
+                    {formatINR(totals.balance)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Dynamic QR Code Box (Matching Image 2 Reference) */}
+              {paymentMode === 'UPI' && (
+                <div className="bg-[#F6F7F9] border-0 rounded-2xl p-4 flex items-center gap-4 mt-2 transition-all shadow-2xs">
+                  <div className="p-2 bg-white rounded-xl shadow-2xs border border-[#E2E8F0]/40 shrink-0">
+                    <QRCodeSVG
+                      value={upiQrString}
+                      size={76}
+                      level="M"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[12px] font-medium text-[#64748B]">Scan to pay</span>
+                      {selectedBank && (
+                        <span className="text-[11px] font-medium text-[#0F766E] bg-[#E6F4EA] px-1.5 py-0.5 rounded">
+                          {selectedBank.bank_name}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[20px] font-bold text-[#0F172A] tracking-tight tabular-nums leading-tight mt-0.5">
+                      {formatINR(qrPayableAmount)}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyUpi}
+                      className="text-[12px] text-[#64748B] hover:text-[#0F172A] truncate mt-1 flex items-center gap-1.5 font-mono cursor-pointer transition-colors"
+                      title="Click to copy UPI ID"
+                    >
+                      <span className="truncate">{activeUpiId}</span>
+                      {copiedUpi ? (
+                        <Check className="w-3.5 h-3.5 text-[#0F766E] shrink-0" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 text-[#94A3B8] hover:text-[#0F172A] shrink-0" />
+                      )}
+                    </button>
                   </div>
                 </div>
               )}
+
+              {/* ACTION BUTTONS */}
+              <div className="pt-2 space-y-2">
+                {editInvoiceId ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => handleSave(false)}
+                      className="w-full py-3.5 rounded-xl bg-[#0B1220] hover:bg-[#1E293B] text-white text-[14px] font-medium flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm active:scale-[0.99] disabled:opacity-50"
+                    >
+                      <span>{saving ? 'Updating...' : `Update bill`}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => navigate('/bills')}
+                      className="w-full py-2.5 rounded-xl border border-[#E2E8F0] bg-white hover:bg-[#F1F3F5] text-[#0F172A] text-[13px] font-medium flex items-center justify-center transition-all cursor-pointer shadow-2xs"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => handleSave(false)}
+                      className="w-full py-3.5 rounded-xl bg-[#0B1220] hover:bg-[#1E293B] text-white text-[14px] font-medium flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm active:scale-[0.99] disabled:opacity-50"
+                    >
+                      <span>{saving ? 'Saving...' : 'Save bill'}</span>
+                      <Kbd className="text-[10.5px] text-slate-300 border-slate-700 bg-slate-800 px-1.5 py-0.5 ml-1">
+                        Ctrl+S
+                      </Kbd>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => handleSave(true)}
+                      className="w-full py-2.5 rounded-xl border border-[#E2E8F0] bg-white hover:bg-[#F1F3F5] text-[#0F172A] text-[13px] font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs active:scale-[0.99] disabled:opacity-50"
+                    >
+                      <span>Save & new</span>
+                      <Kbd className="text-[10px] text-slate-600 border-slate-300 bg-slate-50 px-1.5 py-0.5">
+                        Ctrl+Shift+S
+                      </Kbd>
+                    </button>
+
+                    <div className="text-center pt-1 text-[11px] text-[#94A3B8] font-mono">
+                      Ctrl+S to save • Alt+A to add item
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-
-          {/* Bottom Action Buttons: Save & New Bill + Save Bill */}
-          <div className="grid grid-cols-2 gap-2.5 pt-1">
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => handleSave(true)}
-              className="py-3 px-3 rounded-xl border border-[#0862EC] bg-white text-[#0862EC] hover:bg-blue-50 text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs disabled:opacity-50"
-            >
-              <FileText className="w-4 h-4" />
-              <span>Save & New Bill</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => handleSave(false)}
-              className="py-3 px-3 rounded-xl bg-[#0862EC] hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-md shadow-blue-500/20 disabled:opacity-50"
-            >
-              <Check className="w-4 h-4 stroke-[3]" />
-              <span>Save Bill ({formatINR(totals.total)})</span>
-            </button>
-          </div>
         </div>
-      </div>
 
-      {/* Generated Bill Invoice Modal (identical to Bill List view) */}
+      {/* Generated Bill Invoice Modal */}
       <BillDetailModal
         open={isDetailModalOpen}
         onOpenChange={(open) => {
@@ -1209,6 +1984,23 @@ export const NewBillPage: React.FC = () => {
         open={Boolean(selectedReceiptDetailId)}
         onOpenChange={(v) => !v && setSelectedReceiptDetailId(null)}
         receiptId={selectedReceiptDetailId}
+      />
+
+      {/* Add New Customer Modal */}
+      <AddNewCustomerModal
+        open={isAddCustomerModalOpen}
+        onOpenChange={setIsAddCustomerModalOpen}
+        initialName={walkInName}
+        initialMobile={walkInMobile}
+        onCustomerCreatedAndSelected={(customer) => {
+          setCustomers((prev) => {
+            const exists = prev.some((c) => c.id === customer.id);
+            return exists ? prev : [...prev, customer];
+          });
+          setSelectedCustomerId(customer.id);
+          setIsWalkIn(false);
+          setShowCustomerSearch(false);
+        }}
       />
     </div>
   );

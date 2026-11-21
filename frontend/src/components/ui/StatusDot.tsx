@@ -1,7 +1,20 @@
 import React from 'react';
 import { clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
 
-export type StatusVariant = 'paid' | 'partial' | 'unpaid' | 'overdue' | 'cancelled' | 'yellow' | 'red' | 'success' | 'active' | 'in_progress';
+export type StatusVariant =
+  | 'paid'
+  | 'partial'
+  | 'due'
+  | 'unpaid'
+  | 'overdue'
+  | 'cancelled'
+  | 'yellow'
+  | 'red'
+  | 'success'
+  | 'active'
+  | 'completed'
+  | 'in_progress';
 
 export interface StatusDotProps {
   status: StatusVariant | string;
@@ -10,40 +23,64 @@ export interface StatusDotProps {
 }
 
 export const StatusDot: React.FC<StatusDotProps> = ({ status, label, className }) => {
-  const normStatus = status.toLowerCase();
+  const normStatus = (status || '').toLowerCase().trim();
 
-  const colorMap: Record<string, string> = {
-    paid: 'bg-success',
-    success: 'bg-success',
-    completed: 'bg-success',
-    active: 'bg-success',
-    partial: 'bg-amber-500',
-    yellow: 'bg-warning',
-    unpaid: 'bg-gray-400',
-    overdue: 'bg-danger',
-    red: 'bg-danger',
-    cancelled: 'bg-gray-400',
-    in_progress: 'bg-primary',
-  };
+  let dotColor = 'bg-[#9CA3AF]'; // var(--neutral-dot)
+  let isCancelled = false;
 
-  const dotColor = colorMap[normStatus] || 'bg-gray-400';
+  switch (normStatus) {
+    case 'paid':
+    case 'success':
+    case 'completed':
+    case 'active':
+      dotColor = 'bg-success';
+      break;
+    case 'partial':
+    case 'yellow':
+      dotColor = 'bg-warning';
+      break;
+    case 'overdue':
+    case 'red':
+      dotColor = 'bg-danger';
+      break;
+    case 'cancelled':
+      dotColor = 'bg-[#9CA3AF]';
+      isCancelled = true;
+      break;
+    case 'due':
+    case 'unpaid':
+    case 'in_progress':
+    default:
+      dotColor = 'bg-[#9CA3AF]';
+      break;
+  }
 
   const defaultLabelMap: Record<string, string> = {
     paid: 'Paid',
     partial: 'Partial',
+    due: 'Due',
     unpaid: 'Unpaid',
     overdue: 'Overdue',
     cancelled: 'Cancelled',
-    yellow: 'Yellow',
-    red: 'Red',
+    yellow: 'Needs Attention',
+    red: 'Critical',
     completed: 'Completed',
     in_progress: 'In Progress',
+    active: 'Active',
   };
 
   const displayLabel = label || defaultLabelMap[normStatus] || status;
 
   return (
-    <div className={clsx('inline-flex items-center gap-1.5 text-xs font-medium', className)}>
+    <div
+      className={twMerge(
+        clsx(
+          'inline-flex items-center gap-2 text-[14px] leading-none select-none',
+          isCancelled ? 'line-through text-text-muted' : 'text-text font-normal',
+          className
+        )
+      )}
+    >
       <span className={clsx('w-2 h-2 rounded-full flex-shrink-0', dotColor)} aria-hidden="true" />
       <span>{displayLabel}</span>
     </div>

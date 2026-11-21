@@ -11,7 +11,7 @@ interface AuthContextType {
   session: Session | null;
   member: Member | null;
   business: Business | null;
-  role: 'OWNER' | 'ACCOUNTANT' | 'STAFF' | null;
+  role: 'OWNER' | 'STAFF' | null;
   loading: boolean;
   refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -26,7 +26,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [business, setBusiness] = useState<Business | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfile = async (currentUser: User) => {
+  const fetchProfile = async (currentUser: User, isRetry = false) => {
     try {
       let { data: memberData } = await supabase
         .from('members')
@@ -92,15 +92,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setBusiness(bizData as Business);
         }
       } else {
-        // Session belongs to an unknown or deleted member; attempt self-healing
-        console.warn('No active member found for current session. Recovering demo session...');
-        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
-          email: 'owner@simplify.com',
-          password: 'password123',
-        });
-        if (!signInErr && signInData?.user) {
-          await fetchProfile(signInData.user);
-          return;
+        // Session belongs to an unknown or deleted member; attempt self-healing only ONCE (no infinite loop)
+        if (!isRetry) {
+          console.warn('No active member found for current session. Recovering demo session...');
+          const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+            email: 'owner@simplify.com',
+            password: 'password123',
+          });
+          if (!signInErr && signInData?.user) {
+            await fetchProfile(signInData.user, true);
+            return;
+          }
         }
         setMember(null);
         setBusiness(null);
@@ -110,6 +112,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (err) {
       console.error('Error fetching profile:', err);
+      setMember(null);
+      setBusiness(null);
     }
   };
 
@@ -120,29 +124,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
+    // Safety guard: ensure loading state never hangs permanently
+    const safetyTimeout = setTimeout(() => {
+      setLoading(false);
+    }, 3500);
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchProfile(session.user).finally(() => setLoading(false));
+        fetchProfile(session.user).finally(() => {
+          clearTimeout(safetyTimeout);
+          setLoading(false);
+        });
       } else {
+        clearTimeout(safetyTimeout);
         setLoading(false);
       }
+    }).catch(() => {
+      clearTimeout(safetyTimeout);
+      setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        await fetchProfile(session.user);
+        setLoading(true);
+        try {
+          await fetchProfile(session.user);
+        } finally {
+          setLoading(false);
+        }
       } else {
         setMember(null);
         setBusiness(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      clearTimeout(safetyTimeout);
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signOut = async () => {

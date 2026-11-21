@@ -573,3 +573,4 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
 REVOKE ALL ON FUNCTION public.staff_dashboard(text) FROM anon, public;
 GRANT EXECUTE ON FUNCTION public.staff_dashboard(text) TO authenticated;
+

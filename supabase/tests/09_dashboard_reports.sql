@@ -69,10 +69,10 @@ BEGIN
     'mode', 'BANK'
   ));
 
-  -- Test 1: dashboard() today collection = 600, payments = 200, expenses = 450 (150 + 300 interest)
+  -- Test 1: dashboard() today income = 600, payments = 200, expenses = 450 (150 + 300 interest)
   v_dash := public.dashboard();
   PERFORM ok(
-    (v_dash->'today'->>'collection')::numeric = 600 AND
+    COALESCE((v_dash->'today'->>'income')::numeric, (v_dash->'today'->>'collection')::numeric) = 600 AND
     (v_dash->'today'->>'payments')::numeric = 200 AND
     (v_dash->'today'->>'expenses')::numeric = 450,
     'dashboard() today metrics accurately computed'

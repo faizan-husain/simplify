@@ -12,7 +12,6 @@ import { QuietChart } from '../components/ui/QuietChart';
 import { ThreeDPieChart } from '../components/ui/ThreeDPieChart';
 import { Skeleton } from '../components/ui/Skeleton';
 import { StaffMyDayView } from '../components/dashboard/StaffMyDayView';
-import { CompactJobCard } from '../components/jobs/CompactJobCard';
 import { BillDetailModal } from '../components/bills/BillDetailModal';
 import { JobDetailModal } from '../components/jobs/JobDetailModal';
 import { clsx } from 'clsx';
@@ -95,6 +94,7 @@ export const DashboardPage: React.FC = () => {
   const [staffData, setStaffData] = useState<any>(null);
   const [cashBankData, setCashBankData] = useState<any>(null);
   const [urgentJobs, setUrgentJobs] = useState<any[]>([]);
+  const [jobTabCounts, setJobTabCounts] = useState<any>(null);
   const [openInvoices, setOpenInvoices] = useState<any[]>([]);
   const [monthInvoices, setMonthInvoices] = useState<any[]>([]);
   const [configuredServices, setConfiguredServices] = useState<any[]>([]);
@@ -155,7 +155,7 @@ export const DashboardPage: React.FC = () => {
   }, [cashBankData]);
 
   type TimePeriod = 'TODAY' | 'THIS_MONTH' | 'THIS_YEAR';
-  const [period, setPeriod] = useState<TimePeriod>(isStaff ? 'TODAY' : 'THIS_MONTH');
+  const [period, setPeriod] = useState<TimePeriod>('THIS_MONTH');
 
   const fyLabel = getFYLabel();
 
@@ -211,6 +211,9 @@ export const DashboardPage: React.FC = () => {
         const list = (jobsResult as any)?.jobs || (Array.isArray(jobsResult) ? jobsResult : []);
         if (list && list.length > 0) {
           setUrgentJobs(list);
+        }
+        if ((jobsResult as any)?.tab_counts) {
+          setJobTabCounts((jobsResult as any).tab_counts);
         }
       } catch (_) {}
 
@@ -745,23 +748,87 @@ export const DashboardPage: React.FC = () => {
   const chartPoints = useMemo(() => {
     const raw = activeData?.chart_data || data?.chart_data || [];
     if (raw.length > 0 && raw.some((p: any) => (p.income || 0) > 0 || (p.expenses || p.outgoing || 0) > 0)) {
-      return raw.map((p: any) => ({
-        label: p.label || '',
-        income: p.income || 0,
-        outgoing: p.expenses || p.outgoing || 0,
-      }));
+      return raw.map((p: any, idx: number) => {
+        let label = p.label || p.date_label || p.date || '';
+        let fullDate = p.full_date || p.date_str || p.raw_date || label;
+
+        if (!label && p.date_str) {
+          const parts = String(p.date_str).split('-');
+          if (parts.length === 3) {
+            const d = new Date(p.date_str);
+            if (!isNaN(d.getTime())) {
+              label = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short' }).format(d);
+              fullDate = new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+            }
+          } else if (parts.length === 2) {
+            const d = new Date(`${p.date_str}-01`);
+            if (!isNaN(d.getTime())) {
+              label = new Intl.DateTimeFormat('en-IN', { month: 'short' }).format(d);
+              fullDate = new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(d);
+            }
+          }
+        } else if (!label && p.raw_date) {
+          const d = new Date(p.raw_date);
+          if (!isNaN(d.getTime())) {
+            label = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short' }).format(d);
+            fullDate = new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+          }
+        }
+
+        if (!label) {
+          label = period === 'THIS_YEAR' ? `M${idx + 1}` : `Day ${idx + 1}`;
+        }
+
+        return {
+          label,
+          fullDate,
+          income: Number(p.income || 0),
+          outgoing: Number(p.expenses || p.outgoing || 0),
+        };
+      });
     }
+
+    // Period-appropriate fallback data when empty
+    if (period === 'THIS_YEAR') {
+      return [
+        { label: 'Apr', fullDate: 'April 2026', income: 42000, outgoing: 28000 },
+        { label: 'May', fullDate: 'May 2026', income: 48000, outgoing: 31000 },
+        { label: 'Jun', fullDate: 'June 2026', income: 55000, outgoing: 34000 },
+        { label: 'Jul', fullDate: 'July 2026', income: 51000, outgoing: 33000 },
+        { label: 'Aug', fullDate: 'August 2026', income: 62000, outgoing: 38000 },
+        { label: 'Sep', fullDate: 'September 2026', income: 58000, outgoing: 36000 },
+        { label: 'Oct', fullDate: 'October 2026', income: 72000, outgoing: 41000 },
+        { label: 'Nov', fullDate: 'November 2026', income: 68000, outgoing: 39000 },
+        { label: 'Dec', fullDate: 'December 2026', income: 75000, outgoing: 44000 },
+        { label: 'Jan', fullDate: 'January 2027', income: 71000, outgoing: 42000 },
+        { label: 'Feb', fullDate: 'February 2027', income: 80000, outgoing: 46000 },
+        { label: 'Mar', fullDate: 'March 2027', income: 85000, outgoing: 49000 },
+      ];
+    }
+
+    if (period === 'TODAY') {
+      return [
+        { label: '9 AM', fullDate: 'Today 9:00 AM', income: 2500, outgoing: 1200 },
+        { label: '11 AM', fullDate: 'Today 11:00 AM', income: 5400, outgoing: 2100 },
+        { label: '1 PM', fullDate: 'Today 1:00 PM', income: 8200, outgoing: 3500 },
+        { label: '3 PM', fullDate: 'Today 3:00 PM', income: 6100, outgoing: 2800 },
+        { label: '5 PM', fullDate: 'Today 5:00 PM', income: 9400, outgoing: 4200 },
+        { label: '7 PM', fullDate: 'Today 7:00 PM', income: 7300, outgoing: 3100 },
+        { label: '9 PM', fullDate: 'Today 9:00 PM', income: 4200, outgoing: 1800 },
+      ];
+    }
+
     // Screenshot reference points: 1 Oct to 31 Oct
     return [
-      { label: '1 Oct', income: 12000, outgoing: 8000 },
-      { label: '6 Oct', income: 24000, outgoing: 12000 },
-      { label: '11 Oct', income: 32000, outgoing: 18000 },
-      { label: '16 Oct', income: 26000, outgoing: 22000 },
-      { label: '21 Oct', income: 48000, outgoing: 24000 },
-      { label: '26 Oct', income: 36000, outgoing: 28000 },
-      { label: '31 Oct', income: 52000, outgoing: 32000 },
+      { label: '1 Oct', fullDate: '1 Oct 2026', income: 12000, outgoing: 8000 },
+      { label: '6 Oct', fullDate: '6 Oct 2026', income: 24000, outgoing: 12000 },
+      { label: '11 Oct', fullDate: '11 Oct 2026', income: 32000, outgoing: 18000 },
+      { label: '16 Oct', fullDate: '16 Oct 2026', income: 26000, outgoing: 22000 },
+      { label: '21 Oct', fullDate: '21 Oct 2026', income: 48000, outgoing: 24000 },
+      { label: '26 Oct', fullDate: '26 Oct 2026', income: 36000, outgoing: 28000 },
+      { label: '31 Oct', fullDate: '31 Oct 2026', income: 52000, outgoing: 32000 },
     ];
-  }, [activeData?.chart_data, data?.chart_data]);
+  }, [activeData?.chart_data, data?.chart_data, period]);
 
   // Payment methods breakdown
   const pm = activeData?.payment_methods || data?.payment_methods || {};
@@ -790,10 +857,21 @@ export const DashboardPage: React.FC = () => {
 
   // Jobs statistics & list
   const jobsStats = data?.jobs || {};
-  const redCount = jobsStats.red_count ?? jobsStats.late_count ?? 3;
-  const yellowCount = jobsStats.yellow_count ?? jobsStats.due_soon_count ?? 5;
+  const redDays = Number(business?.red_days ?? 3);
+  const yellowDays = Number(business?.yellow_days ?? 5);
+
+  const redDaysLabel = `${redDays} ${redDays === 1 ? 'day' : 'days'} or less`;
+  const yellowDaysLabel =
+    yellowDays > redDays + 1
+      ? `${redDays + 1}–${yellowDays} days`
+      : yellowDays === redDays + 1
+      ? `${yellowDays} ${yellowDays === 1 ? 'day' : 'days'}`
+      : `${yellowDays} days`;
+
+  const redCount = jobTabCounts?.red ?? (jobsStats.red_count ?? jobsStats.late_count ?? 3);
+  const yellowCount = jobTabCounts?.yellow ?? (jobsStats.yellow_count ?? jobsStats.due_soon_count ?? 5);
   const onTrackCount = jobsStats.pending ? Math.max(0, jobsStats.pending - (redCount + yellowCount)) : 14;
-  const completedToday = jobsStats.completed_today ?? 6;
+  const completedToday = jobTabCounts?.completed ?? (jobsStats.completed_today ?? 6);
   const totalJobBuckets = (redCount + yellowCount + onTrackCount) || 1;
 
   const jobPercentages = {
@@ -807,120 +885,45 @@ export const DashboardPage: React.FC = () => {
       {
         id: 'mock-1',
         party_name: 'Ramesh Kumar',
-        party_mobile: '9876543210',
         job_type_name: 'Passport',
-        invoice_number: '1024',
-        applicant_name: 'Ramesh Kumar',
         total_steps: 4,
         ticked_steps: 3,
         days_left: -1,
-        deadline_bucket: 'RED',
-        status: 'IN_PROGRESS',
-        amount: 1500,
-        next_step_name: 'Police Verification',
-        steps: [
-          { name: 'Document Verification', ticked: true },
-          { name: 'Online Application', ticked: true },
-          { name: 'Appointment Booking', ticked: true },
-          { name: 'Police Verification', ticked: false },
-        ],
       },
       {
         id: 'mock-2',
         party_name: 'Sunita Verma',
-        party_mobile: '9876543211',
         job_type_name: 'PAN Card',
-        invoice_number: '1025',
-        applicant_name: 'Sunita Verma',
         total_steps: 3,
         ticked_steps: 1,
         days_left: 3,
-        deadline_bucket: 'RED',
-        status: 'IN_PROGRESS',
-        amount: 500,
-        next_step_name: 'Aadhaar e-KYC',
-        steps: [
-          { name: 'Form 49A Entry', ticked: true },
-          { name: 'Aadhaar e-KYC', ticked: false },
-          { name: 'Card Dispatch', ticked: false },
-        ],
       },
       {
         id: 'mock-3',
         party_name: 'Anil Kumar',
-        party_mobile: '9876543212',
         job_type_name: 'Passport',
-        invoice_number: '1026',
-        applicant_name: 'Anil Kumar',
         total_steps: 4,
-        ticked_steps: 2,
+        ticked_steps: 3,
         days_left: 4,
-        deadline_bucket: 'YELLOW',
-        status: 'IN_PROGRESS',
-        amount: 1500,
-        next_step_name: 'Appointment Booking',
-        steps: [
-          { name: 'Document Verification', ticked: true },
-          { name: 'Online Application', ticked: true },
-          { name: 'Appointment Booking', ticked: false },
-          { name: 'Police Verification', ticked: false },
-        ],
-      },
-      {
-        id: 'mock-4',
-        party_name: 'Pooja Sharma',
-        party_mobile: '9876543213',
-        job_type_name: 'Voter ID',
-        invoice_number: '1027',
-        applicant_name: 'Pooja Sharma',
-        total_steps: 3,
-        ticked_steps: 2,
-        days_left: 6,
-        deadline_bucket: 'GREEN',
-        status: 'IN_PROGRESS',
-        amount: 350,
-        next_step_name: 'EPIC Card Delivery',
-        steps: [
-          { name: 'Form 6 Submission', ticked: true },
-          { name: 'BLO Verification', ticked: true },
-          { name: 'EPIC Card Delivery', ticked: false },
-        ],
-      },
-      {
-        id: 'mock-5',
-        party_name: 'Vikram Singh',
-        party_mobile: '9876543214',
-        job_type_name: 'Driving License',
-        invoice_number: '1028',
-        applicant_name: 'Vikram Singh',
-        total_steps: 3,
-        ticked_steps: 1,
-        days_left: 8,
-        deadline_bucket: 'GREEN',
-        status: 'IN_PROGRESS',
-        amount: 800,
-        next_step_name: 'RTO Slot Booking',
-        steps: [
-          { name: 'Learner License Entry', ticked: true },
-          { name: 'RTO Slot Booking', ticked: false },
-          { name: 'Driving Test Clearance', ticked: false },
-        ],
       },
     ],
     []
   );
 
-  const displayJobs = useMemo(() => {
-    return urgentJobs && urgentJobs.length > 0 ? urgentJobs : fallbackJobs;
-  }, [urgentJobs, fallbackJobs]);
-
-  const onJobClick = (job: any) => {
-    if (job.id && !String(job.id).startsWith('mock-')) {
-      handleOpenJobModal(job.id);
-    } else {
-      navigate('/jobs');
-    }
-  };
+  const displayUrgentJobs = useMemo(() => {
+    if (!urgentJobs || urgentJobs.length === 0) return fallbackJobs;
+    // Show all late jobs (days_left < 0) first, then urgent jobs (<= 5 days)
+    const lateJobs = urgentJobs.filter((j: any) => {
+      const d = parseInt(String(j.days_left), 10);
+      return !isNaN(d) && d < 0;
+    });
+    const upcomingUrgent = urgentJobs.filter((j: any) => {
+      const d = parseInt(String(j.days_left), 10);
+      return !isNaN(d) && d >= 0 && d <= yellowDays;
+    });
+    const combined = [...lateJobs, ...upcomingUrgent];
+    return combined.length > 0 ? combined : urgentJobs.slice(0, 4);
+  }, [urgentJobs, fallbackJobs, yellowDays]);
 
   // Recent bills list (Live DB Data matching BillsPage exactly - strictly 8 recent bills, all statuses, exact same order)
   const recentBillsList = useMemo(() => {
@@ -1220,14 +1223,14 @@ export const DashboardPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2 sm:gap-3 flex-nowrap w-full sm:w-auto">
           {/* Segmented Control Pill matching screenshot (Today & This month for Staff, full periods for Owner) */}
-          <div className="flex items-center bg-[#EEF0F3] p-1 rounded-xl">
+          <div className="flex-1 sm:flex-initial flex items-center bg-[#EEF0F3] p-1 rounded-xl">
             <button
               type="button"
               onClick={() => setPeriod('TODAY')}
               className={clsx(
-                'px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer',
+                'flex-1 sm:flex-initial text-center px-3 sm:px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer whitespace-nowrap',
                 period === 'TODAY'
                   ? 'bg-white text-[#111827] font-medium shadow-sm'
                   : 'text-[#6B7280] hover:text-[#111827] font-normal'
@@ -1239,7 +1242,7 @@ export const DashboardPage: React.FC = () => {
               type="button"
               onClick={() => setPeriod('THIS_MONTH')}
               className={clsx(
-                'px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer',
+                'flex-1 sm:flex-initial text-center px-3 sm:px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer whitespace-nowrap',
                 period === 'THIS_MONTH'
                   ? 'bg-white text-[#111827] font-medium shadow-sm'
                   : 'text-[#6B7280] hover:text-[#111827] font-normal'
@@ -1252,7 +1255,7 @@ export const DashboardPage: React.FC = () => {
                 type="button"
                 onClick={() => setPeriod('THIS_YEAR')}
                 className={clsx(
-                  'px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer',
+                  'flex-1 sm:flex-initial text-center px-3 sm:px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer whitespace-nowrap',
                   period === 'THIS_YEAR'
                     ? 'bg-white text-[#111827] font-medium shadow-sm'
                     : 'text-[#6B7280] hover:text-[#111827] font-normal'
@@ -1268,7 +1271,7 @@ export const DashboardPage: React.FC = () => {
             onClick={() => loadDashboard(true)}
             disabled={loading || refreshing}
             aria-label="Refresh dashboard"
-            className="p-2 rounded-xl border border-[#E5E7EB] bg-white hover:bg-[#F9FAFB] text-[#6B7280] hover:text-[#111827] transition-all disabled:opacity-50 shadow-[0_1px_2px_rgba(0,0,0,0.02)]"
+            className="p-2 rounded-xl border-0 bg-white hover:bg-[#F9FAFB] text-[#6B7280] hover:text-[#111827] transition-all disabled:opacity-50 shadow-[0_1px_3px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_6px_rgba(0,0,0,0.06)] cursor-pointer shrink-0"
             title="Refresh dashboard"
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-[#0F766E]' : ''}`} />
@@ -1278,7 +1281,7 @@ export const DashboardPage: React.FC = () => {
           <button
             type="button"
             onClick={() => navigate('/bills/new')}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#111827] hover:bg-[#1F2937] text-white text-[13.5px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.12)] active:scale-[0.98] transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-[#111827] hover:bg-[#1F2937] text-white text-[13px] sm:text-[13.5px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.12)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap shrink-0"
           >
             <Plus className="w-4 h-4 stroke-[2.5]" />
             <span>New bill</span>
@@ -1286,48 +1289,46 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. Action Pill Buttons Row (Staff only has Customer, Owner has all) */}
-      <div className="flex items-center gap-2.5 flex-wrap">
-        {!isStaff && (
-          <>
-            <button
-              type="button"
-              onClick={() => navigate('/money')}
-              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-[#E5E7EB] text-[13px] font-medium text-[#111827] shadow-[0_1px_2px_rgba(0,0,0,0.03)] hover:bg-[#F9FAFB] hover:border-[#D1D5DB] active:scale-[0.98] transition-all cursor-pointer"
-            >
-              <ArrowDownLeft className="w-3.5 h-3.5 text-[#0F766E]" />
-              <span>Receipt</span>
-            </button>
+      {/* 2. Action Pill Buttons Row (Owner only - Receipt, Payment, Expense, Customer - 1 Row) */}
+      {!isStaff && (
+        <div className="grid grid-cols-4 gap-2 sm:gap-2.5">
+          <button
+            type="button"
+            onClick={() => navigate('/money?tab=receipts')}
+            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+          >
+            <ArrowDownLeft className="w-4 h-4 text-[#0F766E] shrink-0" />
+            <span>Receipt</span>
+          </button>
 
-            <button
-              type="button"
-              onClick={() => navigate('/money')}
-              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-[#E5E7EB] text-[13px] font-medium text-[#111827] shadow-[0_1px_2px_rgba(0,0,0,0.03)] hover:bg-[#F9FAFB] hover:border-[#D1D5DB] active:scale-[0.98] transition-all cursor-pointer"
-            >
-              <ArrowUpRight className="w-3.5 h-3.5 text-[#4B5563]" />
-              <span>Payment</span>
-            </button>
+          <button
+            type="button"
+            onClick={() => navigate('/money?tab=payments')}
+            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+          >
+            <ArrowUpRight className="w-4 h-4 text-[#4B5563] shrink-0" />
+            <span>Payment</span>
+          </button>
 
-            <button
-              type="button"
-              onClick={() => navigate('/money')}
-              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-[#E5E7EB] text-[13px] font-medium text-[#111827] shadow-[0_1px_2px_rgba(0,0,0,0.03)] hover:bg-[#F9FAFB] hover:border-[#D1D5DB] active:scale-[0.98] transition-all cursor-pointer"
-            >
-              <Calendar className="w-3.5 h-3.5 text-[#D97706]" />
-              <span>Expense</span>
-            </button>
-          </>
-        )}
+          <button
+            type="button"
+            onClick={() => navigate('/money?tab=expenses')}
+            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+          >
+            <Calendar className="w-4 h-4 text-[#D97706] shrink-0" />
+            <span>Expense</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => navigate('/customers')}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-[#E5E7EB] text-[13px] font-medium text-[#111827] shadow-[0_1px_2px_rgba(0,0,0,0.03)] hover:bg-[#F9FAFB] hover:border-[#D1D5DB] active:scale-[0.98] transition-all cursor-pointer"
-        >
-          <UserPlus className="w-3.5 h-3.5 text-[#4B5563]" />
-          <span>Customer</span>
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => navigate('/customers')}
+            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+          >
+            <UserPlus className="w-4 h-4 text-[#4B5563] shrink-0" />
+            <span>Customer</span>
+          </button>
+        </div>
+      )}
 
       {/* 3. Main Dashboard Content: Dedicated "My Dashboard" for Staff vs Full Business Suite for Owner */}
       {isStaff ? (
@@ -1349,6 +1350,7 @@ export const DashboardPage: React.FC = () => {
         <StatCard
           label="Income"
           value={formatINR(income)}
+          onClick={() => navigate('/money?tab=receipts')}
           delta={{
             value: '+12.4%',
             isPositive: true,
@@ -1366,6 +1368,7 @@ export const DashboardPage: React.FC = () => {
         <StatCard
           label="Outgoing"
           value={formatINR(outgoing)}
+          onClick={() => navigate('/money?tab=expenses')}
           delta={{
             value: '+4.1%',
             isPositive: false,
@@ -1383,6 +1386,7 @@ export const DashboardPage: React.FC = () => {
         <StatCard
           label="Net profit"
           value={formatINR(netProfit)}
+          onClick={() => navigate('/reports?tab=pnl')}
           delta={{
             value: '+21.8%',
             isPositive: true,
@@ -1400,6 +1404,7 @@ export const DashboardPage: React.FC = () => {
         <StatCard
           label="Outstanding"
           value={formatINR(totalOutstanding)}
+          onClick={() => navigate('/money?tab=dues')}
           secondaryLine={`Loan outstanding ${formatINR(loanOutstanding)} · kept separate`}
           icon={
             <div className="w-7 h-7 rounded-full bg-white text-[#D97706] shadow-2xs flex items-center justify-center shrink-0">
@@ -1433,9 +1438,13 @@ export const DashboardPage: React.FC = () => {
         {/* Content: Left Total Liquid Funds + Right Accounts Carousel */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
           {/* Left Column: Liquid Funds & Bar Breakdown */}
-          <div className="lg:col-span-4 flex flex-col justify-between pr-0 lg:pr-5 lg:border-r lg:border-[#F1F5F9]">
+          <div
+            onClick={() => navigate('/money?tab=bank')}
+            className="lg:col-span-4 flex flex-col justify-between pr-0 lg:pr-5 lg:border-r lg:border-[#F1F5F9] cursor-pointer group"
+            title="View Cash & Bank accounts"
+          >
             <div>
-              <div className="text-[12px] font-medium text-[#64748B]">Total liquid funds</div>
+              <div className="text-[12px] font-medium text-[#64748B] group-hover:text-[#0F766E] transition-colors">Total liquid funds</div>
               <div className="text-[26px] sm:text-[28px] font-extrabold text-[#0F172A] tracking-tight mt-0.5 tabular-nums">
                 {formatINR(cashBankCalculations.totalLiquid)}
               </div>
@@ -1487,7 +1496,7 @@ export const DashboardPage: React.FC = () => {
             >
               {/* 1. Cash in Hand Card (Dynamic sizing & Hover dark #F3F4F6, default #F7F8FA) */}
               <div
-                onClick={() => navigate('/money')}
+                onClick={() => navigate('/money?tab=bank')}
                 className={clsx(
                   1 + cashBankCalculations.bankCards.length === 1
                     ? 'w-full max-w-[340px] flex-initial shrink-0'
@@ -1527,7 +1536,7 @@ export const DashboardPage: React.FC = () => {
               {cashBankCalculations.bankCards.map((bank, idx) => (
                 <div
                   key={bank.id || idx}
-                  onClick={() => navigate('/money?tab=bank')}
+                  onClick={() => navigate(bank.id ? `/money?tab=bank&bankId=${bank.id}` : '/money?tab=bank')}
                   className={clsx(
                     1 + cashBankCalculations.bankCards.length === 2
                       ? 'flex-1 min-w-[220px] max-w-[360px] shrink-0 sm:shrink'
@@ -1576,13 +1585,17 @@ export const DashboardPage: React.FC = () => {
       {/* 4. Middle Section: Income vs Outgoing (Left 8 cols) & Jobs (Right 4 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Left Column: Income vs Outgoing Card with Integrated Receipts by mode */}
-        <Card className="lg:col-span-8 flex flex-col justify-between p-5 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200">
+        <Card className="lg:col-span-8 flex flex-col p-5 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200">
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-1.5">
               <div>
                 <h2 className="text-[15px] font-semibold text-[#111827]">Income vs outgoing</h2>
-                <p className="text-[12.5px] text-[#6B7280]">
-                  {period === 'THIS_YEAR' ? `FY ${fyLabel}` : period === 'TODAY' ? 'Today' : 'October 2026'} · cash basis
+                <p className="text-[12px] text-[#6B7280]">
+                  {period === 'THIS_YEAR'
+                    ? `FY ${fyLabel}`
+                    : period === 'TODAY'
+                    ? 'Today'
+                    : (dailyBillsData?.monthLabel || 'This month')} · cash basis
                 </p>
               </div>
               <div className="flex items-center gap-4 text-[12px] font-medium">
@@ -1597,20 +1610,24 @@ export const DashboardPage: React.FC = () => {
               </div>
             </div>
 
-            <QuietChart data={chartPoints} height={210} showLegend={false} />
+            <QuietChart data={chartPoints} height={220} showLegend={false} period={period} />
           </div>
 
           {/* Integrated Bottom: Receipts by mode */}
-          <div className="border-t border-[#F3F4F6] pt-4 mt-3">
-            <div className="flex items-center justify-between text-[13px]">
-              <span className="font-medium text-[#4B5563]">Receipts by mode</span>
-              <span className="text-[12px] text-[#6B7280]">
-                {period === 'THIS_YEAR' ? 'This year' : period === 'TODAY' ? 'Today' : 'This month'}
+          <div
+            onClick={() => navigate('/money?tab=receipts')}
+            className="border-t border-[#F3F4F6] pt-3.5 mt-3 cursor-pointer group"
+            title="View receipts in Money"
+          >
+            <div className="flex items-center justify-between text-[12.5px]">
+              <span className="font-medium text-[#4B5563] group-hover:text-[#0F766E] transition-colors">Receipts by mode</span>
+              <span className="text-[11.5px] text-[#0F766E] font-medium group-hover:underline">
+                View receipts →
               </span>
             </div>
 
             {/* Segmented Pill Bar matching reference design */}
-            <div className="h-2 flex w-full gap-1.5 mt-2.5">
+            <div className="h-2 flex w-full gap-1.5 mt-2">
               {modePercentages.cash === 0 && modePercentages.upi === 0 && modePercentages.bank === 0 && modePercentages.card === 0 ? (
                 <div className="h-full w-full bg-[#F1F5F9] rounded-full" />
               ) : (
@@ -1648,7 +1665,7 @@ export const DashboardPage: React.FC = () => {
             </div>
 
             {/* Legend row */}
-            <div className="flex items-center gap-6 mt-3 text-[12.5px] text-[#334155] flex-wrap">
+            <div className="flex items-center gap-5 mt-2.5 text-[12px] text-[#334155] flex-wrap">
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-[#111827] shrink-0" />
                 <span>Cash {modePercentages.cash}%</span>
@@ -1669,11 +1686,12 @@ export const DashboardPage: React.FC = () => {
           </div>
         </Card>
 
-        {/* Right Column: Jobs Card */}
+        {/* Right Column: Jobs Card matching reference screenshot */}
         <Card className="lg:col-span-4 flex flex-col justify-between p-5 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200">
           <div>
+            {/* Header: Title + View all */}
             <div className="flex items-center justify-between mb-2">
-              <h2 className="text-[15px] font-semibold text-[#111827]">Jobs</h2>
+              <h2 className="text-[16px] font-bold text-[#111827]">Jobs</h2>
               <button
                 type="button"
                 onClick={() => navigate('/jobs')}
@@ -1684,96 +1702,163 @@ export const DashboardPage: React.FC = () => {
             </div>
 
             {/* Multi-color top status bar */}
-            <div className="h-2 flex w-full mt-2.5 gap-1.5">
+            <div className="h-2 flex w-full mt-2 mb-3.5 gap-1.5">
               <div
                 className="h-full bg-[#DC2626] rounded-full transition-all duration-300"
                 style={{ flex: `${jobPercentages.red} 0 0%`, minWidth: '6px' }}
+                title={`Red: ${redCount}`}
               />
               <div
                 className="h-full bg-[#F59E0B] rounded-full transition-all duration-300"
                 style={{ flex: `${jobPercentages.yellow} 0 0%`, minWidth: '6px' }}
+                title={`Yellow: ${yellowCount}`}
               />
               <div
                 className="h-full bg-[#E2E8F0] rounded-full transition-all duration-300"
                 style={{ flex: `${jobPercentages.onTrack} 0 0%`, minWidth: '6px' }}
+                title={`On track: ${onTrackCount}`}
               />
             </div>
 
-            {/* Breakdown count rows */}
-            <div className="space-y-2.5 mt-4 text-[13px]">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+            {/* Breakdown count rows matching screenshot */}
+            <div className="space-y-1.5 text-[13px]">
+              <div
+                onClick={() => navigate('/jobs?tab=RED')}
+                className="flex items-center justify-between p-1.5 -mx-1.5 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer group"
+                title="View Red Jobs"
+              >
+                <div className="flex items-center gap-2.5">
                   <span className="w-2 h-2 rounded-full bg-[#DC2626]" />
-                  <span className="text-[#374151]">Red · 3 days or less</span>
+                  <span className="text-[#374151] group-hover:text-[#DC2626] transition-colors">Red · {redDaysLabel}</span>
                 </div>
-                <span className="font-semibold text-[#111827] tabular-nums">
+                <span className="font-bold text-[#111827] tabular-nums">
                   {redCount}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div
+                onClick={() => navigate('/jobs?tab=YELLOW')}
+                className="flex items-center justify-between p-1.5 -mx-1.5 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer group"
+                title="View Yellow Jobs"
+              >
+                <div className="flex items-center gap-2.5">
                   <span className="w-2 h-2 rounded-full bg-[#F59E0B]" />
-                  <span className="text-[#374151]">Yellow · 4–5 days</span>
+                  <span className="text-[#374151] group-hover:text-[#D97706] transition-colors">Yellow · {yellowDaysLabel}</span>
                 </div>
-                <span className="font-semibold text-[#111827] tabular-nums">
+                <span className="font-bold text-[#111827] tabular-nums">
                   {yellowCount}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div
+                onClick={() => navigate('/jobs?tab=CURRENT')}
+                className="flex items-center justify-between p-1.5 -mx-1.5 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer group"
+                title="View On Track Jobs"
+              >
+                <div className="flex items-center gap-2.5">
                   <span className="w-2 h-2 rounded-full bg-[#94A3B8]" />
-                  <span className="text-[#374151]">On track</span>
+                  <span className="text-[#374151] group-hover:text-[#0F172A] transition-colors">On track</span>
                 </div>
-                <span className="font-semibold text-[#111827] tabular-nums">
+                <span className="font-bold text-[#111827] tabular-nums">
                   {onTrackCount}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div
+                onClick={() => navigate('/jobs?tab=COMPLETED')}
+                className="flex items-center justify-between p-1.5 -mx-1.5 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer group"
+                title="View Completed Jobs"
+              >
+                <div className="flex items-center gap-2.5">
                   <span className="w-2 h-2 rounded-full bg-[#0F766E]" />
-                  <span className="text-[#374151]">Completed today</span>
+                  <span className="text-[#374151] group-hover:text-[#0F766E] transition-colors">Completed today</span>
                 </div>
-                <span className="font-semibold text-[#111827] tabular-nums">
+                <span className="font-bold text-[#111827] tabular-nums">
                   {completedToday}
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Most urgent section */}
-          <div className="border-t border-[#F3F4F6] pt-3.5 mt-4 flex-1 flex flex-col min-h-0">
-            <div className="flex items-center justify-between mb-2.5">
-              <span className="text-[11.5px] font-semibold text-[#6B7280] tracking-wider uppercase">
-                Most urgent
-              </span>
-              <span className="text-[11px] font-medium text-[#94A3B8]">
-                {displayJobs.length > 0 ? `${displayJobs.length} active` : ''}
-              </span>
+          {/* Most urgent section matching screenshot */}
+          <div className="mt-4 pt-3.5 border-t border-[#F3F4F6]">
+            <div className="text-[12.5px] font-semibold text-[#64748B] mb-2.5">
+              Most urgent
             </div>
 
-            {displayJobs.length === 0 ? (
-              <div className="py-8 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-                <CheckCircle2 className="w-7 h-7 text-[#0F766E] mx-auto mb-1.5 opacity-80" />
-                <div className="text-[13px] font-semibold text-slate-800">No pending jobs</div>
-                <p className="text-[11.5px] text-slate-500 mt-0.5">
-                  All job steps are completed.
-                </p>
+            {displayUrgentJobs.length === 0 ? (
+              <div className="py-4 text-center text-[12px] text-[#64748B] bg-[#F8FAFC] rounded-xl">
+                No urgent jobs pending
               </div>
             ) : (
-              <div className="max-h-[390px] overflow-y-auto pr-1 space-y-2.5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-200 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-300">
-                {displayJobs.map((job: any, idx: number) => (
-                  <CompactJobCard
-                    key={job.id || idx}
-                    job={job}
-                    rankIndex={idx}
-                    isWide={false}
-                    onClick={() => onJobClick(job)}
-                    onTickSteps={() => onJobClick(job)}
-                  />
-                ))}
+              <div className="space-y-3 max-h-[150px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-200 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-300">
+                {displayUrgentJobs.map((job: any, idx: number) => {
+                  const days = parseInt(String(job.days_left), 10);
+                  const isLate = !isNaN(days) && days < 0;
+                  const isRed = !isNaN(days) && days >= 0 && days <= redDays;
+                  const isYellow = !isNaN(days) && days > redDays && days <= yellowDays;
+
+                  // Urgency progress: scales directly with days (more late = higher bar)
+                  let urgencyPercent = 20;
+                  if (!isNaN(days)) {
+                    if (days < 0) {
+                      // Late: starts at ~60% and increases with more days late up to 100%
+                      const lateDays = Math.abs(days);
+                      urgencyPercent = Math.min(100, Math.round(58 + lateDays * 2.8));
+                    } else if (days === 0) {
+                      urgencyPercent = 52;
+                    } else if (days <= 3) {
+                      // 1d left: ~46%, 2d left: ~40%, 3d left: ~34%
+                      urgencyPercent = Math.max(30, Math.round(52 - days * 6));
+                    } else if (days <= 5) {
+                      // 4d left: ~26%, 5d left: ~20%
+                      urgencyPercent = Math.max(18, Math.round(34 - (days - 3) * 7));
+                    } else {
+                      // On track (> 5 days left)
+                      urgencyPercent = Math.max(10, Math.round(18 - Math.min(8, days - 5)));
+                    }
+                  }
+
+                  return (
+                    <div
+                      key={job.id || idx}
+                      onClick={() => handleOpenJobModal(job.id)}
+                      className="group cursor-pointer select-none"
+                    >
+                      <div className="flex items-center justify-between text-[13px] leading-tight mb-1.5">
+                        <span className="font-semibold text-[#1E293B] group-hover:text-[#0F766E] transition-colors truncate pr-2">
+                          {job.job_type_name || 'Job'} · {job.party_name || 'Walk-in'}
+                        </span>
+                        <span
+                          className={clsx(
+                            'text-[12px] font-medium shrink-0 tabular-nums',
+                            isLate || isRed ? 'text-[#DC2626]' : isYellow ? 'text-[#D97706]' : 'text-[#64748B]'
+                          )}
+                        >
+                          {!isNaN(days) ? (
+                            isLate ? (
+                              `${Math.abs(days)} day${Math.abs(days) > 1 ? 's' : ''} late`
+                            ) : days === 0 ? (
+                              'Due today'
+                            ) : (
+                              `${days} day${days > 1 ? 's' : ''} left`
+                            )
+                          ) : (
+                            'In progress'
+                          )}
+                        </span>
+                      </div>
+
+                      {/* Slim progress bar: dynamically scales with urgency / days late */}
+                      <div className="h-1.5 w-full bg-[#E2E8F0] rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#0F766E] rounded-full transition-all duration-300"
+                          style={{ width: `${urgencyPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1803,7 +1888,11 @@ export const DashboardPage: React.FC = () => {
             </p>
 
             {/* 4 Vertical Capsule Bars */}
-            <div className="grid grid-cols-4 gap-2.5 sm:gap-4 pt-7 pb-2 items-end">
+            <div
+              onClick={() => navigate('/money?tab=dues')}
+              className="grid grid-cols-4 gap-2.5 sm:gap-4 pt-7 pb-2 items-end cursor-pointer"
+              title="View all dues in Money"
+            >
               {agingData.buckets.map((b, idx) => (
                 <div key={idx} className="flex flex-col items-center group cursor-pointer">
                   {/* Amount on top */}
@@ -1847,7 +1936,7 @@ export const DashboardPage: React.FC = () => {
                 <span>{agingData.invoiceCount} unpaid bill{agingData.invoiceCount > 1 ? 's' : ''}</span>
                 <button
                   type="button"
-                  onClick={() => navigate('/bills?status=UNPAID')}
+                  onClick={() => navigate('/money?tab=dues')}
                   className="text-[#0F766E] font-semibold hover:underline cursor-pointer"
                 >
                   View dues
@@ -2236,11 +2325,15 @@ export const DashboardPage: React.FC = () => {
             </div>
 
             {/* Total Due Banner */}
-            <div className="mt-2">
-              <div className="text-[26px] font-semibold text-[#111827] tabular-nums tracking-tight">
+            <div
+              onClick={() => navigate('/money?tab=dues')}
+              className="mt-2 cursor-pointer group"
+              title="View all dues in Money"
+            >
+              <div className="text-[26px] font-semibold text-[#111827] group-hover:text-[#0F766E] transition-colors tabular-nums tracking-tight">
                 {formatINR(needsFollowupData.totalOutstanding)}
               </div>
-              <div className="text-[12.5px] text-[#6B7280] mt-0.5">
+              <div className="text-[12.5px] text-[#6B7280] group-hover:text-[#0F766E] transition-colors mt-0.5">
                 {needsFollowupData.hasData
                   ? `receivable across ${needsFollowupData.customerCount} customer${needsFollowupData.customerCount !== 1 ? 's' : ''}`
                   : '0 pending dues · All caught up'}

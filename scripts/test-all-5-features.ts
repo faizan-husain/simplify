@@ -9,7 +9,7 @@ async function main() {
     database: 'simplify_dev',
   });
   await client.connect();
-  const owner = await client.query("SELECT auth_user_id, email, business_id FROM auth.users u JOIN members m ON m.auth_user_id = u.id WHERE m.role = 'OWNER' LIMIT 1");
+  const owner = await client.query("SELECT m.auth_user_id, u.email, m.business_id FROM auth.users u JOIN members m ON m.auth_user_id = u.id WHERE m.role = 'OWNER' LIMIT 1");
   const bizId = owner.rows[0].business_id;
 
   // Ensure at least one vendor exists for this business
@@ -26,6 +26,14 @@ async function main() {
   if (!catId) {
     const newC = await client.query("INSERT INTO public.expense_categories (business_id, name, system) VALUES ($1, 'Office Utilities', false) RETURNING id", [bizId]);
     catId = newC.rows[0].id;
+  }
+
+  // Ensure at least one job type service exists
+  let jobSvc = await client.query("SELECT id, name FROM public.services WHERE business_id = $1 AND is_job_type = true LIMIT 1", [bizId]);
+  let jobSvcId = jobSvc.rows[0]?.id;
+  if (!jobSvcId) {
+    const newSvc = await client.query("INSERT INTO public.services (business_id, name, default_rate, is_job_type, deadline_days, active) VALUES ($1, 'Passport Application', 1500, true, 5, true) RETURNING id", [bizId]);
+    jobSvcId = newSvc.rows[0].id;
   }
 
   await client.end();
@@ -61,7 +69,7 @@ async function main() {
         notes: 'Verification Bill',
         walk_in: { name: 'Sunita Sharma', mobile: '9811992233' },
         items: [
-          { service_id: null, description: 'Passport Application', quantity: 1, rate: 1500, is_job: true, applicant_name: 'Sunita Sharma' },
+          { service_id: jobSvcId, description: 'Passport Application', quantity: 1, rate: 1500, is_job: true, applicant_name: 'Sunita Sharma' },
           { service_id: null, description: 'Photocopy B/W', quantity: 10, rate: 2, is_job: false, applicant_name: null }
         ],
         paid: { amount: 1520, mode: 'BANK' }

@@ -24,6 +24,8 @@ frontend/node_modules/
 dist/
 frontend/dist/
 build/
+dev-dist/
+frontend/dev-dist/
 
 # Local env files
 .env

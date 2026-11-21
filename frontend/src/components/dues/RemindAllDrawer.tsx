@@ -90,14 +90,14 @@ export const RemindAllDrawer: React.FC<RemindAllDrawerProps> = ({
       ) : (
         <div className="space-y-4">
           <div className="bg-surface p-4 rounded-xl border border-border text-xs space-y-2">
-            <div className="flex justify-between items-start">
-              <div>
-                <div className="text-sm font-bold text-text">{current.customer_name}</div>
-                <div className="text-text-muted mt-0.5">{current.customer_mobile}</div>
+            <div className="flex justify-between items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-bold text-text break-words">{current.customer_name}</div>
+                <div className="text-text-muted mt-0.5 text-xs">{current.customer_mobile}</div>
               </div>
-              <div className="text-right">
+              <div className="text-right shrink-0">
                 <div className="text-base font-bold text-danger">{formatINR(current.total_due)}</div>
-                <div className="text-text-muted">{current.bill_count} unpaid bill{current.bill_count > 1 ? 's' : ''}</div>
+                <div className="text-text-muted text-[11px]">{current.bill_count} unpaid bill{current.bill_count > 1 ? 's' : ''}</div>
               </div>
             </div>
 
@@ -114,12 +114,12 @@ export const RemindAllDrawer: React.FC<RemindAllDrawerProps> = ({
             {business?.upi_id ? ` Payment UPI: ${business.upi_id}.` : ''} Thank you!"
           </div>
 
-          <div className="flex gap-2 pt-2">
+          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center gap-2 pt-2">
             <Button
               type="button"
               variant="outline"
               size="md"
-              className="flex-1"
+              className="w-full sm:flex-1"
               onClick={handleSkip}
             >
               Skip
@@ -129,7 +129,7 @@ export const RemindAllDrawer: React.FC<RemindAllDrawerProps> = ({
               type="button"
               variant="primary"
               size="md"
-              className="flex-1"
+              className="w-full sm:flex-1"
               onClick={handleSend}
             >
               <Share2 className="w-3.5 h-3.5 mr-1.5" />

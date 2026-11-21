@@ -8,39 +8,76 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'robots.txt', 'apple-touch-icon.png'],
+      includeAssets: [
+        'favicon.ico',
+        'favicon.svg',
+        'favicon.png',
+        'robots.txt',
+        'apple-touch-icon.png',
+        'pwa-192x192.png',
+        'pwa-512x512.png',
+        'pwa-maskable-512x512.png',
+        'simplify-logo.png',
+        'simplify-icon.png',
+      ],
       manifest: {
-        name: 'SIMPLIFY Billing & SaaS',
-        short_name: 'SIMPLIFY',
-        description: 'Fast, simple billing, income & expense app for small businesses',
-        theme_color: '#0862EC',
-        background_color: '#FFFFFF',
+        name: 'Simplify',
+        short_name: 'Simplify',
+        description: 'Made business simple',
+        id: 'simplify-billing-saas-app',
+        start_url: '/?app=simplify',
+        scope: '/',
         display: 'standalone',
         orientation: 'portrait',
+        theme_color: '#0F766E',
+        background_color: '#FFFFFF',
         icons: [
           {
-            src: 'pwa-192x192.png',
+            src: '/pwa-192x192.png?v=3',
             sizes: '192x192',
             type: 'image/png',
+            purpose: 'any',
           },
           {
-            src: 'pwa-512x512.png',
+            src: '/pwa-512x512.png?v=3',
             sizes: '512x512',
             type: 'image/png',
+            purpose: 'any',
           },
           {
-            src: 'pwa-512x512.png',
+            src: '/pwa-maskable-512x512.png?v=3',
             sizes: '512x512',
             type: 'image/png',
-            purpose: 'any maskable',
+            purpose: 'maskable',
+          },
+          {
+            src: '/apple-touch-icon.png?v=3',
+            sizes: '180x180',
+            type: 'image/png',
           },
         ],
       },
+      devOptions: {
+        enabled: true,
+        type: 'module',
+      },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/rest\/v1/, /^\/auth\/v1/, /^\/storage\/v1/],
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          exceljs: ['exceljs'],
+        },
+      },
+    },
+  },
   resolve: {
     preserveSymlinks: true,
     alias: {
@@ -48,13 +85,9 @@ export default defineConfig({
     },
   },
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
-    watch: {
-      usePolling: true,
-      interval: 300,
-    },
     proxy: {
       '/auth/v1': {
         target: 'http://127.0.0.1:54321',

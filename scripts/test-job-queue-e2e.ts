@@ -85,8 +85,10 @@ async function main() {
     };
 
     const invRes = await client.query(`SELECT public.create_invoice($1::jsonb) as inv`, [JSON.stringify(invoicePayload)]);
-    const createdInv = invRes.rows[0].inv;
-    console.log(`✓ Invoice created: #${createdInv.number} (ID: ${createdInv.id}) for party: ${createdInv.party_name}`);
+    const rawInv = typeof invRes.rows[0].inv === 'string' ? JSON.parse(invRes.rows[0].inv) : invRes.rows[0].inv;
+    const invoiceId = rawInv.invoice_id || rawInv.id;
+    const invoiceNumber = rawInv.invoice_number || rawInv.number;
+    console.log(`✓ Invoice created: #${invoiceNumber} (ID: ${invoiceId})`);
 
     // 4. Verify job was auto-created
     const jobRes = await client.query(`
@@ -95,10 +97,10 @@ async function main() {
       LEFT JOIN public.job_steps js ON js.job_id = j.id 
       WHERE j.invoice_id = $1 
       GROUP BY j.id
-    `, [createdInv.id]);
+    `, [invoiceId]);
 
     if (jobRes.rows.length === 0) {
-      throw new Error('❌ Job was NOT created for invoice ' + createdInv.id);
+      throw new Error('❌ Job was NOT created for invoice ' + invoiceId);
     }
     const job = jobRes.rows[0];
     console.log(`✓ Job successfully created! Job ID: ${job.id}`);

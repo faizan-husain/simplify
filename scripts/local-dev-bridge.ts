@@ -1,7 +1,14 @@
+import 'dotenv/config';
 import http from 'http';
 import { URL } from 'url';
 import crypto from 'crypto';
-import { Client } from 'pg';
+import fs from 'fs';
+import path from 'path';
+import { Client, types } from 'pg';
+
+// Force node-pg to serialize DATE (OID 1082) as raw 'YYYY-MM-DD' string,
+// matching Supabase PostgREST production API behavior (prevents UTC date shifting).
+types.setTypeParser(1082, (val: string) => val);
 
 const PORT = 54321;
 const DB_HOST = process.env.PGHOST || '127.0.0.1';
@@ -76,14 +83,23 @@ async function resolveEffectiveUser(
         return { userId, role: memRes.rows[0].role || role || 'authenticated' };
       }
 
+      // Check if user is explicitly deactivated or deleted in members
+      const inactiveCheck = await client.query(
+        `SELECT id FROM public.members WHERE auth_user_id = $1 AND (active = false OR deleted_at IS NOT NULL) LIMIT 1`,
+        [userId]
+      );
+      if (inactiveCheck.rows.length > 0) {
+        return { userId: '', role: 'anon' };
+      }
+
       // Check if auth.users has this user and check by email
       const userRes = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [userId]);
       if (userRes.rows.length > 0 && userRes.rows[0].email) {
-        const uEmail = userRes.rows[0].email.toLowerCase();
+        const uEmail = userRes.rows[0].email.toLowerCase().trim();
         const cleanMobile = uEmail.replace(/\D/g, '').slice(-10);
         const memByEmail = await client.query(
           `SELECT auth_user_id, role FROM public.members 
-           WHERE (mobile = $1 OR '91' || mobile || '@simplify.local' = $2 OR (role = 'OWNER' AND $2 = 'owner@simplify.com'))
+           WHERE (LOWER(email) = $2 OR mobile = $1 OR '91' || mobile || '@simplify.local' = $2 OR (role = 'OWNER' AND $2 = 'owner@simplify.com') OR (role = 'STAFF' AND $2 = 'staff@simplify.com'))
              AND active = true AND deleted_at IS NULL LIMIT 1`,
           [cleanMobile, uEmail]
         );
@@ -95,11 +111,11 @@ async function resolveEffectiveUser(
 
     // 2. If email in JWT payload matches
     if (email) {
-      const cleanEmail = email.toLowerCase();
+      const cleanEmail = email.toLowerCase().trim();
       const cleanMobile = cleanEmail.replace(/\D/g, '').slice(-10);
       const memRes = await client.query(
         `SELECT auth_user_id, role FROM public.members 
-         WHERE (mobile = $1 OR '91' || mobile || '@simplify.local' = $2 OR (role = 'OWNER' AND $2 = 'owner@simplify.com'))
+         WHERE (LOWER(email) = $2 OR mobile = $1 OR '91' || mobile || '@simplify.local' = $2 OR (role = 'OWNER' AND $2 = 'owner@simplify.com') OR (role = 'STAFF' AND $2 = 'staff@simplify.com'))
            AND active = true AND deleted_at IS NULL LIMIT 1`,
         [cleanMobile, cleanEmail]
       );
@@ -108,7 +124,18 @@ async function resolveEffectiveUser(
       }
     }
 
-    // 3. Fallback: Resolve to active OWNER member in development
+    // 3. Fallback: Resolve to active member in development
+    if (role === 'STAFF' || (email && email.toLowerCase().includes('staff'))) {
+      const staffRes = await client.query(
+        `SELECT id, auth_user_id, role FROM public.members 
+         WHERE role = 'STAFF' AND active = true AND deleted_at IS NULL 
+         ORDER BY created_at ASC LIMIT 1`
+      );
+      if (staffRes.rows.length > 0 && staffRes.rows[0].auth_user_id) {
+        return { userId: staffRes.rows[0].auth_user_id, role: 'STAFF' };
+      }
+    }
+
     const ownerRes = await client.query(
       `SELECT id, auth_user_id, role FROM public.members 
        WHERE role = 'OWNER' AND active = true AND deleted_at IS NULL 
@@ -182,16 +209,33 @@ function readBody(req: http.IncomingMessage): Promise<any> {
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  // CORS Preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, getCorsHeaders(req));
-    res.end();
-    return;
-  }
+function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
 
-  const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-  const pathname = reqUrl.pathname;
+process.on('uncaughtException', (err) => {
+  console.error('[Bridge UncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Bridge UnhandledRejection]', reason);
+});
+
+const server = http.createServer(async (req, res) => {
+  try {
+    // CORS Preflight
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, getCorsHeaders(req));
+      res.end();
+      return;
+    }
+
+    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const pathname = reqUrl.pathname;
 
   const { userId, role, email } = extractJwtSub(req.headers['authorization']);
 
@@ -272,9 +316,47 @@ const server = http.createServer(async (req, res) => {
         }
       } else {
         const input = (body.email || body.phone || '').trim().toLowerCase();
+        const password = body.password ? String(body.password) : '';
         const cleanDigits = input.replace(/\D/g, '');
 
-        // 1. Try finding member by mobile number first (e.g. 9876543210 or 919876543210@simplify.local)
+        // 1. Try finding member by email in public.members first
+        if (input.includes('@')) {
+          const memByEmail = await client.query(
+            `SELECT m.id, m.business_id, m.auth_user_id, m.name, m.email, m.mobile, m.role, u.id as u_id, u.encrypted_password
+             FROM public.members m
+             LEFT JOIN auth.users u ON u.id = m.auth_user_id
+             WHERE (LOWER(m.email) = $1 OR LOWER(u.email) = $1)
+               AND m.active = true AND m.deleted_at IS NULL
+             ORDER BY m.created_at ASC
+             LIMIT 1`,
+            [input]
+          );
+
+          if (memByEmail.rows.length > 0) {
+            const member = memByEmail.rows[0];
+            let memberAuthId = member.auth_user_id || member.u_id;
+            if (!memberAuthId) {
+              memberAuthId = crypto.randomUUID();
+              await client.query('UPDATE public.members SET auth_user_id = $1 WHERE id = $2', [memberAuthId, member.id]);
+            }
+
+            // Verify password if encrypted_password exists
+            if (password && member.encrypted_password) {
+              const pwCheck = await client.query(
+                'SELECT (encrypted_password = public.crypt($1, encrypted_password)) AS valid FROM auth.users WHERE id = $2',
+                [password, memberAuthId]
+              );
+              if (pwCheck.rows.length > 0 && !pwCheck.rows[0].valid) {
+                sendJson(res, 400, { error: 'invalid_grant', error_description: 'Invalid email or password' });
+                return;
+              }
+            }
+
+            user = { id: memberAuthId, email: member.email || input, role: member.role };
+          }
+        }
+
+        // 2. Try finding member by mobile number next (e.g. 9876543210 or 919876543210@simplify.local)
         if (cleanDigits.length >= 10) {
           const mobile10 = cleanDigits.slice(-10);
           const memberRes = await client.query(
@@ -341,7 +423,17 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-        // 3. Fallback for owner login in dev
+        // 3. Fallback for staff login in dev
+        if (!user && (input.includes('staff') || input === 'staff@simplify.com')) {
+          const staffMemberRes = await client.query("SELECT id, auth_user_id FROM public.members WHERE role = 'STAFF' AND active = true ORDER BY created_at ASC LIMIT 1");
+          if (staffMemberRes.rows.length > 0) {
+            const staffMember = staffMemberRes.rows[0];
+            let staffAuthId = staffMember.auth_user_id || '22222222-2222-2222-2222-222222222222';
+            user = { id: staffAuthId, email: 'staff@simplify.com', role: 'STAFF' };
+          }
+        }
+
+        // 4. Fallback for owner login in dev
         if (!user && (input.includes('owner') || input.includes('simplify.com') || !input)) {
           const ownerMemberRes = await client.query("SELECT id, auth_user_id FROM public.members WHERE role = 'OWNER' ORDER BY created_at ASC LIMIT 1");
           if (ownerMemberRes.rows.length > 0) {
@@ -351,11 +443,28 @@ const server = http.createServer(async (req, res) => {
               ownerAuthId = crypto.randomUUID();
               await client.query('UPDATE public.members SET auth_user_id = $1 WHERE id = $2', [ownerAuthId, ownerMember.id]);
             }
-            const insertRes = await client.query(
-              "INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') ON CONFLICT (email) DO UPDATE SET id = EXCLUDED.id RETURNING id, email",
-              [ownerAuthId]
-            );
-            user = insertRes.rows[0];
+            // Check if user already exists in auth.users by ID
+            const existingById = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [ownerAuthId]);
+            if (existingById.rows.length > 0) {
+              user = existingById.rows[0];
+            } else {
+              // Check if user exists by email
+              const existingByEmail = await client.query("SELECT id, email FROM auth.users WHERE LOWER(email) = 'owner@simplify.com'");
+              if (existingByEmail.rows.length > 0) {
+                user = existingByEmail.rows[0];
+                await client.query('UPDATE public.members SET auth_user_id = $1 WHERE id = $2', [user.id, ownerMember.id]);
+              } else {
+                try {
+                  const insertRes = await client.query(
+                    "INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email RETURNING id, email",
+                    [ownerAuthId]
+                  );
+                  user = insertRes.rows[0] || { id: ownerAuthId, email: 'owner@simplify.com' };
+                } catch {
+                  user = { id: ownerAuthId, email: 'owner@simplify.com' };
+                }
+              }
+            }
           }
         }
       }
@@ -401,17 +510,63 @@ const server = http.createServer(async (req, res) => {
       let result = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [resolved.userId]);
       let user = result.rows[0];
       if (!user) {
-        const insertRes = await client.query(
-          "INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') ON CONFLICT (email) DO UPDATE SET id = EXCLUDED.id RETURNING id, email",
-          [resolved.userId]
-        );
-        user = insertRes.rows[0];
+        const existingEmail = await client.query("SELECT id, email FROM auth.users WHERE LOWER(email) = 'owner@simplify.com'");
+        if (existingEmail.rows.length > 0) {
+          user = existingEmail.rows[0];
+        } else {
+          try {
+            const insertRes = await client.query(
+              "INSERT INTO auth.users (id, email) VALUES ($1, 'owner@simplify.com') ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email RETURNING id, email",
+              [resolved.userId]
+            );
+            user = insertRes.rows[0] || { id: resolved.userId, email: 'owner@simplify.com' };
+          } catch {
+            user = { id: resolved.userId, email: 'owner@simplify.com' };
+          }
+        }
       }
       sendJson(res, 200, {
         id: user.id,
         aud: 'authenticated',
         role: resolved.role,
         email: user.email || 'owner@simplify.com',
+        user_metadata: {},
+        app_metadata: { provider: 'email', providers: ['email'] },
+      });
+    } finally {
+      await client.end();
+    }
+    return;
+  }
+
+  if (pathname === '/auth/v1/user' && req.method === 'PUT') {
+    const body = await readBody(req);
+    const client = await getPgClient();
+    try {
+      const resolved = await resolveEffectiveUser(client, userId, email, role);
+      if (body.password) {
+        if (String(body.password).length < 6) {
+          sendJson(res, 400, { error: 'validation_error', message: 'Password must be at least 6 characters' });
+          return;
+        }
+        await client.query(
+          "UPDATE auth.users SET encrypted_password = public.crypt($1, public.gen_salt('bf')), updated_at = now() WHERE id = $2",
+          [body.password, resolved.userId]
+        );
+      }
+      if (body.data?.name && typeof body.data.name === 'string' && body.data.name.trim().length >= 2) {
+        await client.query(
+          "UPDATE public.members SET name = $1, updated_at = now() WHERE auth_user_id = $2",
+          [body.data.name.trim(), resolved.userId]
+        );
+      }
+      const userRes = await client.query('SELECT id, email FROM auth.users WHERE id = $1', [resolved.userId]);
+      const u = userRes.rows[0] || { id: resolved.userId, email: email || 'owner@simplify.com' };
+      sendJson(res, 200, {
+        id: u.id,
+        aud: 'authenticated',
+        role: resolved.role,
+        email: u.email,
         user_metadata: {},
         app_metadata: { provider: 'email', providers: ['email'] },
       });
@@ -477,6 +632,11 @@ const server = http.createServer(async (req, res) => {
       if (resolved.userId) {
         await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [resolved.userId]);
         await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [resolved.role || 'authenticated']);
+        await client.query(`SET LOCAL ROLE authenticated`);
+      } else {
+        await client.query(`SELECT set_config('request.jwt.claim.sub', '', true)`);
+        await client.query(`SELECT set_config('request.jwt.claim.role', 'anon', true)`);
+        await client.query(`SET LOCAL ROLE anon`);
       }
 
       const keys = Object.keys(body);
@@ -527,6 +687,11 @@ const server = http.createServer(async (req, res) => {
       if (resolved.userId) {
         await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [resolved.userId]);
         await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [resolved.role || 'authenticated']);
+        await client.query(`SET LOCAL ROLE authenticated`);
+      } else {
+        await client.query(`SELECT set_config('request.jwt.claim.sub', '', true)`);
+        await client.query(`SELECT set_config('request.jwt.claim.role', 'anon', true)`);
+        await client.query(`SET LOCAL ROLE anon`);
       }
 
       if (req.method === 'GET') {
@@ -596,6 +761,21 @@ const server = http.createServer(async (req, res) => {
           }
         });
 
+        // RBAC Enforce: Staff can only query their own invoices
+        if (table === 'invoices' && resolved.role === 'STAFF' && resolved.userId) {
+          const memRes = await client.query(
+            'SELECT id FROM public.members WHERE auth_user_id = $1 AND active = true LIMIT 1',
+            [resolved.userId]
+          );
+          if (memRes.rows.length > 0) {
+            const staffMemberId = memRes.rows[0].id;
+            if (!conditions.some((c) => c.includes('"created_by"'))) {
+              conditions.push(`"created_by" = $${pIndex++}`);
+              values.push(staffMemberId);
+            }
+          }
+        }
+
         const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
         const orderParams = reqUrl.searchParams.getAll('order');
         let orderClause = '';
@@ -620,7 +800,7 @@ const server = http.createServer(async (req, res) => {
 
         // Handle nested select if present
         let querySql = '';
-        if (selectParam.includes('invoice_items(*)')) {
+        if (selectParam.includes('invoice_items')) {
           querySql = `
             SELECT i.*, COALESCE((
               SELECT json_agg(it) FROM public.invoice_items it WHERE it.invoice_id = i.id
@@ -703,7 +883,12 @@ const server = http.createServer(async (req, res) => {
         }
 
         await client.query('COMMIT');
-        sendJson(res, 201, Array.isArray(body) ? insertedRows : insertedRows[0]);
+        const isSingle = req.headers['accept']?.includes('vnd.pgrst.object+json');
+        if (isSingle) {
+          sendJson(res, 201, insertedRows[0] || null);
+        } else {
+          sendJson(res, 201, insertedRows);
+        }
         return;
       }
 
@@ -731,7 +916,12 @@ const server = http.createServer(async (req, res) => {
         const sql = `UPDATE public.${table} SET ${setAssignments.join(', ')} ${whereClause} RETURNING *`;
         const patchRes = await client.query(sql, [...setValues, ...whereValues]);
         await client.query('COMMIT');
-        sendJson(res, 200, patchRes.rows);
+        const isSinglePatch = req.headers['accept']?.includes('vnd.pgrst.object+json');
+        if (isSinglePatch) {
+          sendJson(res, 200, patchRes.rows[0] || null);
+        } else {
+          sendJson(res, 200, patchRes.rows);
+        }
         return;
       }
 
@@ -764,7 +954,174 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  sendJson(res, 404, { message: 'Not found' });
+  // --- 4. SUPABASE STORAGE API (Private documents & signed URLs) ---
+  if (pathname.startsWith('/storage/v1/')) {
+    const storageRoot = path.join(process.cwd(), '.storage');
+    if (!fs.existsSync(storageRoot)) {
+      fs.mkdirSync(storageRoot, { recursive: true });
+    }
+
+    // 4.1 Create Signed URL: POST /storage/v1/object/sign/:bucket/*
+    const signMatch = pathname.match(/^\/storage\/v1\/object\/sign\/([^/]+)\/(.+)$/);
+    if (signMatch && req.method === 'POST') {
+      const bucket = signMatch[1];
+      const filePath = decodeURIComponent(signMatch[2]);
+      const body = await readBody(req);
+      const expiresIn = Number(body?.expiresIn) || 604800; // default 7 days
+      const expiresAt = Math.floor(Date.now() / 1000) + expiresIn;
+      const signature = crypto
+        .createHmac('sha256', JWT_SECRET)
+        .update(`${bucket}/${filePath}:${expiresAt}`)
+        .digest('hex');
+      const token = `${expiresAt}.${signature}`;
+      const signedURL = `/storage/v1/object/sign/${bucket}/${encodeURIComponent(filePath).replace(/%2F/g, '/')}?token=${token}`;
+      sendJson(res, 200, { signedURL });
+      return;
+    }
+
+    // 4.2 Access Signed URL: GET /storage/v1/object/sign/:bucket/*
+    if (signMatch && req.method === 'GET') {
+      const bucket = signMatch[1];
+      const filePath = decodeURIComponent(signMatch[2]);
+      const token = reqUrl.searchParams.get('token');
+
+      if (!token || !token.includes('.')) {
+        sendJson(res, 403, { statusCode: 403, error: 'Unauthorized', message: 'Missing or malformed signature token' });
+        return;
+      }
+
+      const [expiresAtStr, signature] = token.split('.');
+      const expiresAt = parseInt(expiresAtStr, 10);
+      const now = Math.floor(Date.now() / 1000);
+
+      // Check Expiration
+      if (isNaN(expiresAt) || now > expiresAt) {
+        const isHtml = req.headers['accept']?.includes('text/html');
+        if (isHtml) {
+          res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', ...getCorsHeaders(req) });
+          res.end(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Document Link Expired - SIMPLIFY</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; background: #F8FAFC; color: #0F172A; margin: 0; padding: 16px; }
+    .card { background: #FFFFFF; border-radius: 16px; padding: 36px 28px; max-width: 440px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.06); border: 1px solid #E2E8F0; }
+    .icon { width: 52px; height: 52px; background: #FFF1F2; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; color: #E11D48; font-size: 24px; font-weight: bold; }
+    h2 { font-size: 20px; font-weight: 700; color: #0F172A; margin: 0 0 8px; }
+    p { font-size: 14px; color: #64748B; line-height: 1.6; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">!</div>
+    <h2>Document Link Expired</h2>
+    <p>This secure PDF download link has expired for your protection. Please contact the business to request an updated copy of your bill or receipt.</p>
+  </div>
+</body>
+</html>`);
+          return;
+        }
+        sendJson(res, 403, { statusCode: 403, error: 'Expired', message: 'Signed URL has expired' });
+        return;
+      }
+
+      // Check HMAC Signature
+      const expectedSignature = crypto
+        .createHmac('sha256', JWT_SECRET)
+        .update(`${bucket}/${filePath}:${expiresAt}`)
+        .digest('hex');
+
+      if (signature !== expectedSignature) {
+        sendJson(res, 403, { statusCode: 403, error: 'Unauthorized', message: 'Invalid signature token' });
+        return;
+      }
+
+      // Serve File
+      const fullPath = path.join(storageRoot, bucket, ...filePath.split('/'));
+      if (!fs.existsSync(fullPath)) {
+        sendJson(res, 404, { statusCode: 404, error: 'NotFound', message: 'Document not found' });
+        return;
+      }
+
+      const fileBuf = fs.readFileSync(fullPath);
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = ext === '.pdf' ? 'application/pdf' : ext === '.png' ? 'image/png' : 'application/octet-stream';
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Disposition': `inline; filename="${path.basename(filePath)}"`,
+        'Content-Length': fileBuf.length,
+        'Cache-Control': 'public, max-age=86400',
+        ...getCorsHeaders(req),
+      });
+      res.end(fileBuf);
+      return;
+    }
+
+    // 4.3 Upload Object: POST /storage/v1/object/:bucket/*
+    const uploadMatch = pathname.match(/^\/storage\/v1\/object\/([^/]+)\/(.+)$/);
+    if (uploadMatch && req.method === 'POST') {
+      const bucket = uploadMatch[1];
+      const filePath = decodeURIComponent(uploadMatch[2]);
+      const fileBuf = await readRawBody(req);
+      const targetDir = path.join(storageRoot, bucket, ...path.dirname(filePath).split('/'));
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      const fullPath = path.join(storageRoot, bucket, ...filePath.split('/'));
+      fs.writeFileSync(fullPath, fileBuf);
+      sendJson(res, 200, {
+        Key: `${bucket}/${filePath}`,
+        Id: crypto.randomUUID(),
+        path: filePath,
+      });
+      return;
+    }
+
+    // 4.4 Public Download: GET /storage/v1/object/public/:bucket/*
+    const publicMatch = pathname.match(/^\/storage\/v1\/object\/public\/([^/]+)\/(.+)$/);
+    if (publicMatch && req.method === 'GET') {
+      const bucket = publicMatch[1];
+      const filePath = decodeURIComponent(publicMatch[2]);
+      const fullPath = path.join(storageRoot, bucket, ...filePath.split('/'));
+      if (!fs.existsSync(fullPath)) {
+        sendJson(res, 404, { statusCode: 404, error: 'NotFound', message: 'Document not found' });
+        return;
+      }
+      const fileBuf = fs.readFileSync(fullPath);
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = ext === '.pdf' ? 'application/pdf' : ext === '.png' ? 'image/png' : 'application/octet-stream';
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Disposition': `inline; filename="${path.basename(filePath)}"`,
+        'Content-Length': fileBuf.length,
+        'Cache-Control': 'public, max-age=86400',
+        ...getCorsHeaders(req),
+      });
+      res.end(fileBuf);
+      return;
+    }
+
+    // 4.5 Delete Object: DELETE /storage/v1/object/:bucket/*
+    if (uploadMatch && req.method === 'DELETE') {
+      const bucket = uploadMatch[1];
+      const filePath = decodeURIComponent(uploadMatch[2]);
+      const fullPath = path.join(storageRoot, bucket, ...filePath.split('/'));
+      if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+      }
+      sendJson(res, 200, { message: 'Successfully deleted' });
+      return;
+    }
+  }
+
+    sendJson(res, 404, { message: 'Not found' });
+  } catch (fatalErr: any) {
+    console.error('[Bridge Fatal Error]', fatalErr);
+    try {
+      sendJson(res, 500, { message: fatalErr?.message || 'Internal bridge error' });
+    } catch {}
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {

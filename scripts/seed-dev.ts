@@ -44,14 +44,14 @@ async function runSeed() {
         id, name, owner_name, mobile, email, address, upi_id,
         invoice_prefix, numbering_mode, default_terms_days, default_notes,
         footer_text, thermal_width, receipt_header, receipt_footer,
-        job_management_enabled, yellow_days, red_days, timezone, plan
+        job_management_enabled, yellow_days, red_days, timezone, plan, opening_cash_balance
       ) VALUES (
         $1, 'Global Xerox & Doc Services', 'Rajesh Sharma', '9876543210', 'rajesh@globalx.in',
         'Shop 4, Market Complex, MG Road, New Delhi', 'globalxerox@upi',
         'INV-', 'CONTINUOUS', 7, 'Thank you for choosing Global Xerox!',
         'Terms: Service fees non-refundable after job processing begins.',
         80, 'GLOBAL XEROX & DOC SERVICES\nFast • Reliable • Professional', 'Visit Again!',
-        true, 5, 3, 'Asia/Kolkata', 'PRO'
+        true, 5, 3, 'Asia/Kolkata', 'PRO', 10000.00
       )
     `, [bizId]);
 
@@ -251,20 +251,21 @@ async function runSeed() {
         paid = 0; // unpaid
       }
 
-      // 1. Insert Invoice first
+      // 1. Insert Invoice first (1 in 3 invoices created by Amit Kumar for realistic staff data)
+      const invCreator = (i % 3 === 0) ? staff1MemberId : ownerMemberId;
       await client.query(`
         INSERT INTO public.invoices (
           id, business_id, number, fy_label, invoice_date, due_date,
           customer_id, party_name, party_mobile, subtotal,
           discount_type, discount_value, discount_amount, total, paid_amount,
-          status, notes
+          status, notes, created_by
         ) VALUES (
           $1, $2, $3, '2026-27', $4, $5,
           $6, $7, $8, $9,
           'NONE', 0, 0, $9, $10,
-          'ACTIVE', 'Generated invoice'
+          'ACTIVE', 'Generated invoice', $11
         )
-      `, [invId, bizId, invNum, dateStr, dueDateStr, customerId, partyName, partyMobile, subtotal, paid]);
+      `, [invId, bizId, invNum, dateStr, dueDateStr, customerId, partyName, partyMobile, subtotal, paid, invCreator]);
 
       // 2. Insert Invoice Items & Jobs
       if (isJobBill) {
@@ -331,12 +332,12 @@ async function runSeed() {
         await client.query(`
           INSERT INTO public.receipts (
             id, business_id, number, fy_label, receipt_date, customer_id,
-            amount, mode, reference, kind, unallocated_amount, notes
+            amount, mode, reference, kind, unallocated_amount, notes, created_by
           ) VALUES (
             $1, $2, $3, '2026-27', $4, $5,
-            $6, 'UPI', 'UPI-REF-DEMO', 'INVOICE_PAYMENT', 0, 'Customer payment'
+            $6, 'UPI', 'UPI-REF-DEMO', 'INVOICE_PAYMENT', 0, 'Customer payment', $7
           )
-        `, [rcId, bizId, rcNum, dateStr, customerId, paid]);
+        `, [rcId, bizId, rcNum, dateStr, customerId, paid, invCreator]);
 
         await client.query(`
           INSERT INTO public.receipt_allocations (business_id, receipt_id, invoice_id, amount)
@@ -417,6 +418,16 @@ async function runSeed() {
       INSERT INTO public.staff_payouts (business_id, staff_id, amount, payout_date, mode, notes, expense_id)
       VALUES ($1, $2, 1500.00, now() - interval '7 days', 'UPI', 'Commission payout for 5 passports', $3)
     `, [bizId, staff1MemberId, expSalaryId]);
+
+    // 10. Money Transfers (Contra Vouchers)
+    console.log('Seeding Demo Money Transfers (Cash <-> Bank & Bank <-> Bank)...');
+    await client.query(`
+      INSERT INTO public.money_transfers (business_id, transfer_date, transfer_type, from_bank_account_id, to_bank_account_id, amount, reference, notes)
+      VALUES 
+        ($1, (now() - interval '10 days')::date, 'CASH_TO_BANK', NULL, $2, 5000.00, 'CHQ-5521', 'Cash deposited into SBI from daily counter collection'),
+        ($1, (now() - interval '5 days')::date, 'BANK_TO_CASH', $3, NULL, 2000.00, 'ATM-4901', 'ATM cash withdrawal from HDFC for store cash drawer'),
+        ($1, (now() - interval '2 days')::date, 'BANK_TO_BANK', $2, $3, 3000.00, 'IMPS-982133', 'Inter-bank fund transfer from SBI to HDFC')
+    `, [bizId, sbiAccountId, hdfcAccountId]);
 
     await client.query('COMMIT');
 

@@ -56,6 +56,9 @@ BEGIN
   INSERT INTO public.job_type_steps (service_id, position, name)
   VALUES (v_service_id, 1, 'Process Application');
 
+  -- Switch to staff so bill is created by staff (BR: commission applies to staff-created jobs)
+  PERFORM set_config('request.jwt.claim.sub', v_staff_a_auth_id, true);
+
   -- Create Bill with 2 jobs
   v_inv := public.create_invoice(jsonb_build_object(
     'walk_in', jsonb_build_object('name', 'Customer Vikram', 'mobile', '9876543509'),
@@ -79,6 +82,9 @@ BEGIN
       )
     )
   ));
+
+  -- Switch back to owner for assignment and management
+  PERFORM set_config('request.jwt.claim.sub', v_owner_auth_id, true);
 
   -- Assign Job 1 to Staff A and Job 2 to Staff B
   SELECT id INTO v_job_a_id FROM public.jobs WHERE applicant_name = 'Applicant One';
@@ -203,7 +209,7 @@ BEGIN
   -- Test 14: Staff member calling staff_commission sees only their own data
   v_comm_view := public.staff_commission(v_staff_b_id, 'DAY');
   PERFORM ok(
-    (v_comm_view->'entries'->0->>'staff_id')::uuid = v_staff_a_id,
+    jsonb_array_length(v_comm_view->'entries') = 1 AND (v_comm_view->'entries'->0->>'job_id')::uuid = v_job_a_id,
     'Staff calling staff_commission is restricted to own entries even if requesting other staff'
   );
 

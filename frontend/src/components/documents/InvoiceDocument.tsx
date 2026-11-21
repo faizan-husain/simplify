@@ -36,12 +36,11 @@ export interface InvoiceDocumentProps {
     receipt_header?: string | null;
     receipt_footer?: string | null;
   } | null;
-  format?: 'a4' | 'thermal58' | 'thermal80';
+  format?: 'a5' | 'a4' | 'thermal58' | 'thermal80';
 }
 
-
 export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
-  ({ invoice, business, format = 'a4' }, ref) => {
+  ({ invoice, business, format = 'a5' }, ref) => {
     const balance = Math.max(0, invoice.total - invoice.paid_amount);
 
     // UPI QR String per BR-19
@@ -58,7 +57,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
       return (
         <div
           ref={ref}
-          className={`bg-white text-black p-3 font-mono leading-tight mx-auto border border-border shadow-sm print:shadow-none print:border-none ${
+          className={`bg-white text-black p-3 font-mono leading-tight mx-auto border-0 shadow-[0_4px_20px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.02)] rounded-lg print:shadow-none print:border-none ${
             is58 ? 'w-[58mm] text-[10px]' : 'w-[80mm] text-[11px]'
           }`}
         >
@@ -89,7 +88,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
             </div>
             {invoice.invoice_items?.map((item, idx) => (
               <div key={idx} className="flex justify-between">
-                <span className="truncate pr-1">
+                <span className="pr-1 break-words">
                   {item.description}
                   {item.applicant_name && ` (${item.applicant_name})`}
                 </span>
@@ -140,160 +139,224 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
           <div className="text-center pt-2 text-[9px] text-gray-700">
             {business?.footer_text || business?.receipt_footer || 'Thank you for your business!'}
           </div>
+
+          {/* Simplify Brand Footer */}
+          <div className="pt-1.5 mt-1 border-t border-dashed border-gray-400 text-center text-[8.5px] flex items-center justify-center gap-1 text-gray-600">
+            <span>Powered by</span>
+            <img src="/simplify-logo.png" alt="Simplify" className="h-3 w-auto object-contain inline-block filter grayscale" />
+          </div>
         </div>
       );
     }
 
-    // Default: Standard A4 Format
+    // Default: Professional A5 Format (148mm × 210mm, perfectly fits 2 prints per A4 sheet)
     return (
       <div
         ref={ref}
-        className="bg-white text-text p-6 md:p-8 max-w-3xl mx-auto rounded-card border border-border shadow-soft print:shadow-none print:border-none print:p-0"
+        className="bg-white text-text mx-auto border-0 shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.02)] rounded-xl print:shadow-none print:border-none print:mx-auto"
+        style={{
+          boxSizing: 'border-box',
+          width: '148mm',
+          maxWidth: '148mm',
+          padding: '7mm 7mm 6mm 7mm',
+          margin: '0 auto',
+        }}
       >
         {/* Top Header */}
-        <div className="flex justify-between items-start border-b border-border pb-6 mb-6">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-text">
+        <div className="flex justify-between items-start border-b border-slate-200 pb-2.5 mb-2.5 gap-2">
+          <div className="flex-1 min-w-0 pr-1">
+            <h1 className="text-base font-bold text-text leading-normal">
               {business?.name || 'SIMPLIFY'}
             </h1>
+            {business?.receipt_header && (
+              <p className="text-[10px] font-medium text-text-muted mt-0.5 leading-normal whitespace-pre-line">
+                {business.receipt_header}
+              </p>
+            )}
             {business?.address && (
-              <p className="text-xs text-text-muted mt-1 max-w-sm whitespace-pre-line">
+              <p className="text-[10px] text-text-muted mt-0.5 leading-normal whitespace-pre-line">
                 {business.address}
               </p>
             )}
-            <div className="text-xs text-text-muted mt-1 space-x-2">
+            <div className="text-[9.5px] text-text-muted mt-0.5 flex flex-wrap gap-x-2 leading-normal">
               {business?.mobile && <span>Phone: {business.mobile}</span>}
-              {business?.email && <span>• Email: {business.email}</span>}
+              {business?.email && <span>• {business.email}</span>}
             </div>
           </div>
 
-          <div className="text-right">
-            <span className="inline-block px-3 py-1 rounded bg-primary/10 text-primary font-bold text-sm uppercase tracking-wider mb-2">
-              Tax Invoice
-            </span>
-            <div className="text-sm font-bold text-text">#{invoice.number}</div>
-            <div className="text-xs text-text-muted mt-1">
-              Date: <strong>{formatDate(invoice.invoice_date)}</strong>
+          <div className="text-right shrink-0">
+            <div className="flex items-center justify-end gap-1 mb-0.5">
+              <span className="inline-block px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-800 border-0 font-bold text-[9px] uppercase tracking-wider">
+                INVOICE
+              </span>
+            </div>
+            <div className="text-xs font-bold text-text font-mono">#{invoice.number}</div>
+            <div className="text-[9.5px] text-text-muted mt-0.5">
+              Date: <strong className="text-text">{formatDate(invoice.invoice_date)}</strong>
             </div>
             {invoice.due_date && (
-              <div className="text-xs text-text-muted">
-                Due: <strong>{formatDate(invoice.due_date)}</strong>
+              <div className="text-[9.5px] text-text-muted">
+                Due: <strong className="text-text">{formatDate(invoice.due_date)}</strong>
               </div>
             )}
           </div>
         </div>
 
         {/* Billed To / Party Info */}
-        <div className="bg-surface p-4 rounded-lg border border-border mb-6">
-          <div className="text-xs font-bold text-text-muted uppercase tracking-wider mb-1">
-            Billed To
+        <div className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2.5 flex items-center justify-between gap-2 border border-slate-200">
+          <div className="min-w-0 flex-1">
+            <div className="text-[8.5px] font-bold text-text-muted uppercase tracking-wider">
+              Billed To
+            </div>
+            <div className="font-bold text-xs text-text mt-0.5 leading-normal break-words">
+              {invoice.party_name}
+            </div>
           </div>
-          <div className="font-bold text-base text-text">{invoice.party_name}</div>
           {invoice.party_mobile && (
-            <div className="text-xs text-text-muted mt-0.5">
-              Mobile: {invoice.party_mobile}
+            <div className="text-right shrink-0">
+              <div className="text-[8.5px] font-bold text-text-muted uppercase tracking-wider">
+                Mobile
+              </div>
+              <div className="text-xs font-mono font-medium text-text mt-0.5 leading-normal">
+                {invoice.party_mobile}
+              </div>
             </div>
           )}
         </div>
 
-        {/* Items Table */}
-        <div className="border border-border rounded-lg overflow-hidden mb-6">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-surface text-text-muted uppercase border-b border-border">
+        {/* Items Table - table-fixed with exact percentage widths guarantees zero right-side clipping */}
+        <div className="border border-slate-300 rounded-lg overflow-hidden mb-2.5">
+          <table className="w-full text-left text-[10.5px] table-fixed border-collapse">
+            <colgroup>
+              <col style={{ width: '50%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '18%' }} />
+              <col style={{ width: '20%' }} />
+            </colgroup>
+            <thead className="bg-[#F8FAFC] text-slate-600 uppercase text-[9px] font-semibold">
               <tr>
-                <th className="px-4 py-3">Description</th>
-                <th className="px-4 py-3 text-center">Qty</th>
-                <th className="px-4 py-3 text-right">Rate</th>
-                <th className="px-4 py-3 text-right">Amount</th>
+                <th className="px-2.5 py-1.5 border-b border-slate-300">Description</th>
+                <th className="px-1 py-1.5 text-center border-b border-slate-300">Qty</th>
+                <th className="px-1.5 py-1.5 text-right border-b border-slate-300">Rate</th>
+                <th className="px-2.5 py-1.5 text-right border-b border-slate-300">Amount</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border">
-              {invoice.invoice_items?.map((item, idx) => (
-                <tr key={idx} className="hover:bg-surface/50">
-                  <td className="px-4 py-3 text-text">
-                    <span className="font-medium">{item.description}</span>
-                    {item.applicant_name && (
-                      <span className="block text-[11px] text-text-muted">
-                        Applicant: {item.applicant_name}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-center text-text-muted">
-                    {item.quantity}
-                  </td>
-                  <td className="px-4 py-3 text-right text-text-muted">
-                    {formatINR(item.rate)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-semibold text-text">
-                    {formatINR(item.amount)}
-                  </td>
-                </tr>
-              ))}
+            <tbody>
+              {invoice.invoice_items?.map((item, idx) => {
+                const isLast = idx === (invoice.invoice_items?.length ?? 1) - 1;
+                const borderClass = isLast ? '' : 'border-b border-slate-200';
+                return (
+                  <tr key={idx} className="hover:bg-slate-50/50">
+                    <td className={`px-2.5 py-1.5 text-slate-800 break-words ${borderClass}`}>
+                      <span className="font-medium">{item.description}</span>
+                      {item.applicant_name && (
+                        <span className="block text-[9.5px] text-slate-500">
+                          Particular: {item.applicant_name}
+                        </span>
+                      )}
+                    </td>
+                    <td className={`px-1 py-1.5 text-center text-slate-600 tabular-nums ${borderClass}`}>
+                      {item.quantity}
+                    </td>
+                    <td className={`px-1.5 py-1.5 text-right text-slate-600 tabular-nums whitespace-nowrap ${borderClass}`}>
+                      {formatINR(item.rate)}
+                    </td>
+                    <td className={`px-2.5 py-1.5 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap ${borderClass}`}>
+                      {formatINR(item.amount)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
 
         {/* Totals & UPI QR Code Split */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start mb-6">
+        <div className="grid grid-cols-2 gap-2 items-start mb-2.5">
           {/* UPI QR Payment Block (BR-19) */}
           {upiQrString && balance > 0 ? (
-            <div className="border border-border p-4 rounded-lg bg-white flex items-center gap-4">
-              <QRCodeSVG value={upiQrString} size={110} level="M" />
-              <div>
-                <div className="text-xs font-bold text-text">Scan &amp; Pay via UPI</div>
-                <div className="text-sm font-bold text-primary mt-0.5">
+            <div className="border border-slate-300 p-2 rounded-lg bg-white flex items-center gap-2">
+              <QRCodeSVG value={upiQrString} size={68} level="M" />
+              <div className="min-w-0 flex-1 leading-normal">
+                <div className="text-[9.5px] font-bold text-slate-800">Scan &amp; Pay UPI</div>
+                <div className="text-[11px] font-bold text-teal-700 mt-0.5 leading-normal">
                   {formatINR(balance)}
                 </div>
-                <div className="text-[11px] text-text-muted mt-1">
-                  UPI ID: <span className="font-mono text-text">{business?.upi_id}</span>
+                <div className="text-[8.5px] text-slate-500 mt-0.5 font-mono break-all leading-normal">
+                  {business?.upi_id}
                 </div>
-                <div className="text-[10px] text-text-muted mt-0.5">
-                  Pay via GPay, PhonePe, Paytm or BHIM
+                <div className="text-[7.5px] text-slate-400 mt-0.5 leading-normal">
+                  GPay · PhonePe · Paytm · BHIM
                 </div>
               </div>
             </div>
           ) : (
-            <div />
+            <div className="p-2 text-[9.5px] text-slate-400 italic flex items-center h-full">
+              Verified computer generated invoice
+            </div>
           )}
 
           {/* Totals Summary */}
-          <div className="bg-surface p-4 rounded-lg border border-border space-y-2 text-xs">
-            <div className="flex justify-between text-text-muted">
+          <div className="bg-[#F8FAFC] p-2 rounded-lg border border-slate-300 space-y-1 text-[10.5px]">
+            <div className="flex justify-between items-center text-slate-600">
               <span>Subtotal</span>
-              <span className="font-medium text-text">{formatINR(invoice.subtotal)}</span>
+              <span className="font-medium text-slate-900 tabular-nums">{formatINR(invoice.subtotal)}</span>
             </div>
             {invoice.discount_amount && invoice.discount_amount > 0 ? (
-              <div className="flex justify-between text-danger">
+              <div className="flex justify-between items-center text-red-600">
                 <span>Discount ({invoice.discount_type})</span>
-                <span>-{formatINR(invoice.discount_amount)}</span>
+                <span className="tabular-nums">-{formatINR(invoice.discount_amount)}</span>
               </div>
             ) : null}
-            <div className="flex justify-between text-base font-bold text-text pt-2 border-t border-border">
-              <span>Total</span>
-              <span>{formatINR(invoice.total)}</span>
+            <div className="flex justify-between items-center text-[11px] font-bold text-slate-900 pt-1 border-t border-slate-300">
+              <span>Total Amount</span>
+              <span className="tabular-nums">{formatINR(invoice.total)}</span>
             </div>
-            <div className="flex justify-between text-text-muted">
+            <div className="flex justify-between items-center text-slate-600">
               <span>Paid Amount</span>
-              <span className="text-success font-semibold">
+              <span className="text-emerald-700 font-semibold tabular-nums">
                 {formatINR(invoice.paid_amount)}
               </span>
             </div>
-            <div className="flex justify-between text-sm font-bold pt-1 border-t border-border">
+            <div className="flex justify-between items-center text-[11px] font-bold pt-1 border-t border-slate-300">
               <span>Balance Due</span>
-              <span className={balance > 0 ? 'text-danger' : 'text-success'}>
+              <span className={`tabular-nums ${balance > 0 ? 'text-red-600' : 'text-emerald-700'}`}>
                 {formatINR(balance)}
               </span>
             </div>
           </div>
         </div>
 
-        {/* Footer Text & Notes */}
+        {/* Footer Text, Terms & Notes */}
         {(invoice.notes || business?.footer_text) && (
-          <div className="pt-4 border-t border-border text-xs text-text-muted space-y-1">
-            {invoice.notes && <div><strong>Notes:</strong> {invoice.notes}</div>}
-            {business?.footer_text && <div className="italic">{business.footer_text}</div>}
+          <div className="pt-2 border-t border-slate-200 text-[9.5px] text-slate-500 space-y-1 text-center whitespace-pre-line leading-relaxed">
+            {invoice.notes && (
+              <div>
+                <strong>Notes:</strong> {invoice.notes}
+              </div>
+            )}
+            {business?.footer_text && (
+              <div className="text-[9px] font-normal text-slate-500">
+                {business.footer_text}
+              </div>
+            )}
           </div>
         )}
+
+        {/* Simplify Software Small Logo & Brand Footer */}
+        <div className="mt-2.5 pt-2 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] text-text-muted">Powered by</span>
+            <img
+              src="/simplify-logo.png"
+              alt="Simplify"
+              className="h-3.5 w-auto object-contain inline-block"
+            />
+          </div>
+          <div className="text-[8.5px] text-text-muted font-medium">
+            Business Management &amp; Billing Software
+          </div>
+        </div>
       </div>
     );
   }

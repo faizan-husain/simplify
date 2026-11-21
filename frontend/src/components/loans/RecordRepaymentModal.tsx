@@ -5,9 +5,9 @@ import { getErrorMessage, t } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Select } from '../ui/Select';
 import { AmountInput } from '../ui/AmountInput';
 import { useToast } from '../ui/Toast';
-import { Building } from 'lucide-react';
 
 export interface RecordRepaymentModalProps {
   open: boolean;
@@ -118,25 +118,25 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
       title={t('loans.add_repayment')}
       description={`Repayment for ${loan.lender_name} (Current Outstanding: ${formatINR(loan.outstanding)})`}
     >
-      <form onSubmit={handleSave} className="space-y-4">
-        <div className="bg-surface p-3 rounded-xl border border-border text-xs flex justify-between">
+      <form onSubmit={handleSave} className="space-y-4 pt-2">
+        <div className="bg-surface-2 p-3.5 rounded-control border border-hair text-xs flex justify-between">
           <div>
             <span className="text-text-muted">Total Taken:</span>
-            <span className="font-semibold text-text ml-1.5">{formatINR(loan.taken_amount)}</span>
+            <span className="font-medium text-text ml-1.5 tabular-nums">{formatINR(loan.taken_amount)}</span>
           </div>
           <div>
             <span className="text-text-muted">Balance Due:</span>
-            <span className="font-bold text-danger ml-1.5">{formatINR(loan.outstanding)}</span>
+            <span className="font-semibold text-danger-fg ml-1.5 tabular-nums">{formatINR(loan.outstanding)}</span>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <div className="flex justify-between items-center mb-1">
-              <label className="text-xs font-semibold text-text">{t('loans.principal')} (₹)</label>
+            <div className="flex justify-between items-center mb-1.5">
+              <label className="text-xs font-medium text-text">{t('loans.principal')} (₹)</label>
               <button
                 type="button"
-                className="text-[10px] text-primary font-semibold hover:underline"
+                className="text-[11px] text-accent font-medium hover:underline"
                 onClick={() => setPrincipal(loan.outstanding.toString())}
               >
                 Full ({formatINR(loan.outstanding)})
@@ -154,7 +154,7 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-text block mb-1">
+            <label className="text-xs font-medium text-text block mb-1.5">
               {t('loans.interest')} (₹)
             </label>
             <AmountInput
@@ -168,9 +168,9 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-semibold text-text block mb-1">Repayment Date</label>
+            <label className="text-xs font-medium text-text-muted block mb-1">Repayment Date</label>
             <Input
               type="date"
               value={repaymentDate}
@@ -179,17 +179,17 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-text block mb-1.5">Mode</label>
+            <label className="text-xs font-medium text-text-muted block mb-1.5">Mode</label>
             <div className="flex flex-wrap gap-1.5">
               {PAYMENT_MODES.map((m) => (
                 <button
                   key={m}
                   type="button"
                   onClick={() => setMode(m)}
-                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
+                  className={`px-2.5 py-1.5 rounded-control text-xs font-medium transition-all border ${
                     mode === m
-                      ? 'bg-primary text-white border-primary'
-                      : 'bg-white text-text border-border hover:bg-surface'
+                      ? 'bg-surface-2 text-text border-accent ring-1 ring-accent'
+                      : 'bg-surface text-text-muted border-hair hover:bg-surface-2 hover:text-text'
                   }`}
                 >
                   {m}
@@ -201,29 +201,22 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
 
         {/* Bank Account Selection for Online Modes */}
         {['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) && (
-          <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-2">
-            <label className="text-xs font-bold text-primary uppercase tracking-wider flex items-center justify-between">
-              <span className="flex items-center gap-1">
-                <Building className="w-3.5 h-3.5" />
-                <span>Paid from Bank Account</span>
-                <span className="text-danger">*</span>
-              </span>
-              <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                Compulsory
-              </span>
-            </label>
-            <select
+          <div className="p-3.5 bg-surface-2 rounded-control border border-hair space-y-2">
+            <Select
+              label="Paid from Bank Account"
+              required
               value={selectedBankId}
-              onChange={(e) => setSelectedBankId(e.target.value)}
-              className="w-full text-xs rounded-lg border border-blue-300 p-2.5 bg-white font-bold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:outline-none cursor-pointer"
-            >
-              <option value="">-- Select Bank Account * --</option>
-              {bankAccounts.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.bank_name} ({b.account_name} - {b.account_number || 'General'})
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedBankId}
+              options={[
+                { value: '', label: '-- Select Bank Account * --' },
+                ...bankAccounts.map((b) => ({
+                  value: b.id,
+                  label: `${b.bank_name} (${b.account_name} - ${b.account_number || 'General'})`,
+                })),
+              ]}
+              size="sm"
+              searchable={bankAccounts.length > 5}
+            />
           </div>
         )}
 
@@ -234,7 +227,7 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
           onChange={(e) => setNotes(e.target.value)}
         />
 
-        <div className="flex gap-2 pt-2">
+        <div className="flex gap-2 pt-3 border-t border-hair">
           <Button
             type="button"
             variant="outline"

@@ -69,28 +69,28 @@ export const ApplyAdvanceModal: React.FC<ApplyAdvanceModalProps> = ({
       title={t('billing.apply_advance')}
       description={`Apply customer advance balance to Bill #${invoiceNumber}`}
     >
-      <form onSubmit={handleApply} className="space-y-4">
-        <div className="bg-surface p-3 rounded-lg border border-border text-xs space-y-1.5">
+      <form onSubmit={handleApply} className="space-y-4 pt-2">
+        <div className="bg-surface-2 p-3.5 rounded-control border border-hair text-xs space-y-2">
           <div className="flex justify-between text-text-muted">
             <span>Bill Balance Due:</span>
-            <span className="font-semibold text-danger">{formatINR(balance)}</span>
+            <span className="font-semibold text-danger-fg tabular-nums">{formatINR(balance)}</span>
           </div>
           <div className="flex justify-between text-text-muted">
             <span>Customer Available Advance:</span>
-            <span className="font-semibold text-primary">{formatINR(availableAdvance)}</span>
+            <span className="font-semibold text-accent tabular-nums">{formatINR(availableAdvance)}</span>
           </div>
-          <div className="flex justify-between text-text font-bold pt-1 border-t border-border">
+          <div className="flex justify-between text-text font-medium pt-1.5 border-t border-hair">
             <span>Max Applicable:</span>
-            <span className="text-text">{formatINR(maxApplicable)}</span>
+            <span className="text-text tabular-nums">{formatINR(maxApplicable)}</span>
           </div>
         </div>
 
         <div>
-          <div className="flex justify-between items-center mb-1">
-            <label className="text-xs font-semibold text-text">Amount to Apply (₹)</label>
+          <div className="flex justify-between items-center mb-1.5">
+            <label className="text-xs font-medium text-text">Amount to Apply (₹)</label>
             <button
               type="button"
-              className="text-[10px] text-primary font-semibold hover:underline"
+              className="text-[11px] text-accent font-medium hover:underline"
               onClick={() => setAmount(maxApplicable.toString())}
             >
               Max ({formatINR(maxApplicable)})
@@ -104,7 +104,7 @@ export const ApplyAdvanceModal: React.FC<ApplyAdvanceModalProps> = ({
           />
         </div>
 
-        <div className="flex gap-2 pt-2">
+        <div className="flex gap-2 pt-3 border-t border-hair">
           <Button
             type="button"
             variant="outline"

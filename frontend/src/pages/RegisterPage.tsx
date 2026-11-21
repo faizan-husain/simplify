@@ -91,15 +91,19 @@ export const RegisterPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-[#F8FAFC]">
-      <div className="w-full max-w-[440px] bg-white p-8 rounded-2xl border border-slate-200/80 shadow-[0_10px_35px_-5px_rgba(8,98,236,0.08)]">
-        {/* Header */}
+    <div className="min-h-screen flex items-center justify-center p-4 bg-page">
+      <div className="w-full max-w-[440px] bg-white p-8 rounded-2xl border border-border shadow-card">
+        {/* Header with Perfectly Centered Official Logo */}
         <div className="text-center mb-6">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-b from-[#0B67F6] to-[#073897] text-white flex items-center justify-center font-bold text-2xl mx-auto mb-3 shadow-md shadow-[#0862EC]/20">
-            S
+          <div className="w-full flex items-center justify-center mb-3.5">
+            <img
+              src="/simplify-logo.png"
+              alt="SIMPLIFY"
+              className="h-11 sm:h-12 w-auto object-contain mx-auto select-none"
+            />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">{t('auth.sign_up')}</h1>
-          <p className="text-xs font-medium text-slate-500 mt-1">{t('app.tagline')}</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-text">{t('auth.sign_up')}</h1>
+          <p className="text-xs text-text-muted mt-1">{t('app.tagline')}</p>
         </div>
 
         {/* Form */}
@@ -110,7 +114,7 @@ export const RegisterPage: React.FC = () => {
             value={businessName}
             onChange={(e) => setBusinessName(e.target.value)}
             disabled={loading}
-            leftIcon={<Building2 className="w-4 h-4 text-slate-400" />}
+            leftIcon={<Building2 className="w-4 h-4 text-text-muted" />}
           />
 
           <Input
@@ -119,7 +123,7 @@ export const RegisterPage: React.FC = () => {
             value={ownerName}
             onChange={(e) => setOwnerName(e.target.value)}
             disabled={loading}
-            leftIcon={<User className="w-4 h-4 text-slate-400" />}
+            leftIcon={<User className="w-4 h-4 text-text-muted" />}
           />
 
           <Input
@@ -130,7 +134,7 @@ export const RegisterPage: React.FC = () => {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             disabled={loading}
-            leftIcon={<Mail className="w-4 h-4 text-slate-400" />}
+            leftIcon={<Mail className="w-4 h-4 text-text-muted" />}
           />
 
           <Input
@@ -141,7 +145,7 @@ export const RegisterPage: React.FC = () => {
             value={mobile}
             onChange={(e) => setMobile(e.target.value)}
             disabled={loading}
-            leftIcon={<Phone className="w-4 h-4 text-slate-400" />}
+            leftIcon={<Phone className="w-4 h-4 text-text-muted" />}
           />
 
           <Input
@@ -151,11 +155,11 @@ export const RegisterPage: React.FC = () => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={loading}
-            leftIcon={<Lock className="w-4 h-4 text-slate-400" />}
+            leftIcon={<Lock className="w-4 h-4 text-text-muted" />}
           />
 
           {error && (
-            <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 p-2.5 rounded-lg font-medium">
+            <div className="text-xs text-danger bg-danger/10 border border-danger/20 p-2.5 rounded-lg font-medium">
               {error}
             </div>
           )}
@@ -164,7 +168,7 @@ export const RegisterPage: React.FC = () => {
             type="submit"
             variant="primary"
             size="lg"
-            className="w-full font-semibold bg-[#0862EC] hover:bg-[#0652CA] text-white shadow-md shadow-[#0862EC]/20 transition-all mt-2"
+            className="w-full mt-2"
             loading={loading}
           >
             <span>{t('auth.sign_up')}</span>
@@ -172,9 +176,9 @@ export const RegisterPage: React.FC = () => {
           </Button>
         </form>
 
-        <div className="mt-6 text-center text-xs text-slate-500 font-medium">
+        <div className="mt-6 text-center text-xs text-text-muted font-medium">
           Already have an account?{' '}
-          <Link to="/login" className="text-[#0862EC] font-semibold hover:underline">
+          <Link to="/login" className="text-accent font-medium hover:underline">
             {t('auth.login')}
           </Link>
         </div>

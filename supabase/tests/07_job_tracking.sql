@@ -53,6 +53,9 @@ BEGIN
     (v_service_id, 2, 'Police Verification', 'Hello {party_name}, police verification has been scheduled.'),
     (v_service_id, 3, 'Passport Dispatched', 'Namaste {party_name}, your passport is dispatched.');
 
+  -- Switch to staff so bill is created by staff (BR: commission applies to staff-created jobs)
+  PERFORM set_config('request.jwt.claim.sub', v_staff_auth_id, true);
+
   -- 3. Create Bill with this Job line
   v_inv := public.create_invoice(jsonb_build_object(
     'walk_in', jsonb_build_object('name', 'Rahul Sharma', 'mobile', '9876543405'),
@@ -68,6 +71,9 @@ BEGIN
       )
     )
   ));
+
+  -- Switch back to owner for assignment
+  PERFORM set_config('request.jwt.claim.sub', v_owner_auth_id, true);
 END $$;
 
 -- Switch to authenticated role

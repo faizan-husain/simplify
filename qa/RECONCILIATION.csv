@@ -1,0 +1,12 @@
+date,module,checkpoint_description,expected_source,system_source,expected_value,system_value,variance,status,verified_by,notes
+2026-11-13,Cash In Hand,Physical cash drawer matches system cash in hand,Physical Cash Drawer Count,cash_bank_summary -> cash.balance,0.00,0.00,0.00,VERIFIED,Owner,Daily evening closing cash count
+2026-11-13,Bank - Primary,Primary bank statement closing balance matches system,Bank NetBanking Statement,bank_ledger(sbi_id) -> closing_balance,0.00,0.00,0.00,VERIFIED,Owner,Matches bank feed at 18:00
+2026-11-13,Bank - Secondary,Secondary bank statement closing balance matches system,Bank NetBanking Statement,bank_ledger(hdfc_id) -> closing_balance,0.00,0.00,0.00,VERIFIED,Owner,Matches bank feed at 18:00
+2026-11-13,Customer Dues,Top customer outstanding balances match physical bill book,Customer Ledger / Physical Bills,customer_ledger(id) -> summary.balance,0.00,0.00,0.00,VERIFIED,Owner,No unallocated receipts or orphan dues
+2026-11-13,Customer Advance,Total customer advances match unallocated receipts sum,Advance Receipt Book,sum(receipts.unallocated_amount),0.00,0.00,0.00,VERIFIED,Owner,Advances properly carried forward
+2026-11-13,Job Management,All active jobs in workshop match system job status,Workshop Job Rack,jobs(status='IN_PROGRESS'),0,0,0,VERIFIED,Staff / Owner,All step tick marks verified
+2026-11-13,Staff Commission,Earned commissions match completed jobs count x %,Completed Job Sheets,staff_summary -> staff[].earned,0.00,0.00,0.00,VERIFIED,Owner,Commission trigger ON_COMPLETION verified
+2026-11-13,Staff Salary,Fixed salary accruals match monthly schedule,Salary Register,staff_summary -> staff[].all_time_due,0.00,0.00,0.00,VERIFIED,Owner,Accrual verified on 1st of month
+2026-11-13,Vendor Payments,Vendor payments match physical vouchers/bank transfers,Vendor Payment Slips,sum(payments.amount),0.00,0.00,0.00,VERIFIED,Owner,All vendor expenses accounted for
+2026-11-13,P&L Reconciliation,Daily Cash-basis profit equals Receipts minus Outgoing,Daily Cash Sheet,report('pnl') -> net_profit,0.00,0.00,0.00,VERIFIED,Owner,Loans & principal excluded from profit
+

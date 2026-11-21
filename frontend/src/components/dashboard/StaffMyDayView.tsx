@@ -17,7 +17,6 @@ import { StatCard } from '../ui/StatCard';
 import { formatINR } from '../../lib/money';
 import { formatDate } from '../../lib/dates';
 import { CompactJobCard } from '../jobs/CompactJobCard';
-import { ThreeDPieChart, ThreeDPieSlice } from '../ui/ThreeDPieChart';
 
 interface StaffMyDayViewProps {
   data: any;
@@ -58,7 +57,8 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
     yellow_count: 0,
     urgent_jobs: [],
   };
-  const recentBills = data?.my_recent_bills || [];
+  // For staff UI, limit recent bills to strictly 5 (owner dashboard keeps 8)
+  const recentBills = (data?.my_recent_bills || []).slice(0, 5);
   const billsPerDay = data?.my_bills_per_day || [];
 
   const isSalaried = myEarnings.compensation_type === 'SALARY';
@@ -94,65 +94,20 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
     return billsPerDay.reduce((acc: number, b: any) => acc + Number(b.bills_count || 0), 0);
   }, [billsPerDay]);
 
-  const [hoveredServiceIdx, setHoveredServiceIdx] = useState<number | null>(null);
-
-  const topServicesData = useMemo(() => {
-    const raw = data?.top_services;
-    const palette = ['#0F766E', '#0284C7', '#0F172A', '#E11D48', '#D97706'];
-
-    if (raw && Array.isArray(raw) && raw.length > 0 && raw.some((item: any) => Number(item.count || 0) > 0)) {
-      const validItems = raw.filter((item: any) => Number(item.count || 0) > 0);
-      const totalCount = validItems.reduce((sum: number, item: any) => sum + Number(item.count || 0), 0);
-
-      if (totalCount === 0) {
-        return {
-          hasData: false,
-          totalBills: 0,
-          services: [],
-        };
-      }
-
-      const services: ThreeDPieSlice[] = validItems.slice(0, 5).map((item: any, idx: number) => {
-        const count = Number(item.count || 0);
-        const percentage = Math.round((count / totalCount) * 100);
-        return {
-          name: item.name || 'Service',
-          count,
-          color: palette[idx % palette.length],
-          percentage,
-        };
-      });
-
-      return {
-        hasData: true,
-        totalBills: totalCount,
-        services,
-      };
-    }
-
-    return {
-      hasData: false,
-      totalBills: 0,
-      services: [
-        { name: 'No services billed yet', count: 0, color: '#E2E8F0', percentage: 0 },
-      ],
-    };
-  }, [data?.top_services]);
-
   return (
     <div className="space-y-5">
       {/* ======================================================== */}
       {/* ROW 1: 3 STAT CARDS MATCHING MAIN DASHBOARD EXACTLY */}
       {/* ======================================================== */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        {/* Card 1: Bills */}
+        {/* Card 1: My Bills */}
         <StatCard
-          label={period === 'THIS_MONTH' ? 'Bills This Month' : 'Bills Today'}
+          label={period === 'THIS_MONTH' ? 'My Bills This Month' : 'My Bills Today'}
           value={myBills.count}
           secondaryLine={
-            <div className="flex items-center justify-between text-xs text-[#6B7280] w-full pt-1.5 border-t border-[#F1F5F9]">
+            <div className="flex items-center justify-between gap-3 text-xs text-[#6B7280] w-full pt-1.5 border-t border-[#F1F5F9]">
               <span>Total bill value</span>
-              <span className="font-semibold text-[#111827] tabular-nums">
+              <span className="font-semibold text-[#111827] tabular-nums ml-auto">
                 {formatINR(myBills.total_amount)}
               </span>
             </div>
@@ -169,13 +124,14 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
         <StatCard
           label={period === 'THIS_MONTH' ? 'My Collection This Month' : 'My Collection Today'}
           value={formatINR(myCollection.total)}
+          onClick={() => navigate('/money?tab=receipts')}
           secondaryLine={
-            <div className="flex items-center justify-between text-xs text-[#6B7280] w-full pt-1.5 border-t border-[#F1F5F9]">
+            <div className="flex items-center justify-between gap-3 text-xs text-[#6B7280] w-full pt-1.5 border-t border-[#F1F5F9]">
               <span className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
                 <span>Cash in hand</span>
               </span>
-              <span className="font-bold text-emerald-700 tabular-nums">
+              <span className="font-bold text-emerald-700 tabular-nums ml-auto">
                 {formatINR(myCollection.cash)}
               </span>
             </div>
@@ -196,12 +152,12 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
             isPositive: true,
             label: isSalaried
               ? `₹${Number(myEarnings.monthly_salary || 0).toLocaleString('en-IN')}/mo`
-              : `Earned ${formatINR(myEarnings.total_earned)}`,
+              : `· Earned ${formatINR(myEarnings.total_earned)}`,
           }}
           secondaryLine={
-            <div className="flex items-center justify-between text-xs text-[#6B7280] w-full pt-1.5 border-t border-[#F1F5F9]">
+            <div className="flex items-center justify-between gap-3 text-xs text-[#6B7280] w-full pt-1.5 border-t border-[#F1F5F9]">
               <span>{isSalaried ? 'Monthly compensation' : 'Earned this period'}</span>
-              <span className="font-semibold text-[#111827] tabular-nums">
+              <span className="font-semibold text-[#111827] tabular-nums ml-auto">
                 {isSalaried
                   ? `₹${Number(myEarnings.monthly_salary || 0).toLocaleString('en-IN')}/mo`
                   : formatINR(myEarnings.total_earned)}
@@ -222,8 +178,8 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
       {/* ======================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
         {/* Jobs Queue Card (8 Columns) */}
-        <Card className="lg:col-span-8 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between">
-          <div>
+        <Card className="lg:col-span-8 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between h-full">
+          <div className="flex-1 flex flex-col min-h-0">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#F1F5F9]">
               <div>
                 <div className="flex items-center gap-2">
@@ -242,17 +198,17 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
               {/* Status Counts matching Jobs Page squircle badges */}
               <div className="flex items-center gap-2 flex-wrap">
                 {jobsData.late_count > 0 && (
-                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-md bg-rose-50 text-rose-800 border border-rose-200/80">
-                    {jobsData.late_count} Overdue
+                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-md bg-rose-50 text-rose-800 border-0">
+                    {jobsData.late_count} Late
                   </span>
                 )}
                 {jobsData.red_count > 0 && (
-                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-md bg-red-50 text-red-700 border border-red-200/80">
+                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-md bg-red-50 text-red-700 border-0">
                     {jobsData.red_count} Red
                   </span>
                 )}
                 {jobsData.yellow_count > 0 && (
-                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80">
+                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-800 border-0">
                     {jobsData.yellow_count} Yellow
                   </span>
                 )}
@@ -295,7 +251,7 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
           </div>
 
           {/* Footer reassurance */}
-          <div className="border-t border-[#F1F5F9] pt-2.5 mt-2 flex items-center justify-between text-[11px] text-[#64748B]">
+          <div className="border-t border-[#F1F5F9] pt-3 mt-auto flex items-center justify-between text-[11px] text-[#64748B]">
             <span>
               {jobsData.completed_today_count > 0
                 ? `${jobsData.completed_today_count} job${jobsData.completed_today_count > 1 ? 's' : ''} completed today`
@@ -312,9 +268,9 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
         </Card>
 
         {/* Collection by Mode Card (4 Columns) */}
-        <Card className="lg:col-span-4 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-3">
+        <Card className="lg:col-span-4 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between h-full">
+          <div className="flex-1 flex flex-col space-y-3.5">
+            <div className="flex items-center justify-between mb-1">
               <div>
                 <h2 className="text-[15px] sm:text-[16px] font-bold text-[#0F172A] tracking-tight">
                   Collection by mode
@@ -323,19 +279,23 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
                   {period === 'THIS_MONTH' ? 'Summary for this month' : 'Shift-end cash handover summary'}
                 </p>
               </div>
-              <span className="text-[11.5px] font-semibold text-slate-700 bg-slate-100 px-2.5 py-0.5 rounded-full">
-                {period === 'THIS_MONTH' ? 'This month' : 'Today'}
-              </span>
+              <button
+                type="button"
+                onClick={() => navigate('/money?tab=receipts')}
+                className="text-[12.5px] font-semibold text-[#0F766E] hover:underline cursor-pointer"
+              >
+                View receipts
+              </button>
             </div>
 
             {/* Executive Cash Handover Box */}
-            <div className="p-4 rounded-xl bg-gradient-to-br from-[#F8FAFC] to-[#F1F5F9] border border-[#E2E8F0] space-y-1.5">
+            <div className="p-4 rounded-xl bg-gradient-to-br from-[#F8FAFC] to-[#F1F5F9] border-0 space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-semibold text-[#0F766E] uppercase tracking-wider flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   Physical cash in hand
                 </span>
-                <span className="text-[10.5px] text-slate-500 font-medium bg-white px-2 py-0.5 rounded-md border border-slate-200/80">
+                <span className="text-[10.5px] text-slate-500 font-medium bg-white px-2 py-0.5 rounded-md border-0 shadow-2xs">
                   Shift end
                 </span>
               </div>
@@ -348,7 +308,7 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
             </div>
 
             {/* Segmented Pill Bar matching Dashboard Receipts by mode */}
-            <div className="h-2 flex w-full gap-1.5 mt-3.5 rounded-full overflow-hidden">
+            <div className="h-2 flex w-full gap-1.5 mt-2 rounded-full overflow-hidden">
               {collectionTotal === 0 ? (
                 <div className="h-full w-full bg-[#F1F5F9] rounded-full" />
               ) : (
@@ -385,79 +345,79 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
               )}
             </div>
 
-            {/* Detailed Mode Breakdown List */}
-            <div className="space-y-2.5 pt-3 text-[12.5px]">
+            {/* Detailed Mode Breakdown List with Clean Borderless Tiles */}
+            <div className="space-y-2.5 pt-1 text-[12.5px]">
               {/* Cash */}
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50/70 hover:bg-slate-50 transition-colors">
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-[#111827]" />
-                  <span className="text-[#374151] font-medium flex items-center gap-1.5">
+                  <span className="text-[#374151] font-semibold flex items-center gap-1.5 text-xs">
                     <Banknote className="w-3.5 h-3.5 text-emerald-600" />
                     Cash
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11.5px] text-[#64748B] tabular-nums">
+                  <span className="text-[11px] text-[#64748B] tabular-nums font-medium bg-white px-1.5 py-0.5 rounded shadow-2xs">
                     {modePcts.cash}%
                   </span>
-                  <span className="font-semibold text-[#111827] tabular-nums">
+                  <span className="font-bold text-[#111827] tabular-nums text-xs">
                     {formatINR(myCollection.cash)}
                   </span>
                 </div>
               </div>
 
               {/* UPI */}
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50/70 hover:bg-slate-50 transition-colors">
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-[#0F766E]" />
-                  <span className="text-[#374151] font-medium flex items-center gap-1.5">
+                  <span className="text-[#374151] font-semibold flex items-center gap-1.5 text-xs">
                     <QrCode className="w-3.5 h-3.5 text-[#0F766E]" />
                     UPI / QR
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11.5px] text-[#64748B] tabular-nums">
+                  <span className="text-[11px] text-[#64748B] tabular-nums font-medium bg-white px-1.5 py-0.5 rounded shadow-2xs">
                     {modePcts.upi}%
                   </span>
-                  <span className="font-semibold text-[#111827] tabular-nums">
+                  <span className="font-bold text-[#111827] tabular-nums text-xs">
                     {formatINR(myCollection.upi)}
                   </span>
                 </div>
               </div>
 
               {/* Bank */}
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50/70 hover:bg-slate-50 transition-colors">
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-[#3B82F6]" />
-                  <span className="text-[#374151] font-medium flex items-center gap-1.5">
+                  <span className="text-[#374151] font-semibold flex items-center gap-1.5 text-xs">
                     <Building className="w-3.5 h-3.5 text-blue-600" />
                     Bank / Cheque
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11.5px] text-[#64748B] tabular-nums">
+                  <span className="text-[11px] text-[#64748B] tabular-nums font-medium bg-white px-1.5 py-0.5 rounded shadow-2xs">
                     {modePcts.bank}%
                   </span>
-                  <span className="font-semibold text-[#111827] tabular-nums">
+                  <span className="font-bold text-[#111827] tabular-nums text-xs">
                     {formatINR(myCollection.bank)}
                   </span>
                 </div>
               </div>
 
               {/* Card */}
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50/70 hover:bg-slate-50 transition-colors">
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-[#8B5CF6]" />
-                  <span className="text-[#374151] font-medium flex items-center gap-1.5">
+                  <span className="text-[#374151] font-semibold flex items-center gap-1.5 text-xs">
                     <CreditCard className="w-3.5 h-3.5 text-purple-600" />
                     Card
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11.5px] text-[#64748B] tabular-nums">
+                  <span className="text-[11px] text-[#64748B] tabular-nums font-medium bg-white px-1.5 py-0.5 rounded shadow-2xs">
                     {modePcts.card}%
                   </span>
-                  <span className="font-semibold text-[#111827] tabular-nums">
+                  <span className="font-bold text-[#111827] tabular-nums text-xs">
                     {formatINR(myCollection.card)}
                   </span>
                 </div>
@@ -466,7 +426,7 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
           </div>
 
           {/* Total Row Footer */}
-          <div className="border-t border-[#F1F5F9] pt-2.5 mt-3 flex items-center justify-between text-xs">
+          <div className="border-t border-[#F1F5F9] pt-3 mt-auto flex items-center justify-between text-xs">
             <span className="font-semibold text-[#111827]">Total Collected</span>
             <span className="font-bold text-[#111827] text-sm tabular-nums">
               {formatINR(myCollection.total)}
@@ -476,164 +436,145 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
       </div>
 
       {/* ======================================================== */}
-      {/* ROW 3: TOP SERVICES (LEFT 6 COLS) & BILLS ACTIVITY (RIGHT 6 COLS) */}
+      {/* ROW 3: RECENT BILLS (LEFT 8 COLS) & BILLS ACTIVITY (RIGHT 4 COLS) */}
       {/* ======================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-        {/* Top Services Card (6 Columns) */}
-        <Card className="lg:col-span-6 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-3">
+        {/* Recent Bills Card (8 Columns) */}
+        <Card className="lg:col-span-8 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between h-full">
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="flex items-center justify-between pb-3 border-b border-[#F1F5F9]">
               <div>
                 <h2 className="text-[15px] sm:text-[16px] font-bold text-[#0F172A] tracking-tight">
-                  Top services
+                  My recent bills
                 </h2>
                 <p className="text-[12px] sm:text-[12.5px] text-[#64748B] mt-0.5">
-                  By bills · {period === 'THIS_MONTH' ? 'This month' : 'Today'}
+                  Bills created by you in SIMPLIFY
                 </p>
               </div>
-              <span
-                className={clsx(
-                  'text-[12px] font-semibold px-2.5 py-0.5 rounded-full',
-                  topServicesData.hasData
-                    ? 'text-[#0F766E] bg-[#E6F4F2]'
-                    : 'text-[#64748B] bg-[#F1F5F9]'
-                )}
+              <button
+                type="button"
+                onClick={() => navigate('/bills')}
+                className="text-[12.5px] sm:text-[13px] font-semibold text-[#0F766E] hover:text-[#0D655E] hover:underline flex items-center gap-0.5 cursor-pointer"
               >
-                {topServicesData.totalBills} total
-              </span>
+                <span>View all</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
 
-            {/* 3D Isometric Pie Chart + Top Services List */}
-            <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 pt-1">
-              {/* Left Column: 3D Pie Chart */}
-              <div className="w-[140px] sm:w-[155px] flex flex-col items-center shrink-0">
-                <ThreeDPieChart
-                  data={topServicesData.services}
-                  totalBills={topServicesData.totalBills}
-                  hoveredIdx={hoveredServiceIdx}
-                  onHover={setHoveredServiceIdx}
-                  className="w-full h-[98px] sm:h-[108px]"
-                />
-
-                {/* Outside Underneath 3D Chart: Service Name Pill Badge */}
-                <div className="mt-1 h-[26px] w-[140px] sm:w-[155px] flex items-center justify-center">
-                  {hoveredServiceIdx !== null && topServicesData.hasData ? (
-                    <span
-                      className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10.5px] font-semibold truncate transition-all duration-400 ease-out max-w-full shadow-xs border"
-                      style={{
-                        backgroundColor: `${topServicesData.services[hoveredServiceIdx].color}14`,
-                        borderColor: `${topServicesData.services[hoveredServiceIdx].color}30`,
-                        color: topServicesData.services[hoveredServiceIdx].color,
-                      }}
-                      title={topServicesData.services[hoveredServiceIdx].name}
-                    >
-                      <span
-                        className="w-1.5 h-1.5 rounded-full shrink-0 shadow-xs"
-                        style={{ backgroundColor: topServicesData.services[hoveredServiceIdx].color }}
-                      />
-                      <span className="truncate">
-                        {topServicesData.services[hoveredServiceIdx].name}
-                      </span>
-                    </span>
-                  ) : topServicesData.hasData ? (
-                    <span className="text-[10px] text-[#94A3B8] font-medium tracking-wide transition-opacity duration-400">
-                      Hover slice to inspect
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-[#94A3B8] font-medium">
-                      No bills
-                    </span>
-                  )}
-                </div>
+            {recentBills.length === 0 ? (
+              <div className="py-12 text-center text-xs text-[#6B7280]">
+                No bills created yet. Click "+ New bill" to create your first bill.
               </div>
+            ) : (
+              <div className="overflow-x-auto pt-1">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-[#F1F5F9] text-[11.5px] font-medium text-[#64748B] uppercase tracking-wider">
+                      <th className="py-2.5 font-medium">Bill</th>
+                      <th className="py-2.5 font-medium">Customer</th>
+                      <th className="py-2.5 font-medium text-right">Amount</th>
+                      <th className="py-2.5 font-medium text-left pl-6">Status</th>
+                      <th className="py-2.5 font-medium text-right">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F8FAFC] text-[13px]">
+                    {recentBills.map((bill: any, idx: number) => {
+                      const bal = Number(bill.balance || 0);
+                      const isPaid = bill.status === 'ACTIVE' && bal <= 0;
+                      const isPartial = bill.status === 'ACTIVE' && bal > 0 && Number(bill.paid_amount || 0) > 0;
+                      const isCancelled = bill.status === 'CANCELLED';
 
-              {/* Right Column: Services List */}
-              <div className="flex-1 min-w-0 space-y-1 w-full">
-                {topServicesData.services.map((item, idx) => {
-                  const isHovered = hoveredServiceIdx === idx;
-                  const isAnyHovered = hoveredServiceIdx !== null;
-                  return (
-                    <div
-                      key={idx}
-                      onMouseEnter={() => topServicesData.hasData && setHoveredServiceIdx(idx)}
-                      onMouseLeave={() => topServicesData.hasData && setHoveredServiceIdx(null)}
-                      className={clsx(
-                        'px-2 py-1 rounded-lg transition-all duration-500 ease-out border',
-                        topServicesData.hasData ? 'cursor-pointer' : 'cursor-default',
-                        isHovered && topServicesData.hasData
-                          ? 'bg-[#F1F5F9]/80 border-slate-200/60 shadow-xs'
-                          : isAnyHovered && topServicesData.hasData
-                          ? 'opacity-40 border-transparent'
-                          : 'border-transparent hover:bg-[#F8FAFC]'
-                      )}
-                    >
-                      <div className="flex items-center justify-between text-[11.5px] sm:text-[12px] gap-2">
-                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                          <span
-                            className={clsx(
-                              'w-2 h-2 rounded-full shrink-0 transition-transform duration-500',
-                              isHovered ? 'scale-125 shadow-xs' : 'scale-100'
-                            )}
-                            style={{
-                              backgroundColor: topServicesData.hasData ? item.color : '#CBD5E1',
-                            }}
-                          />
-                          <span className="font-semibold text-[#0F172A] truncate" title={item.name}>
-                            {item.name}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-right shrink-0">
-                          <span className="text-[10.5px] sm:text-[11px] text-[#64748B] tabular-nums whitespace-nowrap">
-                            {item.count} bill{item.count !== 1 ? 's' : ''}
-                          </span>
-                          <span className="font-bold text-[#0F172A] tabular-nums w-8 text-right">
-                            {item.percentage}%
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Micro Progress Bar */}
-                      <div className="h-1 w-full bg-[#F1F5F9] rounded-full overflow-hidden mt-1">
-                        <div
-                          className="h-full rounded-full transition-all duration-500 ease-out"
-                          style={{
-                            width: `${item.percentage}%`,
-                            backgroundColor: topServicesData.hasData ? item.color : '#E2E8F0',
-                            opacity: !isAnyHovered || isHovered ? 1 : 0.35,
-                            boxShadow: isHovered ? `0 0 6px ${item.color}80` : 'none',
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                      return (
+                        <tr
+                          key={bill.id || idx}
+                          onClick={() => onSelectBill(bill.id)}
+                          className="hover:bg-[#F8FAFC] transition-colors cursor-pointer group"
+                        >
+                          <td className="py-2.5 font-mono font-medium text-[#111827] group-hover:text-[#0F766E] transition-colors">
+                            #{bill.number}
+                          </td>
+                          <td className="py-2.5 text-[#334155] max-w-[150px] truncate">
+                            {bill.party_name || 'Walk-in'}
+                          </td>
+                          <td className="py-2.5 text-right font-semibold text-[#0F172A] tabular-nums">
+                            {formatINR(bill.total)}
+                          </td>
+                          <td className="py-2.5 pl-6">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={clsx(
+                                  'w-1.5 h-1.5 rounded-full shrink-0',
+                                  isCancelled
+                                    ? 'bg-[#9CA3AF]'
+                                    : isPaid
+                                    ? 'bg-[#16A34A]'
+                                    : isPartial
+                                    ? 'bg-[#D97706]'
+                                    : 'bg-[#64748B]'
+                                )}
+                              />
+                              <span
+                                className={clsx(
+                                  'text-[12px] font-medium',
+                                  isCancelled
+                                    ? 'text-[#9CA3AF]'
+                                    : isPaid
+                                    ? 'text-[#16A34A]'
+                                    : isPartial
+                                    ? 'text-[#D97706]'
+                                    : 'text-[#64748B]'
+                                )}
+                              >
+                                {isCancelled
+                                  ? 'Cancelled'
+                                  : isPaid
+                                  ? 'Paid'
+                                  : isPartial
+                                  ? `Due ${formatINR(bal)}`
+                                  : 'Unpaid'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2.5 text-right text-[12px] text-[#64748B] tabular-nums">
+                            {formatDate(bill.invoice_date)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Footer reassurance */}
-          <div className="border-t border-[#F1F5F9] pt-2.5 mt-2 flex items-center justify-between text-[11px] text-[#64748B]">
-            <span>Demand share calculated from bills</span>
+          <div className="border-t border-[#F1F5F9] pt-3 mt-auto flex items-center justify-between text-[11px] text-[#64748B]">
+            <span>
+              {recentBills.length > 0
+                ? `Showing your recent ${recentBills.length} bill${recentBills.length !== 1 ? 's' : ''}`
+                : 'Fast billing for walk-in and regular customers'}
+            </span>
             <button
               type="button"
-              onClick={() => navigate('/services')}
-              className="text-[#0F766E] font-semibold hover:underline cursor-pointer"
+              onClick={() => navigate('/bills/new')}
+              className="text-[#0F766E] font-semibold hover:underline flex items-center gap-1 cursor-pointer"
             >
-              View services
+              <Plus className="w-3 h-3" />
+              <span>New bill</span>
             </button>
           </div>
         </Card>
 
-        {/* Bills Per Day Activity Card (6 Columns) */}
-        <Card className="lg:col-span-6 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between">
-          <div>
+        {/* Bills Per Day Activity Card (4 Columns) */}
+        <Card className="lg:col-span-4 p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between h-full">
+          <div className="flex-1 flex flex-col min-h-0">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h2 className="text-[15px] sm:text-[16px] font-bold text-[#0F172A] tracking-tight">
-                  Daily billing activity
+                  My daily activity
                 </h2>
                 <p className="text-[12px] sm:text-[12.5px] text-[#64748B] mt-0.5">
-                  Bills created across this month
+                  Bills created by you per day this month
                 </p>
               </div>
               <span className="text-[11.5px] font-semibold text-slate-700 bg-slate-100 px-2.5 py-0.5 rounded-full">
@@ -715,7 +656,7 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
           </div>
 
           {/* Footer reassurance */}
-          <div className="border-t border-[#F1F5F9] pt-2.5 mt-2 flex items-center justify-between text-[11px] text-[#64748B]">
+          <div className="border-t border-[#F1F5F9] pt-3 mt-auto flex items-center justify-between text-[11px] text-[#64748B]">
             <span>Activity across past {billsPerDay.length} days</span>
             <span className="font-semibold text-[#111827]">
               {totalMonthBills} bills this month
@@ -723,134 +664,6 @@ export const StaffMyDayView: React.FC<StaffMyDayViewProps> = ({
           </div>
         </Card>
       </div>
-
-      {/* ======================================================== */}
-      {/* ROW 4: RECENT BILLS TABLE (FULL-WIDTH 12 COLS) */}
-      {/* ======================================================== */}
-      <Card className="p-5 sm:p-6 border-0 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] transition-all duration-200 flex flex-col justify-between">
-        <div>
-          <div className="flex items-center justify-between pb-3 border-b border-[#F1F5F9]">
-            <div>
-              <h2 className="text-[15px] sm:text-[16px] font-bold text-[#0F172A] tracking-tight">
-                Recent bills
-              </h2>
-              <p className="text-[12px] sm:text-[12.5px] text-[#64748B] mt-0.5">
-                Latest bills created in SIMPLIFY
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => navigate('/bills')}
-              className="text-[12.5px] sm:text-[13px] font-semibold text-[#0F766E] hover:text-[#0D655E] hover:underline flex items-center gap-0.5 cursor-pointer"
-            >
-              <span>View all</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          {recentBills.length === 0 ? (
-            <div className="py-12 text-center text-xs text-[#6B7280]">
-              No bills created yet. Click "+ New bill" to create your first bill.
-            </div>
-          ) : (
-            <div className="overflow-x-auto pt-1">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-[#F1F5F9] text-[11.5px] font-medium text-[#64748B] uppercase tracking-wider">
-                    <th className="py-2.5 font-medium">Bill</th>
-                    <th className="py-2.5 font-medium">Customer</th>
-                    <th className="py-2.5 font-medium text-right">Amount</th>
-                    <th className="py-2.5 font-medium text-left pl-6">Status</th>
-                    <th className="py-2.5 font-medium text-right">Date</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#F8FAFC] text-[13px]">
-                  {recentBills.map((bill: any, idx: number) => {
-                    const bal = Number(bill.balance || 0);
-                    const isPaid = bill.status === 'ACTIVE' && bal <= 0;
-                    const isPartial = bill.status === 'ACTIVE' && bal > 0 && Number(bill.paid_amount || 0) > 0;
-                    const isCancelled = bill.status === 'CANCELLED';
-
-                    return (
-                      <tr
-                        key={bill.id || idx}
-                        onClick={() => onSelectBill(bill.id)}
-                        className="hover:bg-[#F8FAFC] transition-colors cursor-pointer group"
-                      >
-                        <td className="py-2.5 font-mono font-medium text-[#111827] group-hover:text-[#0F766E] transition-colors">
-                          #{bill.number}
-                        </td>
-                        <td className="py-2.5 text-[#334155] max-w-[150px] truncate">
-                          {bill.party_name || 'Walk-in'}
-                        </td>
-                        <td className="py-2.5 text-right font-semibold text-[#0F172A] tabular-nums">
-                          {formatINR(bill.total)}
-                        </td>
-                        <td className="py-2.5 pl-6">
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className={clsx(
-                                'w-1.5 h-1.5 rounded-full shrink-0',
-                                isCancelled
-                                  ? 'bg-[#9CA3AF]'
-                                  : isPaid
-                                  ? 'bg-[#16A34A]'
-                                  : isPartial
-                                  ? 'bg-[#D97706]'
-                                  : 'bg-[#64748B]'
-                              )}
-                            />
-                            <span
-                              className={clsx(
-                                'text-[12px] font-medium',
-                                isCancelled
-                                  ? 'text-[#9CA3AF]'
-                                  : isPaid
-                                  ? 'text-[#16A34A]'
-                                  : isPartial
-                                  ? 'text-[#D97706]'
-                                  : 'text-[#64748B]'
-                              )}
-                            >
-                              {isCancelled
-                                ? 'Cancelled'
-                                : isPaid
-                                ? 'Paid'
-                                : isPartial
-                                ? `Due ${formatINR(bal)}`
-                                : 'Unpaid'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-2.5 text-right text-[12px] text-[#64748B] tabular-nums">
-                          {formatDate(bill.invoice_date)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {/* Footer reassurance */}
-        <div className="border-t border-[#F1F5F9] pt-2.5 mt-2 flex items-center justify-between text-[11px] text-[#64748B]">
-          <span>
-            {recentBills.length > 0
-              ? `Showing latest ${recentBills.length} bill${recentBills.length !== 1 ? 's' : ''}`
-              : 'Fast billing for walk-in and regular customers'}
-          </span>
-          <button
-            type="button"
-            onClick={() => navigate('/bills/new')}
-            className="text-[#0F766E] font-semibold hover:underline flex items-center gap-1 cursor-pointer"
-          >
-            <Plus className="w-3 h-3" />
-            <span>New bill</span>
-          </button>
-        </div>
-      </Card>
     </div>
   );
 };

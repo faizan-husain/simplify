@@ -10,12 +10,14 @@ import { useToast } from '../ui/Toast';
 export interface NewLoanModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  loanToEdit?: any | null;
   onSuccess?: () => void;
 }
 
 export const NewLoanModal: React.FC<NewLoanModalProps> = ({
   open,
   onOpenChange,
+  loanToEdit,
   onSuccess,
 }) => {
   const { showToast } = useToast();
@@ -26,6 +28,22 @@ export const NewLoanModal: React.FC<NewLoanModalProps> = ({
   const [interestRate, setInterestRate] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  React.useEffect(() => {
+    if (open && loanToEdit) {
+      setLenderName(loanToEdit.lender_name || '');
+      setAmount(String(loanToEdit.amount || ''));
+      setLoanDate(loanToEdit.loan_date || new Date().toISOString().split('T')[0]);
+      setInterestRate(loanToEdit.interest_rate ? String(loanToEdit.interest_rate) : '');
+      setNotes(loanToEdit.notes || '');
+    } else if (open && !loanToEdit) {
+      setLenderName('');
+      setAmount('');
+      setInterestRate('');
+      setNotes('');
+      setLoanDate(new Date().toISOString().split('T')[0]);
+    }
+  }, [open, loanToEdit]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,17 +60,34 @@ export const NewLoanModal: React.FC<NewLoanModalProps> = ({
 
     setSaving(true);
     try {
-      const { error } = await supabase.from('loans').insert({
-        lender_name: lenderName.trim(),
-        amount: amtNum,
-        loan_date: loanDate,
-        interest_rate: interestRate ? parseFloat(interestRate) : null,
-        notes: notes.trim() || null,
-      });
+      if (loanToEdit) {
+        const { error } = await supabase
+          .from('loans')
+          .update({
+            lender_name: lenderName.trim(),
+            amount: amtNum,
+            loan_date: loanDate,
+            interest_rate: interestRate ? parseFloat(interestRate) : null,
+            notes: notes.trim() || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', loanToEdit.id || loanToEdit.loan_id);
 
-      if (error) throw error;
+        if (error) throw error;
+        showToast('Loan updated successfully', 'success');
+      } else {
+        const { error } = await supabase.from('loans').insert({
+          lender_name: lenderName.trim(),
+          amount: amtNum,
+          loan_date: loanDate,
+          interest_rate: interestRate ? parseFloat(interestRate) : null,
+          notes: notes.trim() || null,
+        });
 
-      showToast('Loan recorded in Capital Ledger (excluded from profit)', 'success');
+        if (error) throw error;
+        showToast('Loan recorded in Capital Ledger (excluded from profit)', 'success');
+      }
+
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
@@ -66,7 +101,7 @@ export const NewLoanModal: React.FC<NewLoanModalProps> = ({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title={t('loans.add_loan')}
+      title={loanToEdit ? 'Edit Loan' : t('loans.add_loan')}
       description="Capital Ledger entry: Loans taken are non-operating and do not count as income or profit."
     >
       <form onSubmit={handleSave} className="space-y-4">
@@ -79,7 +114,7 @@ export const NewLoanModal: React.FC<NewLoanModalProps> = ({
           autoFocus
         />
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-semibold text-text block mb-1">Loan Amount (₹)</label>
             <AmountInput
@@ -99,7 +134,7 @@ export const NewLoanModal: React.FC<NewLoanModalProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             label={t('loans.interest_rate')}
             type="number"
@@ -134,7 +169,7 @@ export const NewLoanModal: React.FC<NewLoanModalProps> = ({
             className="flex-1"
             loading={saving}
           >
-            Record Loan
+            {saving ? (loanToEdit ? 'Updating...' : 'Recording...') : (loanToEdit ? 'Save Changes' : 'Record Loan')}
           </Button>
         </div>
       </form>

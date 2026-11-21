@@ -7,41 +7,92 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: '#FFFFFF',
+        // App Surfaces
+        bg: 'var(--bg)',
+        app: 'var(--bg)',
         surface: {
-          DEFAULT: '#F8FAFC',
-          hover: '#F1F5F9',
+          DEFAULT: 'var(--surface)',
+          2: 'var(--surface-2)',
+          3: 'var(--surface-3)',
+          hover: 'var(--surface-2)',
         },
         border: {
-          DEFAULT: '#E2E8F0',
-          focus: '#0B67F6',
+          DEFAULT: 'var(--border)',
+          strong: 'var(--border-strong)',
+          focus: 'var(--accent)',
+        },
+        hair: 'var(--hair)',
+        divider: 'var(--divider)',
+
+        // Typography Colors
+        text: {
+          DEFAULT: 'var(--text)',
+          2: 'var(--text-2)',
+          muted: 'var(--muted)',
+          placeholder: 'var(--placeholder)',
+        },
+        muted: 'var(--muted)',
+        placeholder: 'var(--placeholder)',
+
+        // Brand & Actions
+        ink: 'var(--ink)',
+        accent: {
+          DEFAULT: 'var(--accent)',
+          soft: 'var(--accent-soft)',
         },
         primary: {
-          DEFAULT: '#0B67F6', // Vibrant Electric Royal Blue (matches New Bill button)
-          hover: '#0854D4',
-          active: '#0642A8',
-          light: '#E8F2FD',
-          subtle: '#D6E7FC',
+          DEFAULT: 'var(--accent)',
+          hover: 'var(--accent)',
+          active: 'var(--accent)',
+          light: 'var(--accent-soft)',
+          subtle: 'var(--accent-soft)',
         },
-        text: {
-          DEFAULT: '#101828',
-          muted: '#64748B',
+
+        // Status Colors (meaning only)
+        success: {
+          DEFAULT: 'var(--success)',
+          text: 'var(--success-text)',
         },
-        success: '#1CB98C',
-        warning: '#D97706', // Yellow days
-        danger: '#DC2626', // Red days
+        warning: {
+          DEFAULT: 'var(--warning)',
+          text: 'var(--warning-text)',
+          soft: 'var(--warning-soft)',
+        },
+        danger: {
+          DEFAULT: 'var(--danger)',
+          text: 'var(--danger-text)',
+          soft: 'var(--danger-soft)',
+          bg: 'var(--danger-soft)',
+        },
+        'neutral-dot': 'var(--neutral-dot)',
+        'chart-out': 'var(--chart-out)',
       },
       fontFamily: {
-        sans: ['Inter', 'sans-serif'],
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
       },
       borderRadius: {
-        card: '16px',
+        card: 'var(--r-card)',
+        control: 'var(--r-control)',
+        small: 'var(--r-small)',
+        inner: 'var(--r-inner)',
+        pill: 'var(--r-pill)',
       },
       boxShadow: {
-        soft: '0 1px 3px 0 rgba(8, 98, 236, 0.04), 0 1px 2px 0 rgba(8, 98, 236, 0.02)',
-        card: '0 4px 16px -2px rgba(8, 98, 236, 0.08), 0 2px 4px -1px rgba(8, 98, 236, 0.04)',
-        elevated: '0 12px 30px -4px rgba(8, 98, 236, 0.16), 0 4px 8px -2px rgba(8, 98, 236, 0.08)',
-      }
+        card: 'var(--sh-card)',
+        'card-hover': 'var(--sh-card-hover)',
+        btn: 'var(--sh-btn)',
+        pop: 'var(--sh-pop)',
+        soft: 'var(--sh-card)',
+        elevated: 'var(--sh-pop)',
+      },
+      transitionDuration: {
+        fast: '150ms',
+        card: '200ms',
+        sheet: '250ms',
+      },
+      transitionTimingFunction: {
+        sheet: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+      },
     },
   },
   plugins: [],

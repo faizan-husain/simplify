@@ -6,7 +6,7 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
-export type BusinessRole = 'OWNER' | 'ACCOUNTANT' | 'STAFF';
+export type BusinessRole = 'OWNER' | 'STAFF';
 export type CustomerType = 'REGULAR' | 'WALK_IN';
 export type DiscountType = 'NONE' | 'FLAT' | 'PERCENT';
 export type InvoiceStatus = 'ACTIVE' | 'CANCELLED';
@@ -46,6 +46,7 @@ export interface Database {
           commission_trigger: string;
           timezone: string;
           plan: string;
+          opening_cash_balance: number;
           created_at: string;
           created_by: string | null;
           updated_at: string;
@@ -62,6 +63,7 @@ export interface Database {
           business_id: string;
           auth_user_id: string | null;
           name: string;
+          email: string | null;
           mobile: string;
           role: BusinessRole;
           can_login: boolean;
@@ -471,8 +473,71 @@ export interface Database {
         Insert: Partial<Database['public']['Tables']['whatsapp_templates']['Row']>;
         Update: Partial<Database['public']['Tables']['whatsapp_templates']['Row']>;
       };
+      bank_accounts: {
+        Row: {
+          id: string;
+          business_id: string;
+          bank_name: string;
+          account_name: string;
+          account_number: string | null;
+          ifsc: string | null;
+          upi_id: string | null;
+          opening_balance: number;
+          active: boolean;
+          created_at: string;
+          created_by: string | null;
+          updated_at: string;
+          updated_by: string | null;
+          deleted_at: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Partial<Database['public']['Tables']['bank_accounts']['Row']>;
+        Update: Partial<Database['public']['Tables']['bank_accounts']['Row']>;
+      };
+      money_transfers: {
+        Row: {
+          id: string;
+          business_id: string;
+          transfer_date: string;
+          transfer_type: 'CASH_TO_BANK' | 'BANK_TO_CASH' | 'BANK_TO_BANK';
+          from_bank_account_id: string | null;
+          to_bank_account_id: string | null;
+          amount: number;
+          reference: string | null;
+          notes: string | null;
+          created_at: string;
+          created_by: string | null;
+          updated_at: string;
+          updated_by: string | null;
+          deleted_at: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Partial<Database['public']['Tables']['money_transfers']['Row']>;
+        Update: Partial<Database['public']['Tables']['money_transfers']['Row']>;
+      };
+      demo_requests: {
+        Row: {
+          id: string;
+          full_name: string;
+          business_name: string;
+          mobile: string;
+          email: string;
+          business_type: string;
+          preferred_date: string | null;
+          message: string | null;
+          status: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['demo_requests']['Row']>;
+        Update: Partial<Database['public']['Tables']['demo_requests']['Row']>;
+      };
     };
     Functions: {
+      submit_demo_request: {
+        Args: { payload: Json };
+        Returns: Json;
+      };
       register_business: {
         Args: { business_name: string; owner_name: string; mobile: string };
         Returns: Json;
@@ -539,6 +604,10 @@ export interface Database {
       };
       dashboard: {
         Args: Record<string, never>;
+        Returns: Json;
+      };
+      staff_dashboard: {
+        Args: { p_period?: string };
         Returns: Json;
       };
       report: {

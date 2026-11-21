@@ -4,8 +4,6 @@ import { formatINR } from '../lib/money';
 import { t, getErrorMessage } from '../i18n';
 import { Input } from '../components/ui/Input';
 import { AmountInput } from '../components/ui/AmountInput';
-import { Button } from '../components/ui/Button';
-import { Card } from '../components/ui/Card';
 import { Sheet } from '../components/ui/Sheet';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Skeleton } from '../components/ui/Skeleton';
@@ -107,13 +105,10 @@ const WA_VARIABLES = [
   '{business_name}',
 ];
 
-import { Badge } from '../components/ui/Badge';
-import { IconButton } from '../components/ui/IconButton';
-
 export const ServicesPage: React.FC = () => {
   const { showToast } = useToast();
-  const { role } = useAuth();
-  const isStaff = role === 'STAFF';
+  const { role, member } = useAuth();
+  const isStaff = role === 'STAFF' || member?.role === 'STAFF';
 
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,6 +156,7 @@ export const ServicesPage: React.FC = () => {
   }, []);
 
   const handleOpenCreate = () => {
+    if (isStaff) return;
     setEditingService(null);
     setName('');
     setDefaultRate('');
@@ -175,6 +171,7 @@ export const ServicesPage: React.FC = () => {
   };
 
   const handleOpenEdit = async (s: Service) => {
+    if (isStaff) return;
     setEditingService(s);
     setName(s.name);
     setDefaultRate(s.default_rate ? String(s.default_rate) : '');
@@ -274,6 +271,7 @@ export const ServicesPage: React.FC = () => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isStaff) return;
     if (!name.trim()) {
       setFormError(t('auth.required'));
       return;
@@ -427,33 +425,38 @@ export const ServicesPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-text">Services & Job Types</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Services & Job Types</h1>
           <p className="text-xs text-text-muted mt-0.5">{services.length} registered items</p>
         </div>
         {!isStaff && (
-          <Button variant="primary" size="md" onClick={handleOpenCreate}>
-            <Plus className="w-4 h-4 mr-1.5" />
+          <button
+            type="button"
+            onClick={handleOpenCreate}
+            className="h-10 px-4 rounded-xl border-0 bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-semibold shadow-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
             <span>Add Service / Job</span>
-          </Button>
+          </button>
         )}
       </div>
 
       {/* Search Bar */}
       <div className="relative">
         <Input
-          placeholder={t('common.search')}
+          placeholder="Search service or category..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          leftIcon={<Search className="w-4 h-4 text-text-muted" />}
+          leftIcon={<Search className="w-4 h-4 text-[#94A3B8]" />}
+          className="border-0 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] focus:ring-2 focus:ring-[#0F766E]/20 rounded-xl h-11"
         />
       </div>
 
       {/* Services Grid */}
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          <Skeleton className="h-28 w-full rounded-2xl" />
-          <Skeleton className="h-28 w-full rounded-2xl" />
-          <Skeleton className="h-28 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-2xl border-0" />
+          <Skeleton className="h-28 w-full rounded-2xl border-0" />
+          <Skeleton className="h-28 w-full rounded-2xl border-0" />
         </div>
       ) : filteredServices.length === 0 ? (
         <EmptyState
@@ -464,60 +467,74 @@ export const ServicesPage: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
           {filteredServices.map((service) => (
-            <Card
+            <div
               key={service.id}
-              className="p-4 flex flex-col justify-between cursor-pointer hover:shadow-card-hover transition-all"
-              onClick={() => handleOpenEdit(service)}
+              className={`bg-white border-0 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] transition-all group ${
+                isStaff
+                  ? 'cursor-default'
+                  : 'cursor-pointer hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)] hover:-translate-y-0.5'
+              }`}
+              onClick={isStaff ? undefined : () => handleOpenEdit(service)}
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-[15px] font-semibold text-text truncate">{service.name}</span>
+                    <span className="text-[15px] font-semibold text-slate-900 truncate group-hover:text-[#0F766E] transition-colors">
+                      {service.name}
+                    </span>
                     {service.is_job_type && (
-                      <Badge variant="neutral">
-                        <Briefcase className="w-3 h-3 mr-1 text-accent" /> Job
-                      </Badge>
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded-md border-0 bg-teal-50 text-[#0F766E] inline-flex items-center gap-1 shrink-0">
+                        <Briefcase className="w-3 h-3" />
+                        <span>Job</span>
+                      </span>
                     )}
                   </div>
-                  <div className="text-xs text-text-muted mt-1 tabular-nums">
+                  <div className="text-xs text-slate-500 mt-1 tabular-nums">
                     {service.category ? `${service.category} · ` : ''}
                     {service.default_rate ? formatINR(service.default_rate) : 'Variable Rate'}
                   </div>
                 </div>
                 {!isStaff && (
-                  <IconButton
-                    size="sm"
-                    variant="ghost"
-                    aria-label={t('common.delete')}
+                  <button
+                    type="button"
+                    title={t('common.delete')}
                     onClick={(e) => handleDelete(service, e)}
+                    className="w-7 h-7 rounded-lg border-0 bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 transition-all flex items-center justify-center cursor-pointer hover:scale-105 shrink-0"
                   >
-                    <Trash2 className="w-3.5 h-3.5 text-danger-text hover:text-danger" />
-                  </IconButton>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 )}
               </div>
 
               {service.is_job_type && (
-                <div className="mt-3.5 pt-2.5 border-t border-hair text-xs text-text-muted flex items-center justify-between">
+                <div className="mt-3.5 pt-2.5 border-t border-slate-100/70 text-xs text-slate-500 flex items-center justify-between">
                   <span className="inline-flex items-center gap-1.5 tabular-nums">
-                    <Clock className="w-3.5 h-3.5 text-text-muted" /> {service.deadline_days || 0} days
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{service.deadline_days || 0} days</span>
                   </span>
-                  <span className="inline-flex items-center gap-1 font-medium text-text tabular-nums">
-                    <Percent className="w-3.5 h-3.5 text-accent" /> {service.commission_percent || 0}% Comm.
+                  <span className="inline-flex items-center gap-1 font-medium text-slate-700 tabular-nums">
+                    <Percent className="w-3.5 h-3.5 text-[#0F766E]" />
+                    <span>{service.commission_percent || 0}% Comm.</span>
                   </span>
                 </div>
               )}
-            </Card>
+            </div>
           ))}
         </div>
       )}
 
-      {/* Service & Job Steps Drawer */}
-      <Sheet
-        open={isSheetOpen}
-        onOpenChange={setIsSheetOpen}
-        title={editingService ? (isStaff ? 'Service Details' : 'Edit Service / Job Type') : 'Add Service / Job Type'}
-      >
-        <form onSubmit={handleSave} className="space-y-4 pb-8">
+      {/* Service & Job Steps Drawer (Owner only) */}
+      {!isStaff && (
+        <Sheet
+          open={isSheetOpen && !isStaff}
+          onOpenChange={(op) => {
+            if (isStaff) return;
+            setIsSheetOpen(op);
+          }}
+          title={editingService ? 'Edit Service / Job Type' : 'Add Service / Job Type'}
+          className="border-0 shadow-[0_8px_30px_rgba(0,0,0,0.1)]"
+        >
+          <form onSubmit={handleSave} className="space-y-4">
           <Input
             label="Service / Job Name"
             value={name}
@@ -527,7 +544,7 @@ export const ServicesPage: React.FC = () => {
             required
           />
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <AmountInput
               label="Default Rate (₹)"
               value={defaultRate}
@@ -545,7 +562,7 @@ export const ServicesPage: React.FC = () => {
           </div>
 
           {/* Job Type Toggle */}
-          <div className="p-3.5 rounded-xl border border-border bg-surface-2 space-y-2">
+          <div className="p-3.5 rounded-2xl border-0 bg-surface-2 shadow-2xs space-y-2">
             <div className="flex items-center gap-2.5">
               <input
                 type="checkbox"
@@ -566,7 +583,7 @@ export const ServicesPage: React.FC = () => {
 
           {/* Job Configuration & Steps Builder */}
           {isJobType && (
-            <div className="space-y-4 bg-surface-2 p-4 rounded-xl border border-border">
+            <div className="space-y-4 bg-surface-2 p-4 rounded-2xl border-0 shadow-2xs">
               <div className="flex items-center justify-between pb-2 border-b border-border">
                 <span className="text-xs font-semibold text-text uppercase tracking-wider">
                   Job Settings
@@ -689,7 +706,7 @@ export const ServicesPage: React.FC = () => {
                     {steps.map((step, idx) => (
                       <div
                         key={idx}
-                        className="p-3 rounded-xl border border-border bg-white space-y-2 shadow-card"
+                        className="p-3 rounded-xl border-0 bg-white space-y-2 shadow-sm"
                       >
                         {/* Step Title & Actions */}
                         <div className="flex items-center gap-2">
@@ -704,7 +721,7 @@ export const ServicesPage: React.FC = () => {
                             className="flex-1 h-9 px-2.5 rounded-lg border border-border text-xs font-medium text-text focus:border-accent focus:outline-none"
                             required
                           />
-                          <div className="flex items-center gap-0.5">
+                          <div className="flex items-center gap-0.5 shrink-0">
                             <button
                               type="button"
                               onClick={() => handleMoveStep(idx, 'UP')}
@@ -789,19 +806,22 @@ export const ServicesPage: React.FC = () => {
 
           {formError && <div className="text-xs text-danger font-medium">{formError}</div>}
 
-          {isStaff ? (
-            <div className="pt-2 text-center text-xs text-text-muted bg-surface-2 p-2.5 rounded-xl border border-border">
-              View-only mode. Rates and job workflow settings are managed by the business owner.
-            </div>
-          ) : (
-            <div className="pt-2">
-              <Button type="submit" variant="primary" size="md" className="w-full" loading={saving}>
-                {t('common.save')}
-              </Button>
-            </div>
-          )}
+          <div className="pt-3">
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full h-11 rounded-xl border-0 bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold shadow-xs transition-all cursor-pointer disabled:opacity-50"
+            >
+              {saving
+                ? 'Saving...'
+                : editingService
+                ? (isJobType ? 'Update Job Type' : 'Update Service')
+                : (isJobType ? 'Save Job Type' : 'Save Service')}
+            </button>
+          </div>
         </form>
       </Sheet>
+      )}
 
       {/* Delete Service Confirmation */}
       <ConfirmDialog

@@ -1,6 +1,8 @@
+import 'dotenv/config';
 import { spawn, ChildProcess } from 'child_process';
 import { Client } from 'pg';
 import http from 'http';
+import path from 'path';
 
 const DB_HOST = process.env.PGHOST || '127.0.0.1';
 const DB_PORT = parseInt(process.env.PGPORT || '5432', 10);
@@ -65,49 +67,76 @@ async function main() {
   const npxCmd = isWindows ? 'npx.cmd' : 'npx';
   const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 
-  // 1. Start Backend Bridge (Port 54321)
-  console.log('⚡ Starting Supabase Dev Bridge on http://127.0.0.1:54321 ...');
-  const bridgeProc: ChildProcess = spawn(npxCmd, ['tsx', 'scripts/local-dev-bridge.ts'], {
-    stdio: ['inherit', 'pipe', 'pipe'],
-    shell: true,
-  });
+  let isShuttingDown = false;
+  let bridgeProc: ChildProcess | null = null;
+  let frontendProc: ChildProcess | null = null;
 
-  bridgeProc.stdout?.on('data', (d) => {
-    process.stdout.write(`\x1b[36m[Backend]\x1b[0m ${d.toString()}`);
-  });
+  const startBridge = async () => {
+    if (isShuttingDown) return;
+    console.log('⚡ Starting Supabase Dev Bridge on http://127.0.0.1:54321 ...');
+    bridgeProc = spawn(npxCmd, ['tsx', 'watch', 'scripts/local-dev-bridge.ts'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+    });
 
-  bridgeProc.stderr?.on('data', (d) => {
-    process.stderr.write(`\x1b[31m[Backend Error]\x1b[0m ${d.toString()}`);
-  });
+    bridgeProc.stdout?.on('data', (d) => {
+      process.stdout.write(`\x1b[36m[Backend]\x1b[0m ${d.toString()}`);
+    });
 
-  const bridgeReady = await waitForServer(54321);
-  if (bridgeReady) {
-    console.log('✅ Backend Bridge is ready & responding on http://127.0.0.1:54321');
-  }
+    bridgeProc.stderr?.on('data', (d) => {
+      process.stderr.write(`\x1b[31m[Backend Error]\x1b[0m ${d.toString()}`);
+    });
 
-  // 2. Start Frontend Vite Server (Port 5173)
-  console.log('💻 Starting Frontend Dev Server on http://localhost:5173 ...');
-  const frontendProc: ChildProcess = spawn(npmCmd, ['--prefix', 'frontend', 'run', 'dev'], {
-    stdio: ['inherit', 'pipe', 'pipe'],
-    shell: true,
-  });
+    bridgeProc.on('exit', (code) => {
+      if (!isShuttingDown) {
+        console.warn(`\x1b[33m[Backend]\x1b[0m Bridge exited with code ${code}. Auto-restarting in 1s...`);
+        setTimeout(startBridge, 1000);
+      }
+    });
 
-  frontendProc.stdout?.on('data', (d) => {
-    process.stdout.write(`\x1b[32m[Frontend]\x1b[0m ${d.toString()}`);
-  });
+    const bridgeReady = await waitForServer(54321);
+    if (bridgeReady) {
+      console.log('✅ Backend Bridge is ready & responding on http://127.0.0.1:54321');
+    }
+  };
 
-  frontendProc.stderr?.on('data', (d) => {
-    process.stderr.write(`\x1b[33m[Frontend Warn]\x1b[0m ${d.toString()}`);
-  });
+  const startFrontend = () => {
+    if (isShuttingDown) return;
+    console.log('💻 Starting Frontend Dev Server on http://127.0.0.1:5173 ...');
+    frontendProc = spawn(npmCmd, ['run', 'dev'], {
+      cwd: path.resolve('frontend'),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+    });
+
+    frontendProc.stdout?.on('data', (d) => {
+      process.stdout.write(`\x1b[32m[Frontend]\x1b[0m ${d.toString()}`);
+    });
+
+    frontendProc.stderr?.on('data', (d) => {
+      process.stderr.write(`\x1b[33m[Frontend Warn]\x1b[0m ${d.toString()}`);
+    });
+
+    frontendProc.on('exit', (code) => {
+      if (!isShuttingDown) {
+        console.warn(`\x1b[33m[Frontend]\x1b[0m Dev server exited with code ${code}. Auto-restarting in 1s...`);
+        setTimeout(startFrontend, 1000);
+      }
+    });
+  };
+
+  await startBridge();
+  startFrontend();
 
   const cleanup = () => {
+    isShuttingDown = true;
     console.log('\n🛑 Shutting down SIMPLIFY local servers...');
     try {
-      if (bridgeProc.pid) {
+      if (bridgeProc && bridgeProc.pid) {
         if (isWindows) spawn('taskkill', ['/pid', bridgeProc.pid.toString(), '/f', '/t']);
         else bridgeProc.kill();
       }
-      if (frontendProc.pid) {
+      if (frontendProc && frontendProc.pid) {
         if (isWindows) spawn('taskkill', ['/pid', frontendProc.pid.toString(), '/f', '/t']);
         else frontendProc.kill();
       }
