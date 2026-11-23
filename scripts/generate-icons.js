@@ -180,6 +180,38 @@ function renderIcon(targetSize, scaleRatio = 0.68) {
   return encodePNG(targetSize, targetSize, buf);
 }
 
+function encodeICO(images) {
+  const count = images.length;
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // Reserved
+  header.writeUInt16LE(1, 2); // 1 = ICO
+  header.writeUInt16LE(count, 4);
+
+  const dirSize = 16 * count;
+  let currentOffset = 6 + dirSize;
+
+  const dirBuffers = [];
+  const imageBuffers = [];
+
+  for (const img of images) {
+    const entry = Buffer.alloc(16);
+    entry.writeUInt8(img.width >= 256 ? 0 : img.width, 0);
+    entry.writeUInt8(img.height >= 256 ? 0 : img.height, 1);
+    entry.writeUInt8(0, 2); // Palette
+    entry.writeUInt8(0, 3); // Reserved
+    entry.writeUInt16LE(1, 4); // Planes
+    entry.writeUInt16LE(32, 6); // Bits per pixel
+    entry.writeUInt32LE(img.data.length, 8); // Size
+    entry.writeUInt32LE(currentOffset, 12); // Offset
+
+    dirBuffers.push(entry);
+    imageBuffers.push(img.data);
+    currentOffset += img.data.length;
+  }
+
+  return Buffer.concat([header, ...dirBuffers, ...imageBuffers]);
+}
+
 // Generate the icons
 const outDir = path.resolve(__dirname, '../frontend/public');
 
@@ -207,4 +239,22 @@ fs.writeFileSync(path.join(outDir, 'favicon.png'), fav48);
 const simplifyIcon = renderIcon(512, 0.68);
 fs.writeFileSync(path.join(outDir, 'simplify-icon.png'), simplifyIcon);
 
-console.log('✅ Generated all icons including simplify-icon.png with 100% solid white edge-to-edge background, NO strokes, NO black borders!');
+// 7. favicon.ico containing 16x16, 32x32, 48x48 (100% solid white edge-to-edge)
+const fav16 = renderIcon(16, 0.75);
+const fav32 = renderIcon(32, 0.72);
+const favICO = encodeICO([
+  { width: 16, height: 16, data: fav16 },
+  { width: 32, height: 32, data: fav32 },
+  { width: 48, height: 48, data: fav48 },
+]);
+fs.writeFileSync(path.join(outDir, 'favicon.ico'), favICO);
+
+// 8. favicon.svg (solid white background with clean calligraphy S)
+const base64Png = pwa512.toString('base64');
+const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#FFFFFF"/>
+  <image href="data:image/png;base64,${base64Png}" width="512" height="512"/>
+</svg>\n`;
+fs.writeFileSync(path.join(outDir, 'favicon.svg'), svgContent, 'utf8');
+
+console.log('✅ Generated all icons including favicon.ico, favicon.svg, and simplify-icon.png with 100% solid white edge-to-edge background, NO strokes, NO black borders!');
