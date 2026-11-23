@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabase';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
-import { Lock } from 'lucide-react';
+import { Lock, Eye, EyeOff } from 'lucide-react';
 
 export interface PrivacyPinModalProps {
   open: boolean;
@@ -20,6 +20,7 @@ export const PrivacyPinModal: React.FC<PrivacyPinModalProps> = ({
 }) => {
   const { showToast } = useToast();
   const [pin, setPin] = useState('');
+  const [showPin, setShowPin] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -84,14 +85,26 @@ export const PrivacyPinModal: React.FC<PrivacyPinModalProps> = ({
           <label className="text-xs font-medium text-text-muted block text-center mb-2">
             4-Digit PIN
           </label>
-          <input
-            type="password"
-            maxLength={4}
-            value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
-            autoFocus
-            className="w-40 mx-auto text-center tracking-[1em] text-2xl font-bold h-12 border border-hair rounded-control bg-surface-2 focus:bg-surface focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent block transition-colors"
-          />
+          <div className="relative w-48 mx-auto flex items-center justify-center">
+            <input
+              type={showPin ? 'text' : 'password'}
+              maxLength={4}
+              value={pin}
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+              autoFocus
+              className="w-full text-center tracking-[0.8em] pl-6 pr-10 text-2xl font-bold h-12 border border-hair rounded-control bg-surface-2 focus:bg-surface focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent block transition-colors"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPin(!showPin)}
+              tabIndex={-1}
+              aria-label={showPin ? 'Hide PIN' : 'Show PIN'}
+              title={showPin ? 'Hide PIN' : 'Show PIN'}
+              className="absolute right-2 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 transition-colors cursor-pointer select-none"
+            >
+              {showPin ? <EyeOff className="w-4 h-4 text-slate-600" /> : <Eye className="w-4 h-4 text-slate-400" />}
+            </button>
+          </div>
         </div>
 
         <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">

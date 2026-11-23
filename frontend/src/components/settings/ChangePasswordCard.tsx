@@ -3,13 +3,12 @@ import { supabase } from '../../lib/supabase';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
-import { KeyRound, Check, Eye, EyeOff } from 'lucide-react';
+import { KeyRound, Check } from 'lucide-react';
 
 export const ChangePasswordCard: React.FC = () => {
   const { showToast } = useToast();
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -74,44 +73,22 @@ export const ChangePasswordCard: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input
             label="New Password"
-            type={showPassword ? 'text' : 'password'}
+            type="password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             placeholder="Enter new password"
             autoComplete="new-password"
             required
-            rightIcon={
-              <button
-                type="button"
-                className="p-1 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer select-none"
-                onClick={() => setShowPassword(!showPassword)}
-                tabIndex={-1}
-                title={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            }
           />
 
           <Input
             label="Confirm New Password"
-            type={showPassword ? 'text' : 'password'}
+            type="password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             placeholder="Re-enter new password"
             autoComplete="new-password"
             required
-            rightIcon={
-              <button
-                type="button"
-                className="p-1 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer select-none"
-                onClick={() => setShowPassword(!showPassword)}
-                tabIndex={-1}
-                title={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            }
           />
         </div>
 

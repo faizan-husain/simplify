@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -30,6 +30,7 @@ import { useKeyboardShortcuts } from '../../context/KeyboardShortcutContext';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { MobileProfileSheet } from '../mobile/MobileProfileSheet';
 import { useRealtimeSync } from '../../hooks/useRealtimeSync';
+import { ContentLoadingFallback } from '../ui/LoadingFallback';
 
 export const Layout: React.FC = () => {
   const navigate = useNavigate();
@@ -122,13 +123,13 @@ export const Layout: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-white select-none">
+      <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-[#F6F7F9] select-none">
         <div className="flex flex-col items-center gap-4">
           <div className="relative flex items-center justify-center">
             <img
               src="/simplify-mark.png"
               alt="SIMPLIFY"
-              className="w-[72px] h-[72px] object-contain select-none"
+              className="w-[72px] h-[72px] object-contain select-none animate-pulse"
             />
           </div>
           <div className="flex items-center gap-2 mt-1">
@@ -554,7 +555,9 @@ export const Layout: React.FC = () => {
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-5 lg:p-8 pb-36 md:pb-8 bg-[#F6F7F9] print:p-0 print:m-0 print:overflow-visible print:bg-white"
         >
-          <Outlet />
+          <Suspense fallback={<ContentLoadingFallback />}>
+            <Outlet />
+          </Suspense>
         </div>
 
         {/* Floating "+ Bill" button on mobile (56px circle, ink, --sh-btn) - Only on Home and Bills, hides on scroll */}

@@ -14,8 +14,6 @@ import {
   Briefcase,
   CheckCircle2,
   Lock,
-  Eye,
-  EyeOff,
   Phone,
   Building,
   Save,
@@ -39,7 +37,6 @@ export const ProfilePage: React.FC = () => {
   // Password Change State
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const [passwordSavedSuccess, setPasswordSavedSuccess] = useState(false);
 
@@ -330,30 +327,19 @@ export const ProfilePage: React.FC = () => {
           <div>
             <Input
               label="New Password"
-              type={showPassword ? 'text' : 'password'}
+              type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               placeholder="Enter at least 6 characters"
               autoComplete="new-password"
               required
-              rightIcon={
-                <button
-                  type="button"
-                  className="p-1 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer select-none"
-                  onClick={() => setShowPassword(!showPassword)}
-                  tabIndex={-1}
-                  title={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              }
             />
           </div>
 
           <div>
             <Input
               label="Confirm New Password"
-              type={showPassword ? 'text' : 'password'}
+              type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Re-enter new password"

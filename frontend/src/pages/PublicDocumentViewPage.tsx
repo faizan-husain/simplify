@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Download, FileText, ExternalLink, AlertTriangle, Building, Loader2 } from 'lucide-react';
+import { Download, FileText, ExternalLink, AlertTriangle, Building } from 'lucide-react';
 
 export const PublicDocumentViewPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -112,9 +112,18 @@ export const PublicDocumentViewPage: React.FC = () => {
       {/* Main Content Area */}
       <div className="w-full max-w-2xl flex-1 flex flex-col">
         {loading ? (
-          <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center shadow-xs flex flex-col items-center justify-center">
-            <Loader2 className="w-8 h-8 text-[#0F766E] animate-spin mb-3" />
-            <p className="text-xs text-slate-500 font-medium">Loading document preview...</p>
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center shadow-xs flex flex-col items-center justify-center gap-3 select-none">
+            <img
+              src="/simplify-mark.png"
+              alt="SIMPLIFY"
+              className="w-12 h-12 object-contain select-none animate-pulse"
+            />
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <div className="w-2 h-2 rounded-full bg-[#0F766E] animate-bounce [animation-delay:-0.3s]" />
+              <div className="w-2 h-2 rounded-full bg-[#0F766E] animate-bounce [animation-delay:-0.15s]" />
+              <div className="w-2 h-2 rounded-full bg-[#0F766E] animate-bounce" />
+            </div>
+            <p className="text-xs text-slate-500 font-medium mt-1">Loading document preview...</p>
           </div>
         ) : expired ? (
           <div className="bg-white rounded-2xl border border-rose-200 p-8 text-center shadow-xs">

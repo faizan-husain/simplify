@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from './components/ui/Toast';
@@ -7,6 +7,7 @@ import { PwaProvider } from './context/PwaContext';
 import { KeyboardShortcutProvider } from './context/KeyboardShortcutContext';
 import { PwaInstallModal } from './components/pwa/PwaInstallModal';
 import { Layout } from './components/layout/Layout';
+import { PageLoadingFallback } from './components/ui/LoadingFallback';
 
 // Code-split pages for lightning-fast initial load (< 200KB initial chunk)
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })));
@@ -27,15 +28,6 @@ const RecentlyDeletedPage = lazy(() => import('./pages/RecentlyDeletedPage').the
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const PublicDocumentViewPage = lazy(() => import('./pages/PublicDocumentViewPage').then((m) => ({ default: m.PublicDocumentViewPage })));
 const KitPage = lazy(() => import('./pages/KitPage').then((m) => ({ default: m.KitPage })));
-
-const PageLoadingFallback: React.FC = () => (
-  <div className="flex-1 flex items-center justify-center p-8 select-none min-h-[300px]">
-    <div className="flex flex-col items-center gap-3">
-      <div className="w-6 h-6 border-2 border-[#0F766E]/20 border-t-[#0F766E] rounded-full animate-spin" />
-      <span className="text-xs font-medium text-slate-400">Loading...</span>
-    </div>
-  </div>
-);
 
 const queryClient = new QueryClient({
   defaultOptions: {
