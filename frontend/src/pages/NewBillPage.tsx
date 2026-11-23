@@ -943,17 +943,8 @@ export const NewBillPage: React.FC = () => {
   if (editInvoiceId && loadingEdit) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3 select-none">
-        <img
-          src="/simplify-mark.png"
-          alt="SIMPLIFY"
-          className="w-12 h-12 object-contain select-none animate-pulse"
-        />
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <div className="w-2 h-2 rounded-full bg-[#0F766E] animate-bounce [animation-delay:-0.3s]" />
-          <div className="w-2 h-2 rounded-full bg-[#0F766E] animate-bounce [animation-delay:-0.15s]" />
-          <div className="w-2 h-2 rounded-full bg-[#0F766E] animate-bounce" />
-        </div>
-        <div className="text-xs font-medium text-slate-500 mt-1">Loading bill details...</div>
+        <div className="w-7 h-7 border-[2.5px] border-[#0F766E]/20 border-t-[#0F766E] rounded-full animate-spin" />
+        <div className="text-xs font-medium text-slate-500">Loading bill details...</div>
       </div>
     );
   }
