@@ -65,7 +65,7 @@ export const StatGrid: React.FC<StatGridProps> = ({ children, className }) => {
     <div
       className={twMerge(
         clsx(
-          'grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-3 w-full',
+          'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 w-full',
           className
         )
       )}

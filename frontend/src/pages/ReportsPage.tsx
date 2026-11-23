@@ -703,7 +703,7 @@ export const ReportsPage: React.FC = () => {
           {/* 1. PROFIT & LOSS REPORT */}
           {activeTab === 'pnl' && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <Card className="p-4 sm:p-5 border border-slate-200/90 rounded-2xl bg-white shadow-2xs">
                   <div className="text-xs font-medium text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
                     <TrendingUp className="w-4 h-4 text-accent" />
@@ -852,7 +852,7 @@ export const ReportsPage: React.FC = () => {
               {/* Customer View */}
               {ledgerSubTab === 'customer' ? (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div className="p-4 bg-white rounded-2xl border border-slate-200/90 shadow-2xs">
                       <div className="text-xs text-slate-500 font-medium">Opening Balance</div>
                       <div className="text-xl font-bold text-slate-900 mt-1">
@@ -1042,7 +1042,7 @@ export const ReportsPage: React.FC = () => {
               ) : (
                 /* Vendor View */
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <Card className="p-4 border border-slate-200/90 rounded-2xl bg-white shadow-2xs">
                       <div className="text-xs text-slate-500 font-medium">Total Paid to Vendors</div>
                       <div className="text-xl font-bold text-danger tabular-nums mt-1">
@@ -1222,7 +1222,7 @@ export const ReportsPage: React.FC = () => {
           {/* 3. INVOICES / BILLS REPORT */}
           {activeTab === 'invoices' && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <Card className="p-4 border border-slate-200/90 rounded-2xl bg-white shadow-2xs">
                   <div className="text-xs text-slate-500 font-medium">Total Billed</div>
                   <div className="text-xl font-bold text-slate-900 tabular-nums mt-1">

@@ -556,43 +556,41 @@ export const Layout: React.FC = () => {
             onClick={() => navigate('/bills/new')}
             aria-label={t('nav.new_bill')}
             className={clsx(
-              'md:hidden fixed right-4 bottom-[82px] z-40 w-14 h-14 rounded-full bg-ink text-white shadow-btn flex items-center justify-center active:scale-95 transition-all duration-300 print:hidden',
-              isFabVisible ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0 pointer-events-none'
+              'md:hidden fixed right-4 bottom-20 z-40 w-14 h-14 rounded-full bg-ink text-white shadow-btn flex items-center justify-center active:scale-95 transition-all duration-300 print:hidden',
+              isFabVisible ? 'translate-y-0 opacity-100' : 'translate-y-28 opacity-0 pointer-events-none'
             )}
           >
             <Plus className="w-6 h-6 stroke-[2.2]" />
           </button>
         )}
 
-        {/* Mobile Bottom Navigation (Floating dock: balanced left/right margins, top margin breathing room) */}
+        {/* Mobile Bottom Navigation - Sticky & Connected Edge-to-Edge */}
         {!isFullscreenFlow && !isKeyboardOpen && (
-          <div className="md:hidden fixed bottom-2 inset-x-3.5 z-30 flex justify-center pointer-events-none print:hidden">
-            <nav className="w-full max-w-lg h-[62px] rounded-2xl bg-white/95 backdrop-blur-md border border-slate-200/90 shadow-[0_4px_24px_rgba(0,0,0,0.08)] flex items-center justify-around px-1.5 py-1 pointer-events-auto">
-              {bottomNavItems.map((item) => {
-                const Icon = item.icon;
-                const active = isCurrentActive(item.to, item.exact);
+          <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 h-[60px] pb-[env(safe-area-inset-bottom)] bg-white border-t border-slate-200/90 shadow-[0_-2px_12px_rgba(0,0,0,0.04)] flex items-center justify-around px-2 print:hidden">
+            {bottomNavItems.map((item) => {
+              const Icon = item.icon;
+              const active = isCurrentActive(item.to, item.exact);
 
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={clsx(
+                    'flex flex-col items-center justify-center flex-1 h-full pt-1.5 pb-1 text-[11px] font-medium transition-colors min-w-0',
+                    active ? 'text-accent font-semibold' : 'text-text-muted hover:text-text'
+                  )}
+                >
+                  <Icon
                     className={clsx(
-                      'flex flex-col items-center justify-center flex-1 h-full pt-1.5 pb-0.5 text-[10.5px] font-medium transition-colors min-w-0',
-                      active ? 'text-accent font-semibold' : 'text-text-muted hover:text-text'
+                      'w-5 h-5 mb-0.5 transition-colors shrink-0',
+                      active ? 'text-accent' : 'text-text-muted'
                     )}
-                  >
-                    <Icon
-                      className={clsx(
-                        'w-5 h-5 mb-0.5 transition-colors shrink-0',
-                        active ? 'text-accent' : 'text-text-muted'
-                      )}
-                    />
-                    <span className="truncate max-w-[54px] text-center leading-tight">{item.label}</span>
-                  </NavLink>
-                );
-              })}
-            </nav>
-          </div>
+                  />
+                  <span className="truncate max-w-[58px] text-center leading-tight">{item.label}</span>
+                </NavLink>
+              );
+            })}
+          </nav>
         )}
       </main>
 
