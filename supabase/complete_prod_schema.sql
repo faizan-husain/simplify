@@ -29552,6 +29552,7 @@ END $$;
 --                 ON CONFLICT specification" on auth.users.
 --              3. Fix "Database error querying schema" on staff login by eliminating
 --                 NULL tokens in auth.users and generating matching auth.identities.
+--              4. Ensure auth.identities.id uses uuid (gen_random_uuid()).
 -- ==============================================================================
 
 -- 1. Ensure extensions schema and pgcrypto extension exist
@@ -29653,7 +29654,7 @@ BEGIN
       OR email_change_token_new IS NULL;
   END IF;
 
-  -- 5. Ensure auth.identities has an entry for all existing auth.users
+  -- 5. Ensure auth.identities has an identity for every user (Required by Supabase GoTrue login)
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'auth' AND table_name = 'identities') THEN
     INSERT INTO auth.identities (
       id,
@@ -29666,7 +29667,7 @@ BEGIN
       updated_at
     )
     SELECT 
-      gen_random_uuid()::text,
+      gen_random_uuid(),
       u.id,
       jsonb_build_object('sub', u.id::text, 'email', u.email, 'email_verified', true),
       'email',
@@ -29834,7 +29835,7 @@ BEGIN
         created_at,
         updated_at
       ) VALUES (
-        gen_random_uuid()::text,
+        gen_random_uuid(),
         v_auth_user_id,
         jsonb_build_object('sub', v_auth_user_id::text, 'email', v_clean_email, 'email_verified', true),
         'email',
