@@ -29549,8 +29549,9 @@ END $$;
 -- DESCRIPTION: 1. Fix "function public.gen_salt(unknown) does not exist" in Supabase
 --                 Cloud by exposing pgcrypto wrappers in public schema.
 --              2. Fix "there is no unique or exclusion constraint matching the
---                 ON CONFLICT specification" on auth.users by using defensive
---                 SELECT-before-INSERT/UPDATE without depending on ON CONFLICT.
+--                 ON CONFLICT specification" on auth.users.
+--              3. Fix "Database error querying schema" on staff login by eliminating
+--                 NULL tokens in auth.users and generating matching auth.identities.
 -- ==============================================================================
 
 -- 1. Ensure extensions schema and pgcrypto extension exist
@@ -29620,7 +29621,68 @@ $$;
 GRANT EXECUTE ON FUNCTION app.hash_password(text) TO authenticated, service_role, postgres;
 
 
--- 4. Upgrade create_team_member: No ON CONFLICT constraint dependency, schema-safe
+-- 4. One-Time Repair for Existing Users: Fix NULL tokens in auth.users that cause "Database error querying schema"
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'auth' AND table_name = 'users') THEN
+    -- Ensure columns exist (for local testing parity)
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'auth' AND table_name = 'users' AND column_name = 'confirmation_token') THEN
+      ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS confirmation_token varchar(255) DEFAULT '';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'auth' AND table_name = 'users' AND column_name = 'recovery_token') THEN
+      ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS recovery_token varchar(255) DEFAULT '';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'auth' AND table_name = 'users' AND column_name = 'email_change') THEN
+      ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_change varchar(255) DEFAULT '';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'auth' AND table_name = 'users' AND column_name = 'email_change_token_new') THEN
+      ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_change_token_new varchar(255) DEFAULT '';
+    END IF;
+
+    -- Replace NULL tokens with empty strings
+    UPDATE auth.users
+    SET 
+      confirmation_token = COALESCE(confirmation_token, ''),
+      recovery_token = COALESCE(recovery_token, ''),
+      email_change = COALESCE(email_change, ''),
+      email_change_token_new = COALESCE(email_change_token_new, '')
+    WHERE 
+      confirmation_token IS NULL 
+      OR recovery_token IS NULL 
+      OR email_change IS NULL 
+      OR email_change_token_new IS NULL;
+  END IF;
+
+  -- 5. Ensure auth.identities has an entry for all existing auth.users
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'auth' AND table_name = 'identities') THEN
+    INSERT INTO auth.identities (
+      id,
+      user_id,
+      identity_data,
+      provider,
+      provider_id,
+      last_sign_in_at,
+      created_at,
+      updated_at
+    )
+    SELECT 
+      gen_random_uuid()::text,
+      u.id,
+      jsonb_build_object('sub', u.id::text, 'email', u.email, 'email_verified', true),
+      'email',
+      u.id::text,
+      now(),
+      now(),
+      now()
+    FROM auth.users u
+    WHERE NOT EXISTS (
+      SELECT 1 FROM auth.identities i WHERE i.user_id = u.id AND i.provider = 'email'
+    );
+  END IF;
+END $$;
+
+
+-- 6. Upgrade create_team_member: GoTrue-compliant (non-null tokens + auth.identities + no ON CONFLICT error)
 CREATE OR REPLACE FUNCTION public.create_team_member(
   p_name text,
   p_email text,
@@ -29702,21 +29764,26 @@ BEGIN
   -- Compute password hash safely
   v_hashed_password := app.hash_password(p_password);
 
-  -- 1. Check if auth user already exists in auth.users by email (Eliminates ON CONFLICT constraint error)
+  -- 1. Check if auth user already exists in auth.users by email
   SELECT id INTO v_auth_user_id
   FROM auth.users
   WHERE lower(email) = v_clean_email
   LIMIT 1;
 
   IF v_auth_user_id IS NOT NULL THEN
-    -- Update existing auth user password and metadata
+    -- Update existing auth user password, confirmed status, and clean tokens
     UPDATE auth.users
     SET encrypted_password = v_hashed_password,
         raw_user_meta_data = jsonb_build_object('name', v_clean_name, 'role', 'STAFF', 'business_id', v_biz_id),
+        email_confirmed_at = COALESCE(email_confirmed_at, now()),
+        confirmation_token = COALESCE(confirmation_token, ''),
+        recovery_token = COALESCE(recovery_token, ''),
+        email_change = COALESCE(email_change, ''),
+        email_change_token_new = COALESCE(email_change_token_new, ''),
         updated_at = now()
     WHERE id = v_auth_user_id;
   ELSE
-    -- Insert new auth user
+    -- Insert new auth user with GoTrue-compliant non-null strings
     v_auth_user_id := gen_random_uuid();
     INSERT INTO auth.users (
       instance_id,
@@ -29729,7 +29796,11 @@ BEGIN
       raw_app_meta_data,
       raw_user_meta_data,
       created_at,
-      updated_at
+      updated_at,
+      confirmation_token,
+      recovery_token,
+      email_change,
+      email_change_token_new
     )
     VALUES (
       '00000000-0000-0000-0000-000000000000'::uuid,
@@ -29742,11 +29813,40 @@ BEGIN
       jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email'), 'role', 'STAFF'),
       jsonb_build_object('name', v_clean_name, 'role', 'STAFF', 'business_id', v_biz_id),
       now(),
-      now()
+      now(),
+      '',
+      '',
+      '',
+      ''
     );
   END IF;
 
-  -- 2. Check if member already exists in public.members (re-activating soft-deleted member or linking existing)
+  -- 2. Ensure matching identity exists in auth.identities for GoTrue login
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'auth' AND table_name = 'identities') THEN
+    IF NOT EXISTS (SELECT 1 FROM auth.identities WHERE user_id = v_auth_user_id AND provider = 'email') THEN
+      INSERT INTO auth.identities (
+        id,
+        user_id,
+        identity_data,
+        provider,
+        provider_id,
+        last_sign_in_at,
+        created_at,
+        updated_at
+      ) VALUES (
+        gen_random_uuid()::text,
+        v_auth_user_id,
+        jsonb_build_object('sub', v_auth_user_id::text, 'email', v_clean_email, 'email_verified', true),
+        'email',
+        v_auth_user_id::text,
+        now(),
+        now(),
+        now()
+      );
+    END IF;
+  END IF;
+
+  -- 3. Check if member already exists in public.members (re-activating soft-deleted member or linking existing)
   SELECT id INTO v_member_id
   FROM public.members
   WHERE auth_user_id = v_auth_user_id
@@ -29805,7 +29905,7 @@ REVOKE ALL ON FUNCTION public.create_team_member(text, text, text, text, text) F
 GRANT EXECUTE ON FUNCTION public.create_team_member(text, text, text, text, text) TO authenticated;
 
 
--- 5. Upgrade update_team_member
+-- 7. Upgrade update_team_member
 CREATE OR REPLACE FUNCTION public.update_team_member(
   p_member_id uuid,
   p_name text,
@@ -29879,6 +29979,10 @@ BEGIN
     IF v_target_auth_id IS NOT NULL THEN
       UPDATE auth.users
       SET encrypted_password = app.hash_password(p_new_password),
+          confirmation_token = COALESCE(confirmation_token, ''),
+          recovery_token = COALESCE(recovery_token, ''),
+          email_change = COALESCE(email_change, ''),
+          email_change_token_new = COALESCE(email_change_token_new, ''),
           updated_at = now()
       WHERE id = v_target_auth_id;
     END IF;
@@ -29892,7 +29996,7 @@ REVOKE EXECUTE ON FUNCTION public.update_team_member(uuid, text, text, text, boo
 GRANT EXECUTE ON FUNCTION public.update_team_member(uuid, text, text, text, boolean, text) TO authenticated;
 
 
--- 6. Upgrade update_my_profile
+-- 8. Upgrade update_my_profile
 CREATE OR REPLACE FUNCTION public.update_my_profile(
   p_name text DEFAULT NULL,
   p_password text DEFAULT NULL
@@ -29941,6 +30045,10 @@ BEGIN
     IF v_auth_id IS NOT NULL THEN
       UPDATE auth.users
       SET encrypted_password = app.hash_password(p_password),
+          confirmation_token = COALESCE(confirmation_token, ''),
+          recovery_token = COALESCE(recovery_token, ''),
+          email_change = COALESCE(email_change, ''),
+          email_change_token_new = COALESCE(email_change_token_new, ''),
           updated_at = now()
       WHERE id = v_auth_id;
     END IF;
@@ -29958,7 +30066,7 @@ REVOKE EXECUTE ON FUNCTION public.update_my_profile(text, text) FROM anon, publi
 GRANT EXECUTE ON FUNCTION public.update_my_profile(text, text) TO authenticated;
 
 
--- 7. Upgrade set_privacy_pin and verify_privacy_pin
+-- 9. Upgrade set_privacy_pin and verify_privacy_pin
 CREATE OR REPLACE FUNCTION public.set_privacy_pin(pin text)
 RETURNS jsonb
 LANGUAGE plpgsql
