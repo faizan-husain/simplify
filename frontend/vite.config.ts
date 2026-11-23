@@ -19,6 +19,7 @@ export default defineConfig({
         'pwa-maskable-512x512.png',
         'simplify-logo.png',
         'simplify-icon.png',
+        'simplify-mark.png',
       ],
       manifest: {
         name: 'Simplify',

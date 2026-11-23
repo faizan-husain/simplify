@@ -135,6 +135,47 @@ for (let y = 0; y < logoH; y++) {
   }
 }
 
+// Function to render icon onto transparent canvas of size targetSize x targetSize
+function renderTransparentIcon(targetSize, scaleRatio = 0.60) {
+  const buf = Buffer.alloc(targetSize * targetSize * 4); // 0 = 100% transparent RGBA
+  const destW = targetSize * scaleRatio;
+  const destH = targetSize * scaleRatio * (logoH / logoW);
+  const startX = (targetSize - destW) / 2;
+  const startY = (targetSize - destH) / 2;
+
+  for (let dy = 0; dy < targetSize; dy++) {
+    for (let dx = 0; dx < targetSize; dx++) {
+      const lx = ((dx - startX) / destW) * logoW;
+      const ly = ((dy - startY) / destH) * logoH;
+
+      if (lx >= 0 && lx < logoW - 1 && ly >= 0 && ly < logoH - 1) {
+        const x0 = Math.floor(lx);
+        const y0 = Math.floor(ly);
+        const fx = lx - x0;
+        const fy = ly - y0;
+
+        const a00 = logoAlpha[y0 * logoW + x0];
+        const a10 = logoAlpha[y0 * logoW + x0 + 1];
+        const a01 = logoAlpha[(y0 + 1) * logoW + x0];
+        const a11 = logoAlpha[(y0 + 1) * logoW + x0 + 1];
+
+        // Bilinear interpolation
+        const darkVal = (a00 * (1 - fx) + a10 * fx) * (1 - fy) + (a01 * (1 - fx) + a11 * fx) * fy;
+
+        if (darkVal > 0.02) {
+          const idx = (dy * targetSize + dx) * 4;
+          buf[idx] = 17;      // #111827 R
+          buf[idx + 1] = 24;  // G
+          buf[idx + 2] = 39;  // B
+          buf[idx + 3] = Math.round(255 * Math.min(1, darkVal * 1.05)); // Alpha
+        }
+      }
+    }
+  }
+
+  return encodePNG(targetSize, targetSize, buf);
+}
+
 // Function to render icon onto solid white canvas of size targetSize x targetSize
 // Uniform scaleRatio = 0.60 ensures 100% identical size across Android OS splash, WebAPK maskable, and web loaders
 function renderIcon(targetSize, scaleRatio = 0.60) {
@@ -239,6 +280,10 @@ fs.writeFileSync(path.join(outDir, 'favicon.png'), fav48);
 // 6. simplify-icon.png (512x512, solid white edge-to-edge, exact 0.60 scale)
 const simplifyIcon = renderIcon(512, 0.60);
 fs.writeFileSync(path.join(outDir, 'simplify-icon.png'), simplifyIcon);
+
+// 6b. simplify-mark.png (192x192, 100% TRANSPARENT background with pure crisp charcoal calligraphy S)
+const simplifyMark = renderTransparentIcon(192, 0.60);
+fs.writeFileSync(path.join(outDir, 'simplify-mark.png'), simplifyMark);
 
 // 7. favicon.ico containing 16x16, 32x32, 48x48 (100% solid white edge-to-edge)
 const fav16 = renderIcon(16, 0.75);
