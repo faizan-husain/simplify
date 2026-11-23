@@ -1,8 +1,10 @@
 -- ==============================================================================
 -- MIGRATION: 20261123000059_fix_pgcrypto_and_staff_creation.sql
--- DESCRIPTION: Fix "function public.gen_salt(unknown) does not exist" in Supabase
---              Cloud by exposing pgcrypto wrappers in public schema and making
---              create_team_member schema-agnostic.
+-- DESCRIPTION: 1. Fix "function public.gen_salt(unknown) does not exist" in Supabase
+--                 Cloud by exposing pgcrypto wrappers in public schema.
+--              2. Fix "there is no unique or exclusion constraint matching the
+--                 ON CONFLICT specification" on auth.users by using defensive
+--                 SELECT-before-INSERT/UPDATE without depending on ON CONFLICT.
 -- ==============================================================================
 
 -- 1. Ensure extensions schema and pgcrypto extension exist
@@ -72,7 +74,7 @@ $$;
 GRANT EXECUTE ON FUNCTION app.hash_password(text) TO authenticated, service_role, postgres;
 
 
--- 4. Upgrade create_team_member with schema-safe password hashing
+-- 4. Upgrade create_team_member: No ON CONFLICT constraint dependency, schema-safe
 CREATE OR REPLACE FUNCTION public.create_team_member(
   p_name text,
   p_email text,
@@ -124,7 +126,7 @@ BEGIN
     RAISE EXCEPTION 'INVALID_ROLE' USING ERRCODE = 'P0001', DETAIL = 'Only STAFF role can be created for team members';
   END IF;
 
-  -- Check if member email already exists in this business
+  -- Check if an active member with this email already exists in this business
   IF EXISTS (
     SELECT 1 FROM public.members 
     WHERE business_id = v_biz_id AND lower(email) = v_clean_email AND deleted_at IS NULL
@@ -138,72 +140,78 @@ BEGIN
     IF length(v_clean_mobile) >= 10 THEN
       v_clean_mobile := right(v_clean_mobile, 10);
     END IF;
+
+    -- Check if an active member already has this mobile
+    IF EXISTS (
+      SELECT 1 FROM public.members
+      WHERE business_id = v_biz_id AND mobile = v_clean_mobile AND deleted_at IS NULL
+    ) THEN
+      RAISE EXCEPTION 'MOBILE_EXISTS' USING ERRCODE = 'P0001', DETAIL = 'A member with this mobile number already exists';
+    END IF;
+  ELSE
+    -- If mobile is omitted, generate unique dummy placeholder to satisfy NOT NULL + UNIQUE (business_id, mobile)
+    v_clean_mobile := '00' || lpad(floor(random() * 100000000)::text, 8, '0');
   END IF;
 
   -- Compute password hash safely
   v_hashed_password := app.hash_password(p_password);
 
-  -- 1. Create or update auth.users with role=STAFF so trigger doesn't create duplicate business
-  v_auth_user_id := gen_random_uuid();
-  INSERT INTO auth.users (
-    instance_id,
-    id,
-    aud,
-    role,
-    email,
-    encrypted_password,
-    email_confirmed_at,
-    raw_app_meta_data,
-    raw_user_meta_data,
-    created_at,
-    updated_at
-  )
-  VALUES (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    v_auth_user_id,
-    'authenticated',
-    'authenticated',
-    v_clean_email,
-    v_hashed_password,
-    now(),
-    jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email'), 'role', 'STAFF'),
-    jsonb_build_object('name', v_clean_name, 'role', 'STAFF', 'business_id', v_biz_id),
-    now(),
-    now()
-  )
-  ON CONFLICT (email) DO UPDATE
+  -- 1. Check if auth user already exists in auth.users by email (Eliminates ON CONFLICT constraint error)
+  SELECT id INTO v_auth_user_id
+  FROM auth.users
+  WHERE lower(email) = v_clean_email
+  LIMIT 1;
+
+  IF v_auth_user_id IS NOT NULL THEN
+    -- Update existing auth user password and metadata
+    UPDATE auth.users
     SET encrypted_password = v_hashed_password,
         raw_user_meta_data = jsonb_build_object('name', v_clean_name, 'role', 'STAFF', 'business_id', v_biz_id),
         updated_at = now()
-  RETURNING id INTO v_auth_user_id;
+    WHERE id = v_auth_user_id;
+  ELSE
+    -- Insert new auth user
+    v_auth_user_id := gen_random_uuid();
+    INSERT INTO auth.users (
+      instance_id,
+      id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      '00000000-0000-0000-0000-000000000000'::uuid,
+      v_auth_user_id,
+      'authenticated',
+      'authenticated',
+      v_clean_email,
+      v_hashed_password,
+      now(),
+      jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email'), 'role', 'STAFF'),
+      jsonb_build_object('name', v_clean_name, 'role', 'STAFF', 'business_id', v_biz_id),
+      now(),
+      now()
+    );
+  END IF;
 
-  -- 2. Insert into public.members
-  INSERT INTO public.members (
-    business_id,
-    auth_user_id,
-    name,
-    email,
-    mobile,
-    role,
-    can_login,
-    active,
-    created_by,
-    updated_by
-  )
-  VALUES (
-    v_biz_id,
-    v_auth_user_id,
-    v_clean_name,
-    v_clean_email,
-    v_clean_mobile,
-    v_role,
-    true,
-    true,
-    v_caller_id,
-    v_caller_id
-  )
-  ON CONFLICT (auth_user_id) DO UPDATE
+  -- 2. Check if member already exists in public.members (re-activating soft-deleted member or linking existing)
+  SELECT id INTO v_member_id
+  FROM public.members
+  WHERE auth_user_id = v_auth_user_id
+     OR (business_id = v_biz_id AND lower(email) = v_clean_email)
+     OR (business_id = v_biz_id AND mobile = v_clean_mobile)
+  LIMIT 1;
+
+  IF v_member_id IS NOT NULL THEN
+    UPDATE public.members
     SET business_id = v_biz_id,
+        auth_user_id = v_auth_user_id,
         role = v_role,
         name = v_clean_name,
         email = v_clean_email,
@@ -211,9 +219,37 @@ BEGIN
         can_login = true,
         active = true,
         deleted_at = NULL,
+        deleted_by = NULL,
         updated_at = now(),
         updated_by = v_caller_id
-  RETURNING id INTO v_member_id;
+    WHERE id = v_member_id;
+  ELSE
+    INSERT INTO public.members (
+      business_id,
+      auth_user_id,
+      name,
+      email,
+      mobile,
+      role,
+      can_login,
+      active,
+      created_by,
+      updated_by
+    )
+    VALUES (
+      v_biz_id,
+      v_auth_user_id,
+      v_clean_name,
+      v_clean_email,
+      v_clean_mobile,
+      v_role,
+      true,
+      true,
+      v_caller_id,
+      v_caller_id
+    )
+    RETURNING id INTO v_member_id;
+  END IF;
 
   RETURN v_member_id;
 END;
