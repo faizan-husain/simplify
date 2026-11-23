@@ -158,7 +158,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
           boxSizing: 'border-box',
           width: '148mm',
           maxWidth: '148mm',
-          padding: '7mm 7mm 6mm 7mm',
+          padding: '8mm 8mm 10mm 8mm',
           margin: '0 auto',
         }}
       >
@@ -235,10 +235,30 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
             </colgroup>
             <thead className="bg-[#F8FAFC] text-slate-600 uppercase text-[9px] font-semibold">
               <tr>
-                <th className="px-2.5 py-1.5 border-b border-slate-300">Description</th>
-                <th className="px-1 py-1.5 text-center border-b border-slate-300">Qty</th>
-                <th className="px-1.5 py-1.5 text-right border-b border-slate-300">Rate</th>
-                <th className="px-2.5 py-1.5 text-right border-b border-slate-300">Amount</th>
+                <th
+                  className="px-3 border-b border-slate-300"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                >
+                  Description
+                </th>
+                <th
+                  className="px-1 text-center border-b border-slate-300"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                >
+                  Qty
+                </th>
+                <th
+                  className="px-2 text-right border-b border-slate-300"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                >
+                  Rate
+                </th>
+                <th
+                  className="px-3 text-right border-b border-slate-300"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                >
+                  Amount
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -247,21 +267,33 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
                 const borderClass = isLast ? '' : 'border-b border-slate-200';
                 return (
                   <tr key={idx} className="hover:bg-slate-50/50">
-                    <td className={`px-2.5 py-1.5 text-slate-800 break-words ${borderClass}`}>
+                    <td
+                      className={`px-3 text-slate-800 break-words ${borderClass}`}
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                    >
                       <span className="font-medium">{item.description}</span>
                       {item.applicant_name && (
-                        <span className="block text-[9.5px] text-slate-500">
+                        <span className="block text-[9.5px] text-slate-500 mt-0.5" style={{ lineHeight: '1.3' }}>
                           Particular: {item.applicant_name}
                         </span>
                       )}
                     </td>
-                    <td className={`px-1 py-1.5 text-center text-slate-600 tabular-nums ${borderClass}`}>
+                    <td
+                      className={`px-1 text-center text-slate-600 tabular-nums ${borderClass}`}
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                    >
                       {item.quantity}
                     </td>
-                    <td className={`px-1.5 py-1.5 text-right text-slate-600 tabular-nums whitespace-nowrap ${borderClass}`}>
+                    <td
+                      className={`px-2 text-right text-slate-600 tabular-nums whitespace-nowrap ${borderClass}`}
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                    >
                       {formatINR(item.rate)}
                     </td>
-                    <td className={`px-2.5 py-1.5 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap ${borderClass}`}>
+                    <td
+                      className={`px-3 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap ${borderClass}`}
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                    >
                       {formatINR(item.amount)}
                     </td>
                   </tr>
@@ -272,11 +304,11 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         </div>
 
         {/* Totals & UPI QR Code Split */}
-        <div className="grid grid-cols-2 gap-2 items-start mb-2.5">
+        <div className="grid grid-cols-2 gap-3 items-start mb-3">
           {/* UPI QR Payment Block (BR-19) */}
           {upiQrString && balance > 0 ? (
-            <div className="border border-slate-300 p-2 rounded-lg bg-white flex items-center gap-2">
-              <QRCodeSVG value={upiQrString} size={68} level="M" />
+            <div className="border border-slate-300 p-2.5 rounded-lg bg-white flex items-center gap-2.5">
+              <QRCodeSVG value={upiQrString} size={70} level="M" />
               <div className="min-w-0 flex-1 leading-normal">
                 <div className="text-[9.5px] font-bold text-slate-800">Scan &amp; Pay UPI</div>
                 <div className="text-[11px] font-bold text-teal-700 mt-0.5 leading-normal">
@@ -291,34 +323,34 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
               </div>
             </div>
           ) : (
-            <div className="p-2 text-[9.5px] text-slate-400 italic flex items-center h-full">
+            <div className="p-2.5 text-[9.5px] text-slate-400 italic flex items-center h-full">
               Verified computer generated invoice
             </div>
           )}
 
           {/* Totals Summary */}
-          <div className="bg-[#F8FAFC] p-2 rounded-lg border border-slate-300 space-y-1 text-[10.5px]">
-            <div className="flex justify-between items-center text-slate-600">
+          <div className="bg-[#F8FAFC] p-3 rounded-lg border border-slate-300 space-y-1 text-[10.5px]">
+            <div className="flex justify-between items-center text-slate-600 py-0.5">
               <span>Subtotal</span>
               <span className="font-medium text-slate-900 tabular-nums">{formatINR(invoice.subtotal)}</span>
             </div>
             {invoice.discount_amount && invoice.discount_amount > 0 ? (
-              <div className="flex justify-between items-center text-red-600">
+              <div className="flex justify-between items-center text-red-600 py-0.5">
                 <span>Discount ({invoice.discount_type})</span>
                 <span className="tabular-nums">-{formatINR(invoice.discount_amount)}</span>
               </div>
             ) : null}
-            <div className="flex justify-between items-center text-[11px] font-bold text-slate-900 pt-1 border-t border-slate-300">
+            <div className="flex justify-between items-center text-[11px] font-bold text-slate-900 pt-2 pb-0.5 border-t border-slate-300">
               <span>Total Amount</span>
               <span className="tabular-nums">{formatINR(invoice.total)}</span>
             </div>
-            <div className="flex justify-between items-center text-slate-600">
+            <div className="flex justify-between items-center text-slate-600 py-0.5">
               <span>Paid Amount</span>
               <span className="text-emerald-700 font-semibold tabular-nums">
                 {formatINR(invoice.paid_amount)}
               </span>
             </div>
-            <div className="flex justify-between items-center text-[11px] font-bold pt-1 border-t border-slate-300">
+            <div className="flex justify-between items-center text-[11px] font-bold pt-2 pb-0.5 border-t border-slate-300">
               <span>Balance Due</span>
               <span className={`tabular-nums ${balance > 0 ? 'text-red-600' : 'text-emerald-700'}`}>
                 {formatINR(balance)}
@@ -329,7 +361,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
 
         {/* Footer Text, Terms & Notes */}
         {(invoice.notes || business?.footer_text) && (
-          <div className="pt-2 border-t border-slate-200 text-[9.5px] text-slate-500 space-y-1 text-center whitespace-pre-line leading-relaxed">
+          <div className="pt-2.5 pb-1 border-t border-slate-200 text-[9.5px] text-slate-500 space-y-1 text-center whitespace-pre-line leading-relaxed">
             {invoice.notes && (
               <div>
                 <strong>Notes:</strong> {invoice.notes}
@@ -344,7 +376,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         )}
 
         {/* Simplify Software Small Logo & Brand Footer */}
-        <div className="mt-2.5 pt-2 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500">
+        <div className="mt-3 pt-2.5 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500">
           <div className="flex items-center gap-1.5">
             <span className="text-[9px] text-text-muted">Powered by</span>
             <img

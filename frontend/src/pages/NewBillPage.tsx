@@ -387,15 +387,26 @@ export const NewBillPage: React.FC = () => {
           .select('*')
           .eq('invoice_id', editInvoiceId);
 
-        // Fetch existing upfront receipt details if any
+        // Fetch existing upfront receipt details if any (robustly query allocations & receipt)
         let existingReceipt: any = null;
-        const { data: allocations } = await supabase
-          .from('receipt_allocations')
-          .select('amount, receipt_id, receipts(id, mode, bank_account_id, amount)')
-          .eq('invoice_id', editInvoiceId);
+        try {
+          const { data: allocations } = await supabase
+            .from('receipt_allocations')
+            .select('amount, receipt_id')
+            .eq('invoice_id', editInvoiceId);
 
-        if (allocations && allocations.length > 0) {
-          existingReceipt = (allocations[0] as any).receipts;
+          if (allocations && allocations.length > 0 && allocations[0].receipt_id) {
+            const { data: rcpt } = await supabase
+              .from('receipts')
+              .select('id, mode, bank_account_id, amount')
+              .eq('id', allocations[0].receipt_id)
+              .maybeSingle();
+            if (rcpt) {
+              existingReceipt = rcpt;
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to load receipt details for edit:', e);
         }
 
         if (!isMounted) return;
@@ -408,14 +419,20 @@ export const NewBillPage: React.FC = () => {
         setDiscountType((inv.discount_type as any) || 'NONE');
         setDiscountValue(inv.discount_value ? String(inv.discount_value) : '');
 
-        if (existingReceipt) {
-          setPaidNow(String(existingReceipt.amount || inv.paid_amount || ''));
-          setPaymentMode((existingReceipt.mode as any) || 'CASH');
-          if (existingReceipt.bank_account_id) {
+        // Preserve paid amount, payment mode and bank account with 100% accuracy
+        const currentPaid = Number(inv.paid_amount || 0);
+        if (currentPaid > 0 || (existingReceipt && Number(existingReceipt.amount || 0) > 0)) {
+          const amountToSet = currentPaid > 0 ? currentPaid : Number(existingReceipt.amount || 0);
+          setPaidNow(String(amountToSet));
+
+          const modeToSet = existingReceipt?.mode ? String(existingReceipt.mode).toUpperCase() : 'UPI';
+          setPaymentMode(modeToSet);
+
+          if (existingReceipt?.bank_account_id) {
             setSelectedBankId(existingReceipt.bank_account_id);
+          } else if (modeToSet !== 'CASH' && bankAccounts.length > 0) {
+            setSelectedBankId(bankAccounts[0].id);
           }
-        } else if (Number(inv.paid_amount || 0) > 0) {
-          setPaidNow(String(inv.paid_amount));
         } else {
           setPaidNow('');
         }
@@ -778,17 +795,22 @@ export const NewBillPage: React.FC = () => {
         }
 
         if (paidNow && parseFloat(paidNow) > 0) {
-          if (paymentMode !== 'CASH' && !selectedBankId) {
+          let bankIdToUse = selectedBankId;
+          if (paymentMode !== 'CASH' && !bankIdToUse && bankAccounts.length > 0) {
+            bankIdToUse = bankAccounts[0].id;
+          }
+
+          if (paymentMode !== 'CASH' && !bankIdToUse) {
             showToast(`Please select a Bank Account for ${paymentMode} payment`, 'error');
             setSaving(false);
             return;
           }
 
-          const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
+          const selectedBank = bankAccounts.find((b) => b.id === bankIdToUse);
           payload.paid = {
             amount: parseFloat(paidNow),
             mode: paymentMode,
-            bank_account_id: paymentMode !== 'CASH' ? selectedBankId || null : null,
+            bank_account_id: paymentMode !== 'CASH' ? bankIdToUse || null : null,
             bank_name: paymentMode !== 'CASH' ? selectedBank?.bank_name || null : null,
           };
           localStorage.setItem(LAST_PAYMENT_MODE_KEY, paymentMode);

@@ -32,11 +32,11 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       ghost:
         'bg-transparent text-text-2 border border-border hover:border-border-strong hover:bg-surface-2 hover:text-text rounded-small',
       
-      // Destructive (quiet secondary style with danger text)
+      // Destructive (soft light red matching Logout style)
       destructive:
-        'bg-surface text-danger-text border border-border hover:border-danger hover:bg-danger-soft rounded-control',
+        'bg-rose-100/80 text-rose-700 hover:bg-rose-200/80 border-0 rounded-control font-semibold transition-colors',
       danger:
-        'bg-surface text-danger-text border border-border hover:border-danger hover:bg-danger-soft rounded-control',
+        'bg-rose-100/80 text-rose-700 hover:bg-rose-200/80 border-0 rounded-control font-semibold transition-colors',
       
       // Solid Destructive (used inside ConfirmDialog)
       'danger-solid':

@@ -67,10 +67,30 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
           p_receipt_id: receiptId,
         });
         if (error) throw error;
-        setData(res as any);
-        if ((res as any)?.business?.thermal_width === 58) {
+        
+        const result = res as any;
+        if (result?.allocations && result.allocations.length > 0) {
+          const invIds = result.allocations.map((a: any) => a.invoice_id).filter(Boolean);
+          if (invIds.length > 0) {
+            const { data: items } = await supabase
+              .from('invoice_items')
+              .select('id, invoice_id, description, quantity, rate, amount, applicant_name')
+              .in('invoice_id', invIds);
+
+            if (items && items.length > 0) {
+              result.allocations = result.allocations.map((a: any) => ({
+                ...a,
+                items: items.filter((it: any) => it.invoice_id === a.invoice_id),
+              }));
+              result.items = items;
+            }
+          }
+        }
+
+        setData(result);
+        if (result?.business?.thermal_width === 58) {
           setFormat('thermal58');
-        } else if ((res as any)?.business?.thermal_width === 80) {
+        } else if (result?.business?.thermal_width === 80) {
           setFormat('thermal80');
         } else {
           setFormat('a5');
@@ -275,7 +295,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
               type="button"
               onClick={() => handleWhatsAppDirect()}
               disabled={sharingState !== 'idle' || loading}
-              title="Send Receipt on WhatsApp with secure PDF download link"
+              title="Send Receipt text message on WhatsApp"
               className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg border-0 bg-[#25D366]/12 hover:bg-[#25D366]/20 text-[#075E54] font-semibold text-xs transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)] cursor-pointer disabled:opacity-50"
             >
               <Share2 className="w-3.5 h-3.5 mr-1" />
@@ -332,6 +352,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                 receipt={data.receipt}
                 customer={data.customer}
                 allocations={data.allocations}
+                items={(data as any)?.items}
                 ledger_summary={data.ledger_summary}
                 business={data.business}
                 format={format}
@@ -354,6 +375,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                 receipt={data.receipt}
                 customer={data.customer}
                 allocations={data.allocations}
+                items={(data as any)?.items}
                 ledger_summary={data.ledger_summary}
                 business={data.business}
                 format={format}
@@ -367,6 +389,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
               receipt={data.receipt}
               customer={data.customer}
               allocations={data.allocations}
+              items={(data as any)?.items}
               ledger_summary={data.ledger_summary}
               business={data.business}
               format="a5"

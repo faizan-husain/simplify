@@ -172,9 +172,13 @@ function prepareDocumentClone(element: HTMLElement): HTMLElement {
     }
   });
 
-  // Enforce border-collapse on all tables for crisp, gap-free border rendering
+  // Enforce border-collapse on all tables for crisp, gap-free border rendering and ensure cell text vertical alignment
   clone.querySelectorAll('table').forEach((table) => {
     table.style.borderCollapse = 'collapse';
+  });
+  clone.querySelectorAll('td, th').forEach((cell) => {
+    const el = cell as HTMLElement;
+    el.style.verticalAlign = 'middle';
   });
 
   return clone;

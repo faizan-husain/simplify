@@ -73,7 +73,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             disabled={loading}
             onClick={onConfirm}
             className={`w-full sm:w-auto px-5 h-[38px] border-0 rounded-xl text-xs sm:text-[13px] font-semibold shadow-2xs hover:shadow-xs transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 ${variant === 'danger'
-              ? 'bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700'
+              ? 'bg-rose-100/90 hover:bg-rose-200 text-rose-700'
               : 'bg-slate-900 hover:bg-slate-800 text-white'
               }`}
           >

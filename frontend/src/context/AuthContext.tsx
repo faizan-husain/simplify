@@ -26,7 +26,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [business, setBusiness] = useState<Business | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfile = async (currentUser: User, isRetry = false) => {
+  const fetchProfile = async (currentUser: User) => {
     try {
       let { data: memberData } = await supabase
         .from('members')
@@ -92,18 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setBusiness(bizData as Business);
         }
       } else {
-        // Session belongs to an unknown or deleted member; attempt self-healing only ONCE (no infinite loop)
-        if (!isRetry) {
-          console.warn('No active member found for current session. Recovering demo session...');
-          const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
-            email: 'owner@simplify.com',
-            password: 'password123',
-          });
-          if (!signInErr && signInData?.user) {
-            await fetchProfile(signInData.user, true);
-            return;
-          }
-        }
+        // No active member found; sign out cleanly without auto-logging in to demo accounts
         setMember(null);
         setBusiness(null);
         setUser(null);
@@ -124,10 +113,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    // Safety guard: ensure loading state never hangs permanently
+    // Purge any stale permanent tokens from localStorage so session is strictly session-based
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        Object.keys(window.localStorage).forEach((key) => {
+          if (key.startsWith('sb-') && key.endsWith('-auth-token')) {
+            window.localStorage.removeItem(key);
+          }
+        });
+      }
+    } catch {}
+
+    // Safety guard: ensure loading state never hangs permanently (fast 1200ms timeout)
     const safetyTimeout = setTimeout(() => {
       setLoading(false);
-    }, 3500);
+    }, 1200);
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);

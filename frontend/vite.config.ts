@@ -33,25 +33,25 @@ export default defineConfig({
         background_color: '#FFFFFF',
         icons: [
           {
-            src: '/pwa-192x192.png?v=3',
+            src: '/pwa-192x192.png?v=4',
             sizes: '192x192',
             type: 'image/png',
             purpose: 'any',
           },
           {
-            src: '/pwa-512x512.png?v=3',
+            src: '/pwa-512x512.png?v=4',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'any',
           },
           {
-            src: '/pwa-maskable-512x512.png?v=3',
+            src: '/pwa-maskable-512x512.png?v=4',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',
           },
           {
-            src: '/apple-touch-icon.png?v=3',
+            src: '/apple-touch-icon.png?v=4',
             sizes: '180x180',
             type: 'image/png',
           },
@@ -73,7 +73,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom', '@tanstack/react-query'],
           exceljs: ['exceljs'],
+          pdf: ['html2pdf.js'],
         },
       },
     },

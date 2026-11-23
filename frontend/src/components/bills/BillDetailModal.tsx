@@ -331,7 +331,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 type="button"
                 onClick={() => handleWhatsAppDirect()}
                 disabled={sharingState !== 'idle'}
-                title="Send Bill on WhatsApp with secure PDF download link"
+                title="Send Bill text message on WhatsApp"
                 className="inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg border-0 bg-[#25D366]/12 hover:bg-[#25D366]/20 text-[#075E54] font-semibold text-xs transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)] cursor-pointer disabled:opacity-50"
               >
                 <Share2 className="w-3.5 h-3.5 mr-1" />
@@ -465,10 +465,10 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                   type="button"
                   variant="danger"
                   size="sm"
-                  className="text-xs shadow-[0_1px_3px_rgba(0,0,0,0.05)] border-0 font-semibold"
+                  className="text-xs shadow-2xs border-0 font-semibold bg-rose-100/80 hover:bg-rose-200/80 text-rose-700"
                   onClick={() => setIsCancelOpen(true)}
                 >
-                  Cancel
+                  Cancel Bill
                 </Button>
               )}
 
