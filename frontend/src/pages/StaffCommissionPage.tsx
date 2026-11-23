@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import clsx from 'clsx';
 import { supabase } from '../lib/supabase';
 import { formatINR } from '../lib/money';
 import { formatDate, formatInputDate } from '../lib/dates';
@@ -222,21 +223,50 @@ export const StaffCommissionPage: React.FC = () => {
 
       {/* Period Toggle & Actions: Mobile (sm:hidden) */}
       <div className="sm:hidden flex items-center justify-between gap-2">
-        <FilterChips
-          value={period}
-          onChange={(val) => setPeriod(val as PeriodType)}
-          options={[
-            { label: 'Today', value: 'TODAY' },
-            { label: 'This month', value: 'THIS_MONTH' },
-            { label: 'This FY', value: 'THIS_FY' },
-          ]}
-        />
+        <div className="flex items-center bg-[#EEF0F3] p-0.5 rounded-xl">
+          <button
+            type="button"
+            onClick={() => setPeriod('TODAY')}
+            className={clsx(
+              'px-2.5 py-1 rounded-lg text-[12px] transition-all cursor-pointer whitespace-nowrap',
+              period === 'TODAY'
+                ? 'bg-white text-[#111827] font-semibold shadow-xs'
+                : 'text-[#6B7280] font-normal'
+            )}
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriod('THIS_MONTH')}
+            className={clsx(
+              'px-2.5 py-1 rounded-lg text-[12px] transition-all cursor-pointer whitespace-nowrap',
+              period === 'THIS_MONTH'
+                ? 'bg-white text-[#111827] font-semibold shadow-xs'
+                : 'text-[#6B7280] font-normal'
+            )}
+          >
+            This month
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriod('THIS_FY')}
+            className={clsx(
+              'px-2.5 py-1 rounded-lg text-[12px] transition-all cursor-pointer whitespace-nowrap',
+              period === 'THIS_FY'
+                ? 'bg-white text-[#111827] font-semibold shadow-xs'
+                : 'text-[#6B7280] font-normal'
+            )}
+          >
+            This FY
+          </button>
+        </div>
 
         {isOwner && (
           <button
             type="button"
             onClick={() => handleOpenPay()}
-            className="h-9 px-3.5 rounded-xl border-0 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0 transition-all"
+            className="h-8 px-3 rounded-xl border-0 bg-slate-900 hover:bg-slate-800 text-white text-[12px] font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0 transition-all"
           >
             <CreditCard className="w-3.5 h-3.5" />
             <span>Pay</span>

@@ -1361,8 +1361,8 @@ export const NewBillPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Column Headers (Matching Mockup Screenshot Image 4) */}
-              <div className="grid grid-cols-12 gap-3 px-1 text-[13px] font-medium text-[#64748B] select-none">
+              {/* Column Headers (Desktop Only) */}
+              <div className="hidden sm:grid grid-cols-12 gap-3 px-1 text-[13px] font-medium text-[#64748B] select-none">
                 <div className="col-span-6 sm:col-span-5">Item</div>
                 <div className="col-span-2 text-center">Qty</div>
                 <div className="col-span-2 text-center">Rate</div>
@@ -1381,8 +1381,103 @@ export const NewBillPage: React.FC = () => {
                       key={item.id}
                       className="p-3.5 sm:p-4 rounded-xl bg-[#F8FAFC] border-0 space-y-3 transition-all"
                     >
-                      {/* Main Item Row: Item, Qty, Rate, Amount & Delete */}
-                      <div className="grid grid-cols-12 gap-3 items-center">
+                      {/* Mobile Item Layout: Un-cramped, clean multi-line layout with generous inputs */}
+                      <div className="sm:hidden flex flex-col gap-2.5">
+                        {/* Mobile Row 1: Item / Service input + Delete button */}
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 relative flex items-center">
+                            {isJob && (
+                              <Briefcase className="w-4 h-4 text-[#0F766E] absolute left-3 pointer-events-none shrink-0" />
+                            )}
+                            <input
+                              id={`item-desc-mob-${item.id}`}
+                              type="text"
+                              list={`service-list-${item.id}`}
+                              placeholder={isJob ? 'Select Job Service (Required) *' : 'Service or item name'}
+                              value={item.description}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const matched = services.find(
+                                  (s) => s.name.toLowerCase() === val.toLowerCase()
+                                );
+                                if (matched) {
+                                  handleUpdateItem(item.id, {
+                                    description: matched.name,
+                                    service_id: matched.id,
+                                    rate: matched.default_rate
+                                      ? String(matched.default_rate)
+                                      : item.rate,
+                                    create_job: !!matched.is_job_type,
+                                  });
+                                } else {
+                                  handleUpdateItem(item.id, { description: val });
+                                }
+                              }}
+                              className={`w-full h-10 ${isJob ? 'pl-9' : 'pl-3'} pr-3 rounded-xl border bg-white text-[13.5px] font-medium text-[#0F172A] placeholder:text-[#94A3B8] focus:outline-none transition-colors shadow-2xs ${
+                                isJobServiceMissing
+                                  ? 'border-[#0F766E]/40 focus:border-[#0F766E]'
+                                  : 'border-[#E2E8F0] focus:border-[#0F766E]'
+                              }`}
+                            />
+                          </div>
+                          {items.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveItem(item.id)}
+                              className="p-2 rounded-lg text-[#94A3B8] hover:text-[#EF4444] hover:bg-red-50 transition-colors shrink-0"
+                              title="Remove item"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Mobile Row 2: Qty, Rate, and Line Total Amount */}
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-20 shrink-0">
+                            <label className="block text-[10.5px] font-medium text-[#64748B] mb-0.5">Qty</label>
+                            <div className="relative flex items-center">
+                              {isJob && (
+                                <Lock className="w-3 h-3 text-[#94A3B8] absolute left-2 pointer-events-none" />
+                              )}
+                              <input
+                                id={`item-qty-mob-${item.id}`}
+                                type="number"
+                                step="any"
+                                min="1"
+                                value={item.quantity}
+                                disabled={isJob}
+                                onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
+                                className={`w-full h-9 rounded-lg border border-[#E2E8F0] bg-white text-[13px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:outline-none ${
+                                  isJob ? 'pl-5 pr-1 bg-slate-50 text-[#475569]' : 'px-1'
+                                }`}
+                              />
+                            </div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[10.5px] font-medium text-[#64748B] mb-0.5">Rate (₹)</label>
+                            <input
+                              id={`item-rate-mob-${item.id}`}
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder="0"
+                              value={item.rate}
+                              onChange={(e) => handleUpdateItem(item.id, { rate: e.target.value })}
+                              className="w-full h-9 px-2 rounded-lg border border-[#E2E8F0] bg-white text-[13px] font-semibold text-center text-[#0F172A] tabular-nums focus:border-[#0F766E] focus:outline-none"
+                            />
+                          </div>
+                          <div className="text-right shrink-0 pl-1">
+                            <label className="block text-[10.5px] font-medium text-[#64748B] mb-0.5">Amount</label>
+                            <div className="h-9 flex items-center justify-end font-bold text-[14.5px] text-[#0F172A] tabular-nums">
+                              {formatINR(lineAmt)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Desktop Main Item Row: Item, Qty, Rate, Amount & Delete */}
+                      <div className="hidden sm:grid grid-cols-12 gap-3 items-center">
                         {/* Item Service Input */}
                         <div className="col-span-6 sm:col-span-5 relative">
                           <div className="relative flex items-center">

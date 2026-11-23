@@ -1142,14 +1142,14 @@ export const DashboardPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3 flex-nowrap w-full sm:w-auto">
+        <div className="flex items-center gap-1.5 sm:gap-3 flex-nowrap w-full sm:w-auto">
           {/* Segmented Control Pill matching screenshot (Today & This month for Staff, full periods for Owner) */}
-          <div className="flex-1 sm:flex-initial flex items-center bg-[#EEF0F3] p-1 rounded-xl">
+          <div className="flex-1 sm:flex-initial flex items-center bg-[#EEF0F3] p-0.5 sm:p-1 rounded-xl">
             <button
               type="button"
               onClick={() => setPeriod('TODAY')}
               className={clsx(
-                'flex-1 sm:flex-initial text-center px-3 sm:px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer whitespace-nowrap',
+                'flex-1 sm:flex-initial text-center px-2 sm:px-3.5 py-1 sm:py-1.5 rounded-lg text-[11.5px] sm:text-[13px] transition-all cursor-pointer whitespace-nowrap',
                 period === 'TODAY'
                   ? 'bg-white text-[#111827] font-medium shadow-sm'
                   : 'text-[#6B7280] hover:text-[#111827] font-normal'
@@ -1161,7 +1161,7 @@ export const DashboardPage: React.FC = () => {
               type="button"
               onClick={() => setPeriod('THIS_MONTH')}
               className={clsx(
-                'flex-1 sm:flex-initial text-center px-3 sm:px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer whitespace-nowrap',
+                'flex-1 sm:flex-initial text-center px-2 sm:px-3.5 py-1 sm:py-1.5 rounded-lg text-[11.5px] sm:text-[13px] transition-all cursor-pointer whitespace-nowrap',
                 period === 'THIS_MONTH'
                   ? 'bg-white text-[#111827] font-medium shadow-sm'
                   : 'text-[#6B7280] hover:text-[#111827] font-normal'
@@ -1174,7 +1174,7 @@ export const DashboardPage: React.FC = () => {
                 type="button"
                 onClick={() => setPeriod('THIS_YEAR')}
                 className={clsx(
-                  'flex-1 sm:flex-initial text-center px-3 sm:px-3.5 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer whitespace-nowrap',
+                  'flex-1 sm:flex-initial text-center px-2 sm:px-3.5 py-1 sm:py-1.5 rounded-lg text-[11.5px] sm:text-[13px] transition-all cursor-pointer whitespace-nowrap',
                   period === 'THIS_YEAR'
                     ? 'bg-white text-[#111827] font-medium shadow-sm'
                     : 'text-[#6B7280] hover:text-[#111827] font-normal'
@@ -1190,19 +1190,19 @@ export const DashboardPage: React.FC = () => {
             onClick={() => loadDashboard(true)}
             disabled={loading || refreshing}
             aria-label="Refresh dashboard"
-            className="p-2 rounded-xl border-0 bg-white hover:bg-[#F9FAFB] text-[#6B7280] hover:text-[#111827] transition-all disabled:opacity-50 shadow-[0_1px_3px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_6px_rgba(0,0,0,0.06)] cursor-pointer shrink-0"
+            className="p-1.5 sm:p-2 rounded-xl border-0 bg-white hover:bg-[#F9FAFB] text-[#6B7280] hover:text-[#111827] transition-all disabled:opacity-50 shadow-[0_1px_3px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_6px_rgba(0,0,0,0.06)] cursor-pointer shrink-0"
             title="Refresh dashboard"
           >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-[#0F766E]' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${refreshing ? 'animate-spin text-[#0F766E]' : ''}`} />
           </button>
 
           {/* Primary + New bill Button */}
           <button
             type="button"
             onClick={() => navigate('/bills/new')}
-            className="flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-[#111827] hover:bg-[#1F2937] text-white text-[13px] sm:text-[13.5px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.12)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap shrink-0"
+            className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-[#111827] hover:bg-[#1F2937] text-white text-[12px] sm:text-[13.5px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.12)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap shrink-0"
           >
-            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
             <span>New bill</span>
           </button>
         </div>
@@ -1210,41 +1210,41 @@ export const DashboardPage: React.FC = () => {
 
       {/* 2. Action Pill Buttons Row (Owner only - Receipt, Payment, Expense, Customer - 1 Row) */}
       {!isStaff && (
-        <div className="grid grid-cols-4 gap-2 sm:gap-2.5">
+        <div className="grid grid-cols-4 gap-1.5 sm:gap-2.5">
           <button
             type="button"
             onClick={() => navigate('/money?tab=receipts')}
-            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-1 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <ArrowDownLeft className="w-4 h-4 text-[#0F766E] shrink-0" />
-            <span>Receipt</span>
+            <ArrowDownLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#0F766E] shrink-0" />
+            <span className="truncate">Receipt</span>
           </button>
 
           <button
             type="button"
             onClick={() => navigate('/money?tab=payments')}
-            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-1 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <ArrowUpRight className="w-4 h-4 text-[#4B5563] shrink-0" />
-            <span>Payment</span>
+            <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#4B5563] shrink-0" />
+            <span className="truncate">Payment</span>
           </button>
 
           <button
             type="button"
             onClick={() => navigate('/money?tab=expenses')}
-            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-1.5 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <Calendar className="w-4 h-4 text-[#D97706] shrink-0" />
-            <span>Expense</span>
+            <Calendar className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#D97706] shrink-0" />
+            <span className="truncate">Expense</span>
           </button>
 
           <button
             type="button"
             onClick={() => navigate('/customers')}
-            className="flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2.5 rounded-2xl bg-white border-0 text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-1 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <UserPlus className="w-4 h-4 text-[#4B5563] shrink-0" />
-            <span>Customer</span>
+            <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#4B5563] shrink-0" />
+            <span className="truncate">Customer</span>
           </button>
         </div>
       )}
@@ -1529,7 +1529,7 @@ export const DashboardPage: React.FC = () => {
               </div>
             </div>
 
-            <QuietChart data={chartPoints} height={220} showLegend={false} period={period} />
+            <QuietChart data={chartPoints} height={250} showLegend={false} period={period} />
           </div>
 
           {/* Integrated Bottom: Receipts by mode */}
@@ -2152,38 +2152,74 @@ export const DashboardPage: React.FC = () => {
           </div>
 
           {recentBillsList.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-[#F3F4F6] text-[11.5px] font-medium text-[#6B7280] uppercase tracking-wider">
-                    <th className="py-2.5 font-medium">Bill</th>
-                    <th className="py-2.5 font-medium">Customer</th>
-                    <th className="py-2.5 font-medium text-right">Amount</th>
-                    <th className="py-2.5 font-medium text-left pl-6">Status</th>
-                    <th className="py-2.5 font-medium text-right">Date</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#F9FAFB] text-[13px]">
-                  {recentBillsList.map((bill: any, idx: number) => (
-                    <tr
-                      key={bill.id || idx}
-                      onClick={() => navigate('/bills')}
-                      className="hover:bg-[#F9FAFB] transition-colors cursor-pointer group"
-                    >
-                      <td className="py-2.5 font-mono font-medium text-[#111827]">
-                        {bill.number}
-                      </td>
-                      <td className="py-2.5 text-[#111827] group-hover:text-[#0F766E] transition-colors truncate max-w-[180px]">
-                        {bill.party_name}
-                      </td>
-                      <td className="py-2.5 font-semibold text-[#111827] tabular-nums text-right">
-                        {formatINR(bill.total)}
-                      </td>
-                      <td className="py-2.5 text-left pl-6">
-                        <span className="inline-flex items-center gap-1.5 text-[12px] font-medium">
+            <div>
+              {/* Desktop Table View */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-[#F3F4F6] text-[11.5px] font-medium text-[#6B7280] uppercase tracking-wider">
+                      <th className="py-2.5 font-medium">Bill</th>
+                      <th className="py-2.5 font-medium">Customer</th>
+                      <th className="py-2.5 font-medium text-right">Amount</th>
+                      <th className="py-2.5 font-medium text-left pl-6">Status</th>
+                      <th className="py-2.5 font-medium text-right">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F9FAFB] text-[13px]">
+                    {recentBillsList.map((bill: any, idx: number) => (
+                      <tr
+                        key={bill.id || idx}
+                        onClick={() => navigate('/bills')}
+                        className="hover:bg-[#F9FAFB] transition-colors cursor-pointer group"
+                      >
+                        <td className="py-2.5 font-mono font-medium text-[#111827]">
+                          {bill.number}
+                        </td>
+                        <td className="py-2.5 text-[#111827] group-hover:text-[#0F766E] transition-colors truncate max-w-[180px]">
+                          {bill.party_name}
+                        </td>
+                        <td className="py-2.5 font-semibold text-[#111827] tabular-nums text-right">
+                          {formatINR(bill.total)}
+                        </td>
+                        <td className="py-2.5 text-left pl-6">
+                          <span className="inline-flex items-center gap-1.5 text-[12px] font-medium">
+                            <span
+                              className={clsx(
+                                'w-2 h-2 rounded-full flex-shrink-0',
+                                bill.statusDotColor
+                              )}
+                            />
+                            <span className={bill.statusTextColor}>
+                              {bill.statusText}
+                            </span>
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-[12px] text-[#6B7280] tabular-nums text-right">
+                          {bill.dateText}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile Compact List View - ZERO Horizontal Scroll */}
+              <div className="sm:hidden divide-y divide-[#F3F4F6]">
+                {recentBillsList.map((bill: any, idx: number) => (
+                  <div
+                    key={bill.id || idx}
+                    onClick={() => navigate('/bills')}
+                    className="py-2.5 flex items-center justify-between cursor-pointer active:bg-[#F9FAFB] transition-colors"
+                  >
+                    <div className="min-w-0 pr-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-medium text-[13px] text-[#111827]">
+                          {bill.number}
+                        </span>
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium">
                           <span
                             className={clsx(
-                              'w-2 h-2 rounded-full flex-shrink-0',
+                              'w-1.5 h-1.5 rounded-full flex-shrink-0',
                               bill.statusDotColor
                             )}
                           />
@@ -2191,14 +2227,22 @@ export const DashboardPage: React.FC = () => {
                             {bill.statusText}
                           </span>
                         </span>
-                      </td>
-                      <td className="py-2.5 text-[12px] text-[#6B7280] tabular-nums text-right">
+                      </div>
+                      <div className="text-[12.5px] text-[#4B5563] truncate mt-0.5 max-w-[200px]">
+                        {bill.party_name}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-semibold text-[13.5px] text-[#111827] tabular-nums">
+                        {formatINR(bill.total)}
+                      </div>
+                      <div className="text-[11px] text-[#6B7280] tabular-nums mt-0.5">
                         {bill.dateText}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="py-8 text-center border-t border-[#F3F4F6]">

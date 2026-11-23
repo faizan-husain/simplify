@@ -115,13 +115,13 @@ export const Layout: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-[#F6F7F9] select-none transition-all duration-300">
-        <div className="flex flex-col items-center gap-4 animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-[#F6F7F9] select-none">
+        <div className="flex flex-col items-center gap-4">
           <div className="relative flex items-center justify-center">
             <img
-              src="/simplify-logo.png"
+              src="/pwa-192x192.png"
               alt="SIMPLIFY"
-              className="h-11 sm:h-12 w-auto object-contain select-none"
+              className="w-[72px] h-[72px] object-contain select-none"
             />
           </div>
           <div className="flex items-center gap-2 mt-1">

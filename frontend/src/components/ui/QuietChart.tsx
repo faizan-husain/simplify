@@ -51,7 +51,7 @@ function createSmoothPath(points: { x: number; y: number }[], maxY?: number): st
 
 export const QuietChart: React.FC<QuietChartProps> = ({
   data,
-  height = 220,
+  height = 250,
   className,
   showLegend = true,
   period: _period = 'THIS_MONTH',
@@ -67,9 +67,10 @@ export const QuietChart: React.FC<QuietChartProps> = ({
     );
   }
 
-  const svgWidth = 600;
+  // Taller aspect ratio (480x250) ensures curves and bars are prominently visible and legible on mobile screens
+  const svgWidth = 480;
   const svgHeight = height;
-  const padding = { top: 20, right: 24, bottom: 36, left: 40 };
+  const padding = { top: 16, right: 16, bottom: 32, left: 36 };
   const chartWidth = svgWidth - padding.left - padding.right;
   const chartHeight = svgHeight - padding.top - padding.bottom;
   const baselineY = padding.top + chartHeight;

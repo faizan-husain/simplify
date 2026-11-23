@@ -2104,11 +2104,11 @@ export const ReportsPage: React.FC = () => {
           )}
 
           {/* Official Document Footer (Captured in PDF & Print) */}
-          <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-1 text-[10px] text-slate-400">
-            <div className="flex items-center gap-1.5">
+          <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-1.5 text-[10px] text-slate-400 text-center sm:text-left">
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 flex-wrap">
               <span>Powered by</span>
               <img src="/simplify-logo.png" alt="Simplify" className="h-3.5 w-auto object-contain inline-block" />
-              <span>Business Management &amp; Billing Software</span>
+              <span className="hidden sm:inline">• Business Management &amp; Billing Software</span>
             </div>
             <div>Verified Business Records · Confidential</div>
           </div>

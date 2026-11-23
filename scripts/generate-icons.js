@@ -136,7 +136,8 @@ for (let y = 0; y < logoH; y++) {
 }
 
 // Function to render icon onto solid white canvas of size targetSize x targetSize
-function renderIcon(targetSize, scaleRatio = 0.68) {
+// Uniform scaleRatio = 0.60 ensures 100% identical size across Android OS splash, WebAPK maskable, and web loaders
+function renderIcon(targetSize, scaleRatio = 0.60) {
   const buf = Buffer.alloc(targetSize * targetSize * 4);
   // Fill 100% with solid pure white #FFFFFF
   buf.fill(255);
@@ -215,28 +216,28 @@ function encodeICO(images) {
 // Generate the icons
 const outDir = path.resolve(__dirname, '../frontend/public');
 
-// 1. pwa-512x512.png (solid white background, clean safe margin)
-const pwa512 = renderIcon(512, 0.68);
+// 1. pwa-512x512.png (solid white background, exact 0.60 scale matching maskable)
+const pwa512 = renderIcon(512, 0.60);
 fs.writeFileSync(path.join(outDir, 'pwa-512x512.png'), pwa512);
 
 // 2. pwa-maskable-512x512.png (solid white edge-to-edge, safe zone = 60% scale so Android never cuts it)
 const pwaMaskable = renderIcon(512, 0.60);
 fs.writeFileSync(path.join(outDir, 'pwa-maskable-512x512.png'), pwaMaskable);
 
-// 3. pwa-192x192.png (solid white)
-const pwa192 = renderIcon(192, 0.68);
+// 3. pwa-192x192.png (solid white, exact 0.60 scale)
+const pwa192 = renderIcon(192, 0.60);
 fs.writeFileSync(path.join(outDir, 'pwa-192x192.png'), pwa192);
 
-// 4. apple-touch-icon.png (180x180, solid white)
-const appleIcon = renderIcon(180, 0.68);
+// 4. apple-touch-icon.png (180x180, solid white, exact 0.60 scale)
+const appleIcon = renderIcon(180, 0.60);
 fs.writeFileSync(path.join(outDir, 'apple-touch-icon.png'), appleIcon);
 
 // 5. favicon.png (48x48)
-const fav48 = renderIcon(48, 0.72);
+const fav48 = renderIcon(48, 0.70);
 fs.writeFileSync(path.join(outDir, 'favicon.png'), fav48);
 
-// 6. simplify-icon.png (512x512, solid white edge-to-edge)
-const simplifyIcon = renderIcon(512, 0.68);
+// 6. simplify-icon.png (512x512, solid white edge-to-edge, exact 0.60 scale)
+const simplifyIcon = renderIcon(512, 0.60);
 fs.writeFileSync(path.join(outDir, 'simplify-icon.png'), simplifyIcon);
 
 // 7. favicon.ico containing 16x16, 32x32, 48x48 (100% solid white edge-to-edge)
