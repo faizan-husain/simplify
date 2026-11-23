@@ -28,13 +28,17 @@ export interface PwaContextType {
 
 const PwaContext = createContext<PwaContextType | null>(null);
 
-function checkIsStandalone(): boolean {
+export function checkIsStandalone(): boolean {
   if (typeof window === 'undefined') return false;
 
   const hasMatchMedia = typeof window.matchMedia === 'function';
 
-  // 1. Standard CSS display-mode standalone
-  const isDisplayStandalone = hasMatchMedia ? window.matchMedia('(display-mode: standalone)').matches : false;
+  // 1. Standard CSS display-mode standalone, fullscreen, or minimal-ui
+  const isDisplayStandalone = hasMatchMedia
+    ? window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: fullscreen)').matches ||
+      window.matchMedia('(display-mode: minimal-ui)').matches
+    : false;
 
   // 2. iOS Safari standalone flag
   const isNavStandalone = Boolean((window.navigator as any).standalone);
@@ -42,12 +46,21 @@ function checkIsStandalone(): boolean {
   // 3. Android TWA / Home Screen launch referrer
   const isAndroidTWA = typeof document !== 'undefined' && document.referrer.startsWith('android-app://');
 
-  // 4. Fullscreen or minimal-ui display modes (used on some platforms)
-  const isFullscreen = hasMatchMedia ? window.matchMedia('(display-mode: fullscreen)').matches : false;
-  const isMinimalUI = hasMatchMedia ? window.matchMedia('(display-mode: minimal-ui)').matches : false;
+  // 4. URL query param (?app=simplify) from manifest start_url
+  const isAppUrl = typeof window !== 'undefined' && window.location.search.includes('app=simplify');
 
-  return isDisplayStandalone || isNavStandalone || isAndroidTWA || isFullscreen || isMinimalUI;
+  // 5. Persistent local flag from previous successful installation on this device
+  let isStoredInstalled = false;
+  try {
+    isStoredInstalled =
+      localStorage.getItem('simplify_pwa_installed') === 'true' ||
+      (window as any).__isSimplifyInstalled === true;
+  } catch (_) {}
+
+  return isDisplayStandalone || isNavStandalone || isAndroidTWA || isAppUrl || isStoredInstalled;
 }
+
+export const checkIsInstalled = checkIsStandalone;
 
 export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isInstalled, setIsInstalled] = useState<boolean>(() => checkIsStandalone());
@@ -123,14 +136,39 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       handleMediaChange = (e: MediaQueryListEvent) => {
         if (e.matches) {
           setIsInstalled(true);
+          setInstallStatus('INSTALLED');
           setDeferredPrompt(null);
           (window as any).__deferredInstallPrompt = null;
+          try {
+            localStorage.setItem('simplify_pwa_installed', 'true');
+          } catch (_) {}
         }
       };
       mediaQuery.addEventListener?.('change', handleMediaChange);
     }
 
-    // 3. Capture beforeinstallprompt (Android, Chrome, Edge)
+    // 3. Query navigator.getInstalledRelatedApps (supported in Chromium browsers & Android)
+    if (
+      typeof navigator !== 'undefined' &&
+      'getInstalledRelatedApps' in navigator &&
+      typeof (navigator as any).getInstalledRelatedApps === 'function'
+    ) {
+      (navigator as any)
+        .getInstalledRelatedApps()
+        .then((apps: any[]) => {
+          if (Array.isArray(apps) && apps.length > 0) {
+            console.log('[PWA] Verified installed via getInstalledRelatedApps:', apps);
+            setIsInstalled(true);
+            setInstallStatus('INSTALLED');
+            try {
+              localStorage.setItem('simplify_pwa_installed', 'true');
+            } catch (_) {}
+          }
+        })
+        .catch(() => {});
+    }
+
+    // 4. Capture beforeinstallprompt (Android, Chrome, Edge)
     const syncPrompt = (e?: Event) => {
       const prompt = e || (window as any).__deferredInstallPrompt;
       if (prompt) {
@@ -155,13 +193,16 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-    // 4. Capture appinstalled event
+    // 5. Capture appinstalled event
     const handleAppInstalled = () => {
       console.log('[PWA] appinstalled event fired by browser');
       setIsInstalled(true);
       setInstallStatus('INSTALLED');
       setDeferredPrompt(null);
       (window as any).__deferredInstallPrompt = null;
+      try {
+        localStorage.setItem('simplify_pwa_installed', 'true');
+      } catch (_) {}
       setIsModalOpen(false);
     };
     window.addEventListener('appinstalled', handleAppInstalled);
@@ -211,6 +252,9 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (typeof window !== 'undefined') {
             (window as any).__deferredInstallPrompt = null;
           }
+          try {
+            localStorage.setItem('simplify_pwa_installed', 'true');
+          } catch (_) {}
           setIsModalOpen(false);
           return true;
         } else {

@@ -708,8 +708,8 @@ export const SettingsPage: React.FC = () => {
                 loading={saving}
                 className="bg-slate-900 hover:bg-slate-800 text-white flex-1 sm:flex-initial px-7 h-[42px] font-semibold shadow-2xs border-0 rounded-xl"
               >
-                <Save className="w-4 h-4 mr-2 shrink-0" />
-                <span className="whitespace-nowrap">Save All Settings</span>
+                {!saving && <Save className="w-4 h-4 mr-2 shrink-0" />}
+                <span className="whitespace-nowrap">{saving ? 'Saving Settings...' : 'Save All Settings'}</span>
               </Button>
             </div>
           </div>

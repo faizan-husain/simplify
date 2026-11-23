@@ -145,9 +145,14 @@ export const PwaInstallModal: React.FC = () => {
 
         {/* 4. If Installed */}
         {isInstalled && (
-          <div className="p-3 rounded-xl bg-emerald-50 text-center flex items-center justify-center gap-2 text-xs font-bold text-emerald-800">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            <span>Simplify is Installed</span>
+          <div className="p-3.5 rounded-xl bg-emerald-50 text-center flex flex-col items-center justify-center gap-1.5 text-xs text-emerald-800">
+            <div className="flex items-center gap-2 font-bold text-[13px]">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <span>Simplify is Installed</span>
+            </div>
+            <p className="text-emerald-700 text-[11.5px] font-medium">
+              The app is installed and ready to use on this device.
+            </p>
           </div>
         )}
 

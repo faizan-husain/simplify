@@ -216,8 +216,8 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
             loading={loading}
             className="bg-[#0F766E] hover:bg-[#0D655E] text-white font-semibold rounded-xl border-0 shadow-sm flex items-center gap-1.5 px-4"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Restore Bill</span>
+            {!loading && <RotateCcw className="w-3.5 h-3.5" />}
+            <span>{loading ? 'Restoring...' : 'Restore Bill'}</span>
           </Button>
         </div>
       </form>

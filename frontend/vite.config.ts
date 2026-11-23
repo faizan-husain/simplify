@@ -30,6 +30,14 @@ export default defineConfig({
         scope: '/',
         display: 'standalone',
         orientation: 'portrait',
+        related_applications: [
+          {
+            platform: 'webapp',
+            url: '/manifest.webmanifest',
+            id: 'simplify-billing-saas-app',
+          },
+        ],
+        prefer_related_applications: false,
         theme_color: '#0F766E',
         background_color: '#FFFFFF',
         icons: [

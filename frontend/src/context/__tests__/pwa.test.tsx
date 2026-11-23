@@ -23,6 +23,9 @@ describe('PwaContext Installation & Detection', () => {
   let listeners: Record<string, EventListenerOrEventListenerObject[]> = {};
 
   beforeEach(() => {
+    localStorage.clear();
+    delete (window as any).__isSimplifyInstalled;
+    delete (window as any).__deferredInstallPrompt;
     listeners = {};
     vi.spyOn(window, 'addEventListener').mockImplementation((event, handler) => {
       if (!listeners[event]) listeners[event] = [];
@@ -151,5 +154,18 @@ describe('PwaContext Installation & Detection', () => {
     });
 
     expect(screen.getByTestId('modalOpen').textContent).toBe('true');
+  });
+
+  it('detects installed state from persistent localStorage flag', () => {
+    localStorage.setItem('simplify_pwa_installed', 'true');
+
+    render(
+      <PwaProvider>
+        <TestConsumer />
+      </PwaProvider>
+    );
+
+    expect(screen.getByTestId('installed').textContent).toBe('true');
+    expect(screen.getByTestId('status').textContent).toBe('INSTALLED');
   });
 });

@@ -30,6 +30,7 @@
         window.addEventListener('appinstalled', function() {
           window.__deferredInstallPrompt = null;
           window.__isSimplifyInstalled = true;
+          try { localStorage.setItem('simplify_pwa_installed', 'true'); } catch(e) {}
           window.dispatchEvent(new CustomEvent('simplify:pwa_installed'));
         });
 

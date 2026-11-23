@@ -120,8 +120,8 @@ export const LoginPage: React.FC = () => {
             className="w-full mt-1"
             loading={loading}
           >
-            <span>{t('auth.sign_in')}</span>
-            <ArrowRight className="w-4 h-4 ml-1.5" />
+            <span>{loading ? 'Signing in...' : t('auth.sign_in')}</span>
+            {!loading && <ArrowRight className="w-4 h-4 ml-1.5 shrink-0" />}
           </Button>
         </form>
 

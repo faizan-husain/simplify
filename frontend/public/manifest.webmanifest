@@ -9,6 +9,14 @@
   "background_color": "#FFFFFF",
   "theme_color": "#0F766E",
   "orientation": "portrait",
+  "related_applications": [
+    {
+      "platform": "webapp",
+      "url": "/manifest.webmanifest",
+      "id": "simplify-billing-saas-app"
+    }
+  ],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/pwa-512x512.png",

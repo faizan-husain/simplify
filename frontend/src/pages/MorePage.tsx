@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, Tag, UserCheck, Settings, Trash2, LogOut, Smartphone, Keyboard } from 'lucide-react';
+import { Users, Tag, UserCheck, Settings, Trash2, LogOut, Smartphone, Keyboard, CheckCircle2 } from 'lucide-react';
 import { t } from '../i18n';
 import { ListRow } from '../components/ui/ListRow';
 import { useAuth } from '../context/AuthContext';
@@ -77,7 +77,18 @@ export const MorePage: React.FC = () => {
           leftContent={<UserCheck className="w-4 h-4 text-accent" />}
           onClick={() => navigate(member?.role === 'STAFF' ? '/earnings' : '/staff')}
         />
-        {!isInstalled && (
+        {isInstalled ? (
+          <ListRow
+            title="Simplify App"
+            subtitle="Installed and ready on this device"
+            leftContent={<CheckCircle2 className="w-4 h-4 text-emerald-600" />}
+            rightContent={
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
+                Installed
+              </span>
+            }
+          />
+        ) : (
           <ListRow
             title="Install Simplify App"
             subtitle="Get the full app experience on your device"

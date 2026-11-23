@@ -171,8 +171,8 @@ export const RegisterPage: React.FC = () => {
             className="w-full mt-2"
             loading={loading}
           >
-            <span>{t('auth.sign_up')}</span>
-            <ArrowRight className="w-4 h-4 ml-1.5" />
+            <span>{loading ? 'Creating account...' : t('auth.sign_up')}</span>
+            {!loading && <ArrowRight className="w-4 h-4 ml-1.5 shrink-0" />}
           </Button>
         </form>
 
