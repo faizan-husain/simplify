@@ -338,6 +338,163 @@ export const DashboardPage: React.FC = () => {
   const totalOutstanding = Number(duesSummary?.total_outstanding ?? (data?.total_outstanding ?? 0));
   const loanOutstanding = data?.loan_outstanding ?? 0;
 
+  // Real database calculation of previous period metrics for comparison
+  const [prevStats, setPrevStats] = useState<{
+    prevIncome: number;
+    prevOutgoing: number;
+    prevNetProfit: number;
+    label: string;
+  } | null>(null);
+
+  useEffect(() => {
+    async function fetchPreviousPeriod() {
+      // 1. If activeData already has prev_income from the updated RPC, use it directly!
+      if (activeData && (activeData as any).prev_income !== undefined) {
+        setPrevStats({
+          prevIncome: Number((activeData as any).prev_income ?? 0),
+          prevOutgoing: Number((activeData as any).prev_outgoing ?? 0),
+          prevNetProfit: Number((activeData as any).prev_net_profit ?? 0),
+          label: (activeData as any).comparison_label || (period === 'TODAY' ? 'vs yesterday' : period === 'THIS_YEAR' ? 'vs last year' : 'vs last month'),
+        });
+        return;
+      }
+
+      // 2. Resilient fallback: compute previous period dates and query directly from DB
+      try {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = now.getMonth(); // 0-11
+        let startStr = '';
+        let endStr = '';
+        let label = 'vs last month';
+
+        if (period === 'TODAY') {
+          const yesterday = new Date(now);
+          yesterday.setDate(yesterday.getDate() - 1);
+          startStr = yesterday.toISOString().slice(0, 10);
+          endStr = startStr;
+          label = 'vs yesterday';
+        } else if (period === 'THIS_MONTH') {
+          const prevMonthLastDay = new Date(year, month, 0);
+          const prevMonthYear = prevMonthLastDay.getFullYear();
+          const prevMonthNum = prevMonthLastDay.getMonth() + 1;
+          const totalDays = prevMonthLastDay.getDate();
+          startStr = `${prevMonthYear}-${String(prevMonthNum).padStart(2, '0')}-01`;
+          endStr = `${prevMonthYear}-${String(prevMonthNum).padStart(2, '0')}-${String(totalDays).padStart(2, '0')}`;
+          label = 'vs last month';
+        } else {
+          // THIS_YEAR (FY): Indian FY starts Apr 1
+          const isAfterMarch = month >= 3; // Apr-Dec
+          const curFyStartYear = isAfterMarch ? year : year - 1;
+          const prevFyStartYear = curFyStartYear - 1;
+          startStr = `${prevFyStartYear}-04-01`;
+          endStr = `${prevFyStartYear + 1}-03-31`;
+          label = 'vs last year';
+        }
+
+        const [receiptsRes, paymentsRes, expensesRes] = await Promise.all([
+          supabase
+            .from('receipts')
+            .select('amount')
+            .gte('receipt_date', startStr)
+            .lte('receipt_date', endStr)
+            .is('deleted_at', null),
+          supabase
+            .from('payments')
+            .select('amount')
+            .gte('payment_date', startStr)
+            .lte('payment_date', endStr)
+            .is('deleted_at', null),
+          supabase
+            .from('expenses')
+            .select('amount')
+            .gte('expense_date', startStr)
+            .lte('expense_date', endStr)
+            .is('deleted_at', null),
+        ]);
+
+        const pIncome = (receiptsRes.data || []).reduce((acc: number, r: any) => acc + Number(r.amount || 0), 0);
+        const pPayments = (paymentsRes.data || []).reduce((acc: number, p: any) => acc + Number(p.amount || 0), 0);
+        const pExpenses = (expensesRes.data || []).reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0);
+        const pOutgoing = pPayments + pExpenses;
+        const pProfit = pIncome - pOutgoing;
+
+        setPrevStats({
+          prevIncome: pIncome,
+          prevOutgoing: pOutgoing,
+          prevNetProfit: pProfit,
+          label,
+        });
+      } catch (err) {
+        console.warn('Failed to load previous period comparison stats:', err);
+      }
+    }
+
+    if (!isStaff) {
+      fetchPreviousPeriod();
+    }
+  }, [activeData, period, isStaff]);
+
+  // Real percentage change calculations
+  const comparisonLabel = prevStats?.label || (period === 'TODAY' ? 'vs yesterday' : period === 'THIS_YEAR' ? 'vs last year' : 'vs last month');
+
+  const incomeDelta = useMemo(() => {
+    if (!prevStats) return undefined;
+    const prev = prevStats.prevIncome;
+    const cur = income;
+    if (prev === 0 && cur === 0) {
+      return { value: '0%', isPositive: true, label: comparisonLabel };
+    }
+    if (prev === 0) {
+      return { value: '+100%', isPositive: true, label: comparisonLabel };
+    }
+    const pct = ((cur - prev) / prev) * 100;
+    const abs = Math.abs(pct);
+    return {
+      value: `${pct >= 0 ? '+' : '-'}${abs >= 100 ? Math.round(abs) : abs.toFixed(1)}%`,
+      isPositive: pct >= 0,
+      label: comparisonLabel,
+    };
+  }, [income, prevStats, comparisonLabel]);
+
+  const outgoingDelta = useMemo(() => {
+    if (!prevStats) return undefined;
+    const prev = prevStats.prevOutgoing;
+    const cur = outgoing;
+    if (prev === 0 && cur === 0) {
+      return { value: '0%', isPositive: true, label: comparisonLabel };
+    }
+    if (prev === 0) {
+      return { value: '+100%', isPositive: false, label: comparisonLabel };
+    }
+    const pct = ((cur - prev) / prev) * 100;
+    const abs = Math.abs(pct);
+    return {
+      value: `${pct >= 0 ? '+' : '-'}${abs >= 100 ? Math.round(abs) : abs.toFixed(1)}%`,
+      isPositive: pct <= 0, // Lower outgoing is positive (green)
+      label: comparisonLabel,
+    };
+  }, [outgoing, prevStats, comparisonLabel]);
+
+  const profitDelta = useMemo(() => {
+    if (!prevStats) return undefined;
+    const prev = prevStats.prevNetProfit;
+    const cur = netProfit;
+    if (prev === 0 && cur === 0) {
+      return { value: '0%', isPositive: true, label: comparisonLabel };
+    }
+    if (prev === 0) {
+      return { value: cur >= 0 ? '+100%' : '-100%', isPositive: cur >= 0, label: comparisonLabel };
+    }
+    const pct = ((cur - prev) / Math.abs(prev)) * 100;
+    const abs = Math.abs(pct);
+    return {
+      value: `${pct >= 0 ? '+' : '-'}${abs >= 100 ? Math.round(abs) : abs.toFixed(1)}%`,
+      isPositive: cur >= prev,
+      label: comparisonLabel,
+    };
+  }, [netProfit, prevStats, comparisonLabel]);
+
   interface BankCardInfo {
     id: string;
     bank_name: string;
@@ -1208,42 +1365,42 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. Action Pill Buttons Row (Owner only - Receipt, Payment, Expense, Customer - 1 Row) */}
+      {/* 2. Action Pill Buttons: 2 rows on mobile (2 cols), 1 row on desktop (4 cols) */}
       {!isStaff && (
-        <div className="grid grid-cols-4 gap-1.5 sm:gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-2.5">
           <button
             type="button"
             onClick={() => navigate('/money?tab=receipts')}
-            className="flex items-center justify-center gap-1 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[12.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <ArrowDownLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#0F766E] shrink-0" />
+            <ArrowDownLeft className="w-4 h-4 text-[#0F766E] shrink-0" />
             <span className="truncate">Receipt</span>
           </button>
 
           <button
             type="button"
             onClick={() => navigate('/money?tab=payments')}
-            className="flex items-center justify-center gap-1 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[12.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#4B5563] shrink-0" />
+            <ArrowUpRight className="w-4 h-4 text-[#4B5563] shrink-0" />
             <span className="truncate">Payment</span>
           </button>
 
           <button
             type="button"
             onClick={() => navigate('/money?tab=expenses')}
-            className="flex items-center justify-center gap-1.5 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[12.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <Calendar className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#D97706] shrink-0" />
+            <Calendar className="w-4 h-4 text-[#D97706] shrink-0" />
             <span className="truncate">Expense</span>
           </button>
 
           <button
             type="button"
             onClick={() => navigate('/customers')}
-            className="flex items-center justify-center gap-1 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[11.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 rounded-xl sm:rounded-2xl bg-white border-0 text-[12.5px] sm:text-[13px] font-semibold text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] hover:bg-[#F8FAFC] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
-            <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#4B5563] shrink-0" />
+            <UserPlus className="w-4 h-4 text-[#4B5563] shrink-0" />
             <span className="truncate">Customer</span>
           </button>
         </div>
@@ -1270,11 +1427,7 @@ export const DashboardPage: React.FC = () => {
           label="Income"
           value={formatINR(income)}
           onClick={() => navigate('/money?tab=receipts')}
-          delta={{
-            value: '+12.4%',
-            isPositive: true,
-            label: 'vs last month',
-          }}
+          delta={incomeDelta}
           icon={
             <div className="w-7 h-7 rounded-full bg-white text-[#0F766E] shadow-2xs flex items-center justify-center shrink-0">
               <ArrowDownLeft className="w-4 h-4" />
@@ -1288,11 +1441,7 @@ export const DashboardPage: React.FC = () => {
           label="Outgoing"
           value={formatINR(outgoing)}
           onClick={() => navigate('/money?tab=expenses')}
-          delta={{
-            value: '+4.1%',
-            isPositive: false,
-            label: 'vs last month',
-          }}
+          delta={outgoingDelta}
           icon={
             <div className="w-7 h-7 rounded-full bg-white text-[#4B5563] shadow-2xs flex items-center justify-center shrink-0">
               <ArrowUpRight className="w-4 h-4" />
@@ -1306,11 +1455,7 @@ export const DashboardPage: React.FC = () => {
           label="Net profit"
           value={formatINR(netProfit)}
           onClick={() => navigate('/reports?tab=pnl')}
-          delta={{
-            value: '+21.8%',
-            isPositive: true,
-            label: 'cash basis',
-          }}
+          delta={profitDelta}
           icon={
             <div className="w-7 h-7 rounded-full bg-white text-[#0F766E] shadow-2xs flex items-center justify-center shrink-0">
               <TrendingUp className="w-4 h-4" />

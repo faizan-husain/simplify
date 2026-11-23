@@ -207,10 +207,10 @@ export const Layout: React.FC = () => {
       { to: '/more', label: t('nav.more'), icon: Menu },
     ];
 
-  // Mobile bottom bar items
+  // Mobile bottom bar items (Clean, balanced short labels for mobile bottom bar)
   const bottomNavItems = isStaff
     ? [
-      { to: '/', label: t('nav.my_dashboard'), icon: LayoutDashboard, exact: true },
+      { to: '/', label: 'Home', icon: LayoutDashboard, exact: true },
       { to: '/bills', label: t('nav.bills'), icon: FileText },
       ...(business?.job_management_enabled
         ? [{ to: '/jobs', label: t('nav.jobs'), icon: Briefcase }]
@@ -219,7 +219,7 @@ export const Layout: React.FC = () => {
       { to: '/more', label: t('nav.more'), icon: Menu },
     ]
     : [
-      { to: '/', label: t('nav.home'), icon: LayoutDashboard, exact: true },
+      { to: '/', label: 'Home', icon: LayoutDashboard, exact: true },
       { to: '/bills', label: t('nav.bills'), icon: FileText },
       { to: '/money', label: t('nav.money'), icon: IndianRupee },
       ...(business?.job_management_enabled
@@ -556,7 +556,7 @@ export const Layout: React.FC = () => {
             onClick={() => navigate('/bills/new')}
             aria-label={t('nav.new_bill')}
             className={clsx(
-              'md:hidden fixed right-4 bottom-20 z-40 w-14 h-14 rounded-full bg-ink text-white shadow-btn flex items-center justify-center active:scale-95 transition-all duration-300 print:hidden',
+              'md:hidden fixed right-4 bottom-[82px] z-40 w-14 h-14 rounded-full bg-ink text-white shadow-btn flex items-center justify-center active:scale-95 transition-all duration-300 print:hidden',
               isFabVisible ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0 pointer-events-none'
             )}
           >
@@ -564,33 +564,35 @@ export const Layout: React.FC = () => {
           </button>
         )}
 
-        {/* Mobile Bottom Navigation (64px, safe area) - max 5 items, hides during typing and full-screen flows */}
+        {/* Mobile Bottom Navigation (Floating dock: balanced left/right margins, top margin breathing room) */}
         {!isFullscreenFlow && !isKeyboardOpen && (
-          <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 h-16 pb-[env(safe-area-inset-bottom)] bg-white/95 backdrop-blur-md border-t border-divider flex items-center justify-around px-2 print:hidden">
-            {bottomNavItems.map((item) => {
-              const Icon = item.icon;
-              const active = isCurrentActive(item.to, item.exact);
+          <div className="md:hidden fixed bottom-2 inset-x-3.5 z-30 flex justify-center pointer-events-none print:hidden">
+            <nav className="w-full max-w-lg h-[62px] rounded-2xl bg-white/95 backdrop-blur-md border border-slate-200/90 shadow-[0_4px_24px_rgba(0,0,0,0.08)] flex items-center justify-around px-1.5 py-1 pointer-events-auto">
+              {bottomNavItems.map((item) => {
+                const Icon = item.icon;
+                const active = isCurrentActive(item.to, item.exact);
 
-              return (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={clsx(
-                    'flex flex-col items-center justify-center flex-1 h-full py-1 text-[11px] font-medium transition-colors min-h-[44px]',
-                    active ? 'text-accent font-semibold' : 'text-text-muted hover:text-text'
-                  )}
-                >
-                  <Icon
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
                     className={clsx(
-                      'w-5 h-5 mb-0.5 transition-colors',
-                      active ? 'text-accent' : 'text-text-muted'
+                      'flex flex-col items-center justify-center flex-1 h-full pt-1.5 pb-0.5 text-[10.5px] font-medium transition-colors min-w-0',
+                      active ? 'text-accent font-semibold' : 'text-text-muted hover:text-text'
                     )}
-                  />
-                  <span>{item.label}</span>
-                </NavLink>
-              );
-            })}
-          </nav>
+                  >
+                    <Icon
+                      className={clsx(
+                        'w-5 h-5 mb-0.5 transition-colors shrink-0',
+                        active ? 'text-accent' : 'text-text-muted'
+                      )}
+                    />
+                    <span className="truncate max-w-[54px] text-center leading-tight">{item.label}</span>
+                  </NavLink>
+                );
+              })}
+            </nav>
+          </div>
         )}
       </main>
 
