@@ -497,6 +497,19 @@ export const MoneyPage: React.FC = () => {
     else if (activeTab === 'loans') fetchLoans();
   }, [activeTab, duesFilter]);
 
+  // Enterprise Multi-Device Realtime sync: automatically refresh active financial tab on remote device changes
+  useEffect(() => {
+    const handleSync = () => {
+      if (activeTab === 'dues') fetchDues();
+      else if (activeTab === 'receipts') fetchReceipts();
+      else if (activeTab === 'payments') fetchPayments();
+      else if (activeTab === 'expenses') fetchExpenses();
+      else if (activeTab === 'loans') fetchLoans();
+    };
+    window.addEventListener('simplify:sync', handleSync);
+    return () => window.removeEventListener('simplify:sync', handleSync);
+  }, [activeTab]);
+
   const toggleCustomerExpand = (customerId: string) => {
     setExpandedCustomers((prev) => ({
       ...prev,

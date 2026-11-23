@@ -153,6 +153,19 @@ export const CustomersPage: React.FC = () => {
     fetchDuesData();
   }, [filterType]);
 
+  // Enterprise Multi-Device Realtime sync: automatically refresh customer and dues data on remote device changes
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      const table = e.detail?.table;
+      if (!table || table === 'customers' || table === 'invoices' || table === 'receipts') {
+        fetchCustomers();
+        fetchDuesData();
+      }
+    };
+    window.addEventListener('simplify:sync', handleSync);
+    return () => window.removeEventListener('simplify:sync', handleSync);
+  }, []);
+
   const handleOpenCreate = () => {
     setEditingCustomer(null);
     setName('');

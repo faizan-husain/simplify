@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { getErrorMessage } from '../../i18n';
@@ -39,6 +39,13 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
   const [selectedReason, setSelectedReason] = useState<string>(RESTORATION_REASONS[0]);
   const [otherExplanation, setOtherExplanation] = useState('');
   const [loading, setLoading] = useState(false);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey('restore'));
+
+  useEffect(() => {
+    if (open) {
+      idempotencyKeyRef.current = generateIdempotencyKey('restore');
+    }
+  }, [open]);
 
   if (!invoice) return null;
 
@@ -56,7 +63,7 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
 
     setLoading(true);
     try {
-      const idempotencyKey = generateIdempotencyKey('restore');
+      const idempotencyKey = idempotencyKeyRef.current;
       let rpcRes = await supabase.rpc('restore_invoice', {
         id: invoice.id,
         reason: finalReason,
@@ -85,6 +92,8 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
         console.error('restore_invoice error:', rpcRes.error);
         throw rpcRes.error;
       }
+
+      idempotencyKeyRef.current = generateIdempotencyKey('restore');
 
       const data = rpcRes.data;
       if (data?.already_active) {

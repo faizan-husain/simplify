@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { formatInputDate } from '../../lib/dates';
@@ -35,9 +35,11 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
   const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey('payout'));
 
   useEffect(() => {
     if (open) {
+      idempotencyKeyRef.current = generateIdempotencyKey('payout');
       setPayoutDate(formatInputDate());
       setNotes('');
       setMode('CASH');
@@ -111,11 +113,13 @@ export const PayStaffModal: React.FC<PayStaffModalProps> = ({
           bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
           bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
           notes: notes.trim() || null,
-          idempotency_key: generateIdempotencyKey('payout'),
+          idempotency_key: idempotencyKeyRef.current,
         },
       });
 
       if (error) throw error;
+
+      idempotencyKeyRef.current = generateIdempotencyKey('payout');
 
       showToast(t('staff.payout_saved'), 'success');
       onOpenChange(false);

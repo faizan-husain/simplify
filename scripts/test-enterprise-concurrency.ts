@@ -55,6 +55,7 @@ async function runScenarioTests() {
 
     const checkBizId = await setupClient.query(`SELECT app.current_business_id() as b, app.current_member_id() as m, auth.uid() as u;`);
     console.log('App context after register_business:', checkBizId.rows[0]);
+    businessId = checkBizId.rows[0].b;
 
     ownerMemberId = memRes.rows[0].id;
 
@@ -320,29 +321,38 @@ async function runScenarioTests() {
 
   let cancelRes1: any;
   let cancelRes2: any;
+  let cancelSuccess = false;
+  let cancelConflictCaught = false;
   try {
-    await cancelC1.query(`SET ROLE authenticated;`);
-    await cancelC1.query(`SELECT set_config('request.jwt.claim.sub', $1, false);`, [ownerUserId]);
-    await cancelC1.query(`SELECT set_config('request.jwt.claim.role', 'authenticated', false);`);
 
-    await cancelC2.query(`SET ROLE authenticated;`);
-    await cancelC2.query(`SELECT set_config('request.jwt.claim.sub', $1, false);`, [ownerUserId]);
-    await cancelC2.query(`SELECT set_config('request.jwt.claim.role', 'authenticated', false);`);
+    const p1 = cancelC1.query(`SELECT public.cancel_invoice($1::uuid, 'Double Cancel Test') as res;`, [billToCancelId])
+      .then((r) => { cancelSuccess = true; return r.rows[0].res; })
+      .catch((e: any) => {
+        if (e.message?.includes('INVOICE_ALREADY_CANCELLED')) {
+          cancelConflictCaught = true;
+          return { already_cancelled: true };
+        }
+        throw e;
+      });
 
-    [cancelRes1, cancelRes2] = await Promise.all([
-      cancelC1.query(`SELECT public.cancel_invoice($1::uuid, 'Double Cancel Test') as res;`, [billToCancelId]),
-      cancelC2.query(`SELECT public.cancel_invoice($1::uuid, 'Double Cancel Test') as res;`, [billToCancelId]),
-    ]);
+    const p2 = cancelC2.query(`SELECT public.cancel_invoice($1::uuid, 'Double Cancel Test') as res;`, [billToCancelId])
+      .then((r) => { cancelSuccess = true; return r.rows[0].res; })
+      .catch((e: any) => {
+        if (e.message?.includes('INVOICE_ALREADY_CANCELLED')) {
+          cancelConflictCaught = true;
+          return { already_cancelled: true };
+        }
+        throw e;
+      });
+
+    [cancelRes1, cancelRes2] = await Promise.all([p1, p2]);
   } finally {
     await cancelC1.end();
     await cancelC2.end();
   }
 
-  const r1 = cancelRes1.rows[0].res;
-  const r2 = cancelRes2.rows[0].res;
-  const oneCancelled = (r1.status === 'CANCELLED' && r2.already_cancelled) || (r2.status === 'CANCELLED' && r1.already_cancelled);
-  if (!oneCancelled && !(r1.status === 'CANCELLED' && r2.status === 'CANCELLED')) {
-    throw new Error(`TEST 4 FAILED: Expected clean handled cancellation conflict, got: ${JSON.stringify(r1)} & ${JSON.stringify(r2)}`);
+  if (!cancelSuccess || !cancelConflictCaught) {
+    throw new Error(`TEST 4 FAILED: Expected 1 cancellation to succeed and the second to raise INVOICE_ALREADY_CANCELLED conflict. Got cancelSuccess=${cancelSuccess}, conflictCaught=${cancelConflictCaught}`);
   }
   console.log('✅ TEST 4 PASSED: Simultaneous cancellation handled safely with atomic locking and zero unhandled errors.');
 
@@ -467,8 +477,273 @@ async function runScenarioTests() {
   }
   console.log('✅ TEST 6 PASSED: Stale update rejected with CONFLICT_DETECTED. No lost updates on simultaneous edits.');
 
+  // --------------------------------------------------------------------------
+  // TEST 7: Concurrent apply_advance & Advance Balance Race Safety
+  // --------------------------------------------------------------------------
+  console.log('\n--- TEST 7: Concurrent apply_advance & Advance Overdraft Prevention ---');
+  const advClient1 = createDbClient();
+  const advClient2 = createDbClient();
+  await advClient1.connect();
+  await advClient2.connect();
+
+  try {
+    await advClient1.query(`SET ROLE authenticated;`);
+    await advClient1.query(`SELECT set_config('request.jwt.claim.sub', $1, false);`, [ownerUserId]);
+    await advClient1.query(`SELECT set_config('request.jwt.claim.role', 'authenticated', false);`);
+
+    await advClient2.query(`SET ROLE authenticated;`);
+    await advClient2.query(`SELECT set_config('request.jwt.claim.sub', $1, false);`, [ownerUserId]);
+    await advClient2.query(`SELECT set_config('request.jwt.claim.role', 'authenticated', false);`);
+
+    // 1. Create a customer with 0 initial dues for advance test
+    const advCustRes = await advClient1.query(`
+      INSERT INTO public.customers (name, mobile, type)
+      VALUES ('Suresh Advance', '9876500099', 'REGULAR')
+      RETURNING id;
+    `);
+    const advCustomerId = advCustRes.rows[0].id;
+
+    // 2. Create an advance receipt of 1000 with 0 allocations (no dues exist, so all becomes advance)
+    const rcptRes = await advClient1.query(`
+      SELECT public.create_receipt(jsonb_build_object(
+        'customer_id', $1::text,
+        'amount', 1000,
+        'receipt_date', current_date::text,
+        'mode', 'CASH',
+        'kind', 'INVOICE_PAYMENT',
+        'allocations', jsonb_build_array(),
+        'idempotency_key', 'rcpt_adv_seed_1000'
+      )) as r;
+    `, [advCustomerId]);
+    const advanceRcptId = rcptRes.rows[0].r.receipt_id || rcptRes.rows[0].r.id;
+
+    // 3. Create 2 unpaid invoices of 600 each for Suresh Advance
+    const invA = await advClient1.query(`
+      SELECT public.create_invoice(jsonb_build_object(
+        'customer_id', $1::text,
+        'party_name', 'Suresh Advance',
+        'party_mobile', '9876500099',
+        'items', jsonb_build_array(jsonb_build_object('description', 'Adv Test A', 'quantity', 1, 'rate', 600)),
+        'paid', jsonb_build_object('amount', 0, 'mode', 'CASH')
+      )) as inv;
+    `, [advCustomerId]);
+    const invAId = invA.rows[0].inv.invoice_id || invA.rows[0].inv.id;
+
+    const invB = await advClient1.query(`
+      SELECT public.create_invoice(jsonb_build_object(
+        'customer_id', $1::text,
+        'party_name', 'Suresh Advance',
+        'party_mobile', '9876500099',
+        'items', jsonb_build_array(jsonb_build_object('description', 'Adv Test B', 'quantity', 1, 'rate', 600)),
+        'paid', jsonb_build_object('amount', 0, 'mode', 'CASH')
+      )) as inv;
+    `, [advCustomerId]);
+    const invBId = invB.rows[0].inv.invoice_id || invB.rows[0].inv.id;
+
+    // 3. Both workers attempt to apply 600 advance at the exact same moment
+    // Total advance is 1000, so 600 + 600 = 1200 would overdraft advance without row locking!
+    let aSuccess = false;
+    let bSuccess = false;
+    let insufficientCaught = false;
+
+    const pA = advClient1.query(`SELECT public.apply_advance($1::uuid, 600);`, [invAId])
+      .then(() => { aSuccess = true; })
+      .catch((e: any) => {
+        if (e.message?.includes('INSUFFICIENT_ADVANCE')) insufficientCaught = true;
+        else throw e;
+      });
+
+    const pB = advClient2.query(`SELECT public.apply_advance($1::uuid, 600);`, [invBId])
+      .then(() => { bSuccess = true; })
+      .catch((e: any) => {
+        if (e.message?.includes('INSUFFICIENT_ADVANCE')) insufficientCaught = true;
+        else throw e;
+      });
+
+    await Promise.all([pA, pB]);
+
+    if (!((aSuccess && !bSuccess) || (!aSuccess && bSuccess)) || !insufficientCaught) {
+      throw new Error(`TEST 7 FAILED: Expected exactly 1 success and 1 INSUFFICIENT_ADVANCE rejection. Got aSuccess=${aSuccess}, bSuccess=${bSuccess}, insufficientCaught=${insufficientCaught}`);
+    }
+
+    // Verify customer advance balance in DB: 1000 - 600 = 400 exactly
+    const advCheck = await advClient1.query(`
+      SELECT unallocated_amount FROM public.receipts WHERE id = $1::uuid;
+    `, [advanceRcptId]);
+    const remainingAdvance = parseFloat(advCheck.rows[0].unallocated_amount);
+    if (Math.abs(remainingAdvance - 400) > 0.01) {
+      throw new Error(`TEST 7 FAILED: Remaining advance should be 400, got ${remainingAdvance}`);
+    }
+  } finally {
+    await advClient1.end();
+    await advClient2.end();
+  }
+  console.log('✅ TEST 7 PASSED: Concurrent apply_advance serialized by customer row lock; zero overdrafts, remaining advance exactly ₹400.');
+
+  // --------------------------------------------------------------------------
+  // TEST 8: delete_receipt Atomic Reversal & Canonical Lock Ordering
+  // --------------------------------------------------------------------------
+  console.log('\n--- TEST 8: delete_receipt Reversal & Anti-Double-Delete ---');
+  const delClient1 = createDbClient();
+  const delClient2 = createDbClient();
+  await delClient1.connect();
+  await delClient2.connect();
+
+  try {
+    await delClient1.query(`SET ROLE authenticated;`);
+    await delClient1.query(`SELECT set_config('request.jwt.claim.sub', $1, false);`, [ownerUserId]);
+    await delClient1.query(`SELECT set_config('request.jwt.claim.role', 'authenticated', false);`);
+
+    await delClient2.query(`SET ROLE authenticated;`);
+    await delClient2.query(`SELECT set_config('request.jwt.claim.sub', $1, false);`, [ownerUserId]);
+    await delClient2.query(`SELECT set_config('request.jwt.claim.role', 'authenticated', false);`);
+
+    // 1. Create a bill of 400
+    const invRes = await delClient1.query(`
+      SELECT public.create_invoice(jsonb_build_object(
+        'customer_id', $1::text,
+        'party_name', 'Ramesh Kumar',
+        'party_mobile', '9876500001',
+        'items', jsonb_build_array(jsonb_build_object('description', 'Delete Test Bill', 'quantity', 1, 'rate', 400)),
+        'paid', jsonb_build_object('amount', 0, 'mode', 'CASH')
+      )) as inv;
+    `, [testCustomerId]);
+    const delInvId = invRes.rows[0].inv.invoice_id || invRes.rows[0].inv.id;
+
+    // 2. Create receipt paying 400 against this bill
+    const rcptToDelRes = await delClient1.query(`
+      SELECT public.create_receipt(jsonb_build_object(
+        'customer_id', $1::text,
+        'amount', 400,
+        'receipt_date', current_date::text,
+        'mode', 'CASH',
+        'kind', 'INVOICE_PAYMENT',
+        'allocations', jsonb_build_array(jsonb_build_object('invoice_id', $2::text, 'amount', 400)),
+        'idempotency_key', 'rcpt_to_be_deleted_400'
+      )) as r;
+    `, [testCustomerId, delInvId]);
+    const receiptToDelId = rcptToDelRes.rows[0].r.receipt_id || rcptToDelRes.rows[0].r.id;
+
+    // Verify bill is fully paid (paid_amount = 400)
+    const checkPaid = await delClient1.query(`SELECT paid_amount FROM public.invoices WHERE id = $1::uuid;`, [delInvId]);
+    if (parseFloat(checkPaid.rows[0].paid_amount) !== 400) {
+      throw new Error(`TEST 8 Setup FAILED: Bill paid_amount expected 400, got ${checkPaid.rows[0].paid_amount}`);
+    }
+
+    // 3. Two workers simultaneously call delete_receipt on the same receipt
+    let d1Success = false;
+    let d2Success = false;
+    let notFoundCaught = false;
+
+    const pDel1 = delClient1.query(`SELECT public.delete_receipt($1::uuid);`, [receiptToDelId])
+      .then(() => { d1Success = true; })
+      .catch((e: any) => {
+        if (e.message?.includes('RECEIPT_NOT_FOUND')) notFoundCaught = true;
+        else throw e;
+      });
+
+    const pDel2 = delClient2.query(`SELECT public.delete_receipt($1::uuid);`, [receiptToDelId])
+      .then(() => { d2Success = true; })
+      .catch((e: any) => {
+        if (e.message?.includes('RECEIPT_NOT_FOUND')) notFoundCaught = true;
+        else throw e;
+      });
+
+    await Promise.all([pDel1, pDel2]);
+
+    if (!((d1Success && !d2Success) || (!d1Success && d2Success)) || !notFoundCaught) {
+      throw new Error(`TEST 8 FAILED: Expected exactly 1 delete to succeed and 1 to fail with RECEIPT_NOT_FOUND.`);
+    }
+
+    // Verify bill paid_amount reopened to exactly 0 (not negative!)
+    const checkReopened = await delClient1.query(`SELECT paid_amount, (total - paid_amount) as balance FROM public.invoices WHERE id = $1::uuid;`, [delInvId]);
+    if (parseFloat(checkReopened.rows[0].paid_amount) !== 0 || parseFloat(checkReopened.rows[0].balance) !== 400) {
+      throw new Error(`TEST 8 FAILED: Bill balance not correctly reopened! paid_amount=${checkReopened.rows[0].paid_amount}, balance=${checkReopened.rows[0].balance}`);
+    }
+  } finally {
+    await delClient1.end();
+    await delClient2.end();
+  }
+  console.log('✅ TEST 8 PASSED: Concurrent delete_receipt safely reversed allocations; bill reopened to ₹400 balance with 0 duplicate reversals.');
+
+  // --------------------------------------------------------------------------
+  // TEST 9: record_loan_repayment Idempotency & Auto-Expense Linking
+  // --------------------------------------------------------------------------
+  console.log('\n--- TEST 9: record_loan_repayment Idempotency & Linked Expense ---');
+  const loanClient = createDbClient();
+  await loanClient.connect();
+
+  try {
+    await loanClient.query(`SET ROLE authenticated;`);
+    await loanClient.query(`SELECT set_config('request.jwt.claim.sub', $1, false);`, [ownerUserId]);
+    await loanClient.query(`SELECT set_config('request.jwt.claim.role', 'authenticated', false);`);
+
+    // 1. Create a loan of 10,000
+    const loanRes = await loanClient.query(`
+      INSERT INTO public.loans (lender_name, amount, loan_date, notes)
+      VALUES ('HDFC Business Loan', 10000.00, current_date, 'Test loan for concurrency')
+      RETURNING id;
+    `);
+    const loanId = loanRes.rows[0].id;
+
+    // 2. Record repayment with principal 2000 and interest 300 with idempotency key
+    const loanIdemKey = 'loan_repay_conc_key_999';
+    const repayPayload = JSON.stringify({
+      loan_id: loanId,
+      repayment_date: new Date().toISOString().split('T')[0],
+      principal: 2000,
+      interest: 300,
+      mode: 'BANK',
+      bank_account_id: bankAId,
+      notes: 'Monthly EMI payment',
+      idempotency_key: loanIdemKey,
+    });
+
+    // Worker A records repayment
+    const rep1 = await loanClient.query(`SELECT public.record_loan_repayment($1::jsonb) as res;`, [repayPayload]);
+    const res1 = rep1.rows[0].res;
+    console.log('Loan repayment initial response:', res1);
+
+    if (parseFloat(res1.remaining_principal) !== 8000) {
+      throw new Error(`TEST 9 FAILED: Remaining principal expected 8000, got ${res1.remaining_principal}`);
+    }
+
+    // Verify interest expense created
+    if (!res1.interest_expense_id) {
+      throw new Error('TEST 9 FAILED: Interest expense ID was not returned!');
+    }
+    const expCheck = await loanClient.query(`SELECT amount, loan_repayment_id FROM public.expenses WHERE id = $1::uuid;`, [res1.interest_expense_id]);
+    if (parseFloat(expCheck.rows[0].amount) !== 300) {
+      throw new Error(`TEST 9 FAILED: Interest expense amount mismatch, expected 300, got ${expCheck.rows[0].amount}`);
+    }
+
+    // 3. Retry with the SAME idempotency key (simulating retry on timeout)
+    const rep2 = await loanClient.query(`SELECT public.record_loan_repayment($1::jsonb) as res;`, [repayPayload]);
+    const res2 = rep2.rows[0].res;
+
+    // Assert exact cached response returned
+    if (res1.repayment.id !== res2.repayment.id) {
+      throw new Error(`TEST 9 FAILED: Idempotency failed! Different repayment IDs: ${res1.repayment.id} vs ${res2.repayment.id}`);
+    }
+
+    // Verify total repayments count in DB is exactly 1 (not 2!)
+    const countRepayments = await loanClient.query(`SELECT count(*) as total, sum(principal) as total_p FROM public.loan_repayments WHERE loan_id = $1::uuid;`, [loanId]);
+    if (parseInt(countRepayments.rows[0].total, 10) !== 1 || parseFloat(countRepayments.rows[0].total_p) !== 2000) {
+      throw new Error(`TEST 9 FAILED: Duplicate loan repayment was recorded! count=${countRepayments.rows[0].total}`);
+    }
+
+    // Verify total expenses count with loan_repayment_id is exactly 1
+    const countExpenses = await loanClient.query(`SELECT count(*) as total FROM public.expenses WHERE loan_repayment_id = $1::uuid;`, [res1.repayment.id]);
+    if (parseInt(countExpenses.rows[0].total, 10) !== 1) {
+      throw new Error(`TEST 9 FAILED: Duplicate interest expense was created! count=${countExpenses.rows[0].total}`);
+    }
+  } finally {
+    await loanClient.end();
+  }
+  console.log('✅ TEST 9 PASSED: record_loan_repayment idempotency verified; retry returned cached result with zero duplicate payments or expenses.');
+
   console.log('\n========================================================================');
-  console.log('ALL ENTERPRISE MULTI-DEVICE & CONCURRENCY SAFETY TESTS PASSED! (7/7)');
+  console.log('ALL ENTERPRISE MULTI-DEVICE & CONCURRENCY SAFETY TESTS PASSED! (9/9)');
   console.log('========================================================================\n');
 }
 

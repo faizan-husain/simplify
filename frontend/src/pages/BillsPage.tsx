@@ -180,6 +180,18 @@ export const BillsPage: React.FC = () => {
     fetchInvoices();
   }, [filter, isStaff, member?.id]);
 
+  // Enterprise Multi-Device Realtime sync: automatically refresh bill list on remote device changes
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      const table = e.detail?.table;
+      if (!table || table === 'invoices' || table === 'receipts') {
+        fetchInvoices();
+      }
+    };
+    window.addEventListener('simplify:sync', handleSync);
+    return () => window.removeEventListener('simplify:sync', handleSync);
+  }, [filter, isStaff, member?.id]);
+
   const handleOpenDetail = async (inv: Invoice) => {
     let items = inv.invoice_items;
     if (!items || items.length === 0) {

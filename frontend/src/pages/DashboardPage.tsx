@@ -317,6 +317,15 @@ export const DashboardPage: React.FC = () => {
     loadDashboard();
   }, [period]);
 
+  // Enterprise Multi-Device Realtime sync: automatically refresh metrics on remote device changes
+  useEffect(() => {
+    const handleSync = () => {
+      loadDashboard();
+    };
+    window.addEventListener('simplify:sync', handleSync);
+    return () => window.removeEventListener('simplify:sync', handleSync);
+  }, [period]);
+
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good morning';

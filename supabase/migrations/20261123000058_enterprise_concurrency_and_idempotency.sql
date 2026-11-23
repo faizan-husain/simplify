@@ -438,11 +438,15 @@ BEGIN
   END IF;
 
   v_result := jsonb_build_object(
+    'id', v_invoice_id,
     'invoice_id', v_invoice_id,
     'number', v_invoice_number,
+    'subtotal', v_subtotal,
     'total', v_total,
     'paid_amount', v_paid_now,
     'customer_id', v_customer_id,
+    'party_name', v_party_name,
+    'party_mobile', v_party_mobile,
     'status', 'ACTIVE'
   );
 
@@ -542,7 +546,7 @@ BEGIN
   -- Optimistic Concurrency Control (OCC) Check
   IF payload ? 'last_updated_at' AND payload->>'last_updated_at' IS NOT NULL AND payload->>'last_updated_at' <> '' THEN
     v_last_updated_at := (payload->>'last_updated_at')::timestamptz;
-    IF v_inv.updated_at > v_last_updated_at THEN
+    IF date_trunc('milliseconds', v_inv.updated_at) > date_trunc('milliseconds', v_last_updated_at) THEN
       RAISE EXCEPTION 'CONFLICT_DETECTED' USING ERRCODE = 'P0001',
         DETAIL = jsonb_build_object(
           'message', 'Invoice was modified on another device since you loaded it.',
@@ -569,18 +573,18 @@ BEGIN
   END IF;
 
   v_items := payload->'items';
-  IF v_items IS NULL OR jsonb_array_length(v_items) = 0 THEN
-    RAISE EXCEPTION 'INVOICE_REQUIRES_ITEMS' USING ERRCODE = 'P0001';
+  IF v_items IS NOT NULL AND jsonb_array_length(v_items) > 0 THEN
+    -- Recalculate totals
+    FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+      v_item := v_items->i;
+      v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+      v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+      v_line_amount := ROUND(v_qty * v_rate, 2);
+      v_subtotal := v_subtotal + v_line_amount;
+    END LOOP;
+  ELSE
+    v_subtotal := v_inv.subtotal;
   END IF;
-
-  -- Recalculate totals
-  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
-    v_item := v_items->i;
-    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
-    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
-    v_line_amount := ROUND(v_qty * v_rate, 2);
-    v_subtotal := v_subtotal + v_line_amount;
-  END LOOP;
 
   v_discount_type := UPPER(COALESCE(payload->>'discount_type', v_inv.discount_type));
   v_discount_value := COALESCE((payload->>'discount_value')::numeric, v_inv.discount_value);
@@ -669,36 +673,43 @@ BEGIN
   RETURNING * INTO v_inv;
 
   -- Re-sync items: remove unticked non-progress jobs and recreate items
-  DELETE FROM public.invoice_items WHERE invoice_id = p_invoice_id;
+  IF v_items IS NOT NULL AND jsonb_array_length(v_items) > 0 THEN
+    DELETE FROM public.invoice_items WHERE invoice_id = p_invoice_id;
 
-  FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
-    v_item := v_items->i;
-    v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
-    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
-    v_line_amount := ROUND(v_qty * v_rate, 2);
+    FOR i IN 0 .. jsonb_array_length(v_items) - 1 LOOP
+      v_item := v_items->i;
+      v_qty := COALESCE((v_item->>'quantity')::numeric, 1);
+      v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+      v_line_amount := ROUND(v_qty * v_rate, 2);
 
-    v_item_service_id := NULL;
-    IF (v_item->>'service_id') IS NOT NULL AND (v_item->>'service_id') <> '' THEN
-      SELECT s.id INTO v_item_service_id
-      FROM public.services s
-      WHERE s.id = (v_item->>'service_id')::uuid AND s.business_id = v_biz_id;
-    END IF;
+      v_item_service_id := NULL;
+      IF (v_item->>'service_id') IS NOT NULL AND (v_item->>'service_id') <> '' THEN
+        SELECT s.id INTO v_item_service_id
+        FROM public.services s
+        WHERE s.id = (v_item->>'service_id')::uuid AND s.business_id = v_biz_id;
+      END IF;
 
-    INSERT INTO public.invoice_items (
-      business_id, invoice_id, service_id, description, quantity, rate, amount,
-      is_job, applicant_name, created_by, updated_by
-    ) VALUES (
-      v_biz_id, p_invoice_id, v_item_service_id, COALESCE(v_item->>'description', 'Item'),
-      v_qty, v_rate, v_line_amount, COALESCE((v_item->>'is_job')::boolean, false),
-      v_item->>'applicant_name', v_member_id, v_member_id
-    );
-  END LOOP;
+      INSERT INTO public.invoice_items (
+        business_id, invoice_id, service_id, description, quantity, rate, amount,
+        is_job, applicant_name, created_by, updated_by
+      ) VALUES (
+        v_biz_id, p_invoice_id, v_item_service_id, COALESCE(v_item->>'description', 'Item'),
+        v_qty, v_rate, v_line_amount, COALESCE((v_item->>'is_job')::boolean, false),
+        v_item->>'applicant_name', v_member_id, v_member_id
+      );
+    END LOOP;
+  END IF;
 
   RETURN jsonb_build_object(
+    'id', v_inv.id,
     'invoice_id', v_inv.id,
     'number', v_inv.number,
+    'subtotal', v_inv.subtotal,
     'total', v_inv.total,
     'paid_amount', v_inv.paid_amount,
+    'customer_id', v_inv.customer_id,
+    'party_name', v_inv.party_name,
+    'party_mobile', v_inv.party_mobile,
     'updated_at', v_inv.updated_at,
     'status', v_inv.status
   );
@@ -785,16 +796,12 @@ BEGIN
     RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001';
   END IF;
 
-  -- Multi-Device Safety: If already cancelled by another device, return safe confirmation
+  -- Multi-Device Safety: If already cancelled by another device, raise clear exception
   IF UPPER(v_inv.status) = 'CANCELLED' THEN
-    RETURN jsonb_build_object(
-      'success', true,
-      'invoice_id', v_inv.id,
-      'number', v_inv.number,
-      'status', 'CANCELLED',
-      'already_cancelled', true,
-      'message', 'Bill was already cancelled by another device or user.'
-    );
+    IF idempotency_key IS NOT NULL AND TRIM(idempotency_key) <> '' AND v_cached_resp IS NOT NULL THEN
+      RETURN v_cached_resp;
+    END IF;
+    RAISE EXCEPTION 'INVOICE_ALREADY_CANCELLED' USING ERRCODE = 'P0001';
   END IF;
 
   v_prev_paid := COALESCE(v_inv.paid_amount, 0);
@@ -960,16 +967,12 @@ BEGIN
     RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001';
   END IF;
 
-  -- Multi-Device Safety: If already active, return safe confirmation
+  -- Multi-Device Safety: If already active, raise clear exception
   IF UPPER(v_inv.status) = 'ACTIVE' THEN
-    RETURN jsonb_build_object(
-      'success', true,
-      'invoice_id', v_inv.id,
-      'number', v_inv.number,
-      'status', 'ACTIVE',
-      'already_active', true,
-      'message', 'Bill was already restored by another device or user.'
-    );
+    IF idempotency_key IS NOT NULL AND TRIM(idempotency_key) <> '' AND v_cached_resp IS NOT NULL THEN
+      RETURN v_cached_resp;
+    END IF;
+    RAISE EXCEPTION 'INVOICE_NOT_CANCELLED' USING ERRCODE = 'P0001';
   END IF;
 
   -- Lock customer row to serialize concurrent financial restoration for the customer
@@ -1556,6 +1559,402 @@ BEGIN
   RETURN v_result;
 END;
 $$;
+
+
+-- 9. Upgrade delete_receipt with Deterministic Canonical Lock Ordering & Customer Row Lock
+CREATE OR REPLACE FUNCTION public.delete_receipt(id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_rcpt public.receipts%ROWTYPE;
+  v_alloc record;
+  v_inv_ids uuid[];
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_rcpt
+  FROM public.receipts
+  WHERE receipts.id = delete_receipt.id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Lock customer row to serialize ledger operations
+  IF v_rcpt.customer_id IS NOT NULL THEN
+    PERFORM 1 FROM public.customers
+    WHERE customers.id = v_rcpt.customer_id AND business_id = v_biz_id
+    FOR UPDATE;
+  END IF;
+
+  -- Lock all affected invoices in canonical ascending order to prevent deadlocks
+  SELECT array_agg(DISTINCT invoice_id ORDER BY invoice_id ASC) INTO v_inv_ids
+  FROM public.receipt_allocations
+  WHERE receipt_id = v_rcpt.id AND deleted_at IS NULL;
+
+  IF v_inv_ids IS NOT NULL AND array_length(v_inv_ids, 1) > 0 THEN
+    PERFORM 1 FROM public.invoices
+    WHERE invoices.id = ANY(v_inv_ids) AND business_id = v_biz_id
+    ORDER BY invoices.id ASC
+    FOR UPDATE;
+  END IF;
+
+  -- Reverse allocations (reopen invoice balance)
+  FOR v_alloc IN
+    SELECT * FROM public.receipt_allocations
+    WHERE receipt_id = v_rcpt.id AND deleted_at IS NULL
+    ORDER BY id ASC
+    FOR UPDATE
+  LOOP
+    UPDATE public.invoices
+    SET paid_amount = GREATEST(0, paid_amount - v_alloc.amount),
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE invoices.id = v_alloc.invoice_id;
+
+    UPDATE public.receipt_allocations
+    SET deleted_at = now(),
+        deleted_by = v_member_id
+    WHERE receipt_allocations.id = v_alloc.id;
+  END LOOP;
+
+  -- Soft-delete receipt
+  UPDATE public.receipts
+  SET deleted_at = now(),
+      deleted_by = v_member_id
+  WHERE receipts.id = v_rcpt.id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'receipt_id', v_rcpt.id,
+    'amount', v_rcpt.amount
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.delete_receipt(uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.delete_receipt(uuid) TO authenticated;
+
+
+-- 10. Upgrade apply_advance with Customer Row Lock & Canonical Lock Ordering
+CREATE OR REPLACE FUNCTION public.apply_advance(
+  invoice_id uuid,
+  amount numeric,
+  receipt_id uuid DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_inv public.invoices%ROWTYPE;
+  v_rcpt public.receipts%ROWTYPE;
+  v_amt numeric(14,2);
+  v_inv_balance numeric(14,2);
+  v_remaining_to_apply numeric(14,2);
+  v_step_amt numeric(14,2);
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT', 'STAFF') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_amt := ROUND(amount, 2);
+  IF v_amt IS NULL OR v_amt <= 0 THEN
+    RAISE EXCEPTION 'INVALID_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_inv
+  FROM public.invoices
+  WHERE invoices.id = apply_advance.invoice_id
+    AND business_id = v_biz_id
+    AND status = 'ACTIVE'
+    AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVOICE_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF v_inv.customer_id IS NULL THEN
+    RAISE EXCEPTION 'CUSTOMER_REQUIRED_FOR_ADVANCE' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Lock customer row to serialize advance ledger movements
+  PERFORM 1 FROM public.customers
+  WHERE customers.id = v_inv.customer_id AND business_id = v_biz_id
+  FOR UPDATE;
+
+  v_inv_balance := v_inv.total - v_inv.paid_amount;
+  IF v_amt > v_inv_balance THEN
+    RAISE EXCEPTION 'ADVANCE_EXCEEDS_INVOICE_BALANCE' USING ERRCODE = 'P0001',
+      DETAIL = jsonb_build_object('balance', v_inv_balance, 'requested', v_amt)::text;
+  END IF;
+
+  IF receipt_id IS NOT NULL THEN
+    SELECT * INTO v_rcpt
+    FROM public.receipts
+    WHERE receipts.id = apply_advance.receipt_id
+      AND business_id = v_biz_id
+      AND customer_id = v_inv.customer_id
+      AND deleted_at IS NULL
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'RECEIPT_NOT_FOUND' USING ERRCODE = 'P0001';
+    END IF;
+
+    IF v_rcpt.unallocated_amount < v_amt THEN
+      RAISE EXCEPTION 'INSUFFICIENT_ADVANCE' USING ERRCODE = 'P0001',
+        DETAIL = jsonb_build_object('available', v_rcpt.unallocated_amount, 'requested', v_amt)::text;
+    END IF;
+
+    UPDATE public.receipts
+    SET unallocated_amount = unallocated_amount - v_amt,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE receipts.id = v_rcpt.id;
+
+    INSERT INTO public.receipt_allocations (
+      business_id, receipt_id, invoice_id, amount, created_by, updated_by
+    ) VALUES (
+      v_biz_id, v_rcpt.id, v_inv.id, v_amt, v_member_id, v_member_id
+    );
+
+    UPDATE public.invoices
+    SET paid_amount = paid_amount + v_amt,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE invoices.id = v_inv.id
+    RETURNING * INTO v_inv;
+  ELSE
+    -- FIFO across receipts with unallocated advance for customer
+    v_remaining_to_apply := v_amt;
+
+    FOR v_rcpt IN
+      SELECT * FROM public.receipts
+      WHERE business_id = v_biz_id
+        AND customer_id = v_inv.customer_id
+        AND unallocated_amount > 0
+        AND deleted_at IS NULL
+      ORDER BY receipt_date ASC, created_at ASC
+      FOR UPDATE
+    LOOP
+      v_step_amt := LEAST(v_remaining_to_apply, v_rcpt.unallocated_amount);
+      IF v_step_amt > 0 THEN
+        UPDATE public.receipts
+        SET unallocated_amount = unallocated_amount - v_step_amt,
+            updated_at = now(),
+            updated_by = v_member_id
+        WHERE receipts.id = v_rcpt.id;
+
+        INSERT INTO public.receipt_allocations (
+          business_id, receipt_id, invoice_id, amount, created_by, updated_by
+        ) VALUES (
+          v_biz_id, v_rcpt.id, v_inv.id, v_step_amt, v_member_id, v_member_id
+        );
+
+        v_remaining_to_apply := v_remaining_to_apply - v_step_amt;
+      END IF;
+
+      EXIT WHEN v_remaining_to_apply <= 0;
+    END LOOP;
+
+    IF v_remaining_to_apply > 0 THEN
+      RAISE EXCEPTION 'INSUFFICIENT_ADVANCE' USING ERRCODE = 'P0001',
+        DETAIL = jsonb_build_object('unapplied', v_remaining_to_apply)::text;
+    END IF;
+
+    UPDATE public.invoices
+    SET paid_amount = paid_amount + v_amt,
+        updated_at = now(),
+        updated_by = v_member_id
+    WHERE invoices.id = v_inv.id
+    RETURNING * INTO v_inv;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'invoice_id', v_inv.id,
+    'applied_amount', v_amt,
+    'paid_amount', v_inv.paid_amount,
+    'balance', v_inv.total - v_inv.paid_amount
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.apply_advance(uuid, numeric, uuid) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.apply_advance(uuid, numeric, uuid) TO authenticated;
+
+
+-- 11. Upgrade record_loan_repayment with Two-Phase Idempotency & Row Locking
+CREATE OR REPLACE FUNCTION public.record_loan_repayment(
+  payload jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_biz_id uuid;
+  v_member_id uuid;
+  v_role text;
+  v_loan_id uuid;
+  v_loan public.loans%ROWTYPE;
+  v_date date;
+  v_principal numeric(14,2);
+  v_interest numeric(14,2);
+  v_mode text;
+  v_notes text;
+  v_bank_account_id uuid := NULL;
+  v_bank_name text := NULL;
+  v_total_principal_repaid numeric(14,2);
+  v_outstanding numeric(14,2);
+  v_repayment public.loan_repayments%ROWTYPE;
+  v_interest_cat_id uuid;
+  v_expense_id uuid := NULL;
+  v_idem_key text;
+  v_idem_status text;
+  v_cached_resp jsonb;
+  v_result jsonb;
+BEGIN
+  v_biz_id := (SELECT app.current_business_id());
+  v_member_id := (SELECT app.current_member_id());
+  v_role := (SELECT app.current_role());
+
+  IF v_biz_id IS NULL OR v_role NOT IN ('OWNER', 'ACCOUNTANT') THEN
+    RAISE EXCEPTION 'FORBIDDEN' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Two-phase idempotency protection
+  v_idem_key := NULLIF(TRIM(COALESCE(payload->>'idempotency_key', '')), '');
+  IF v_idem_key IS NOT NULL THEN
+    INSERT INTO public.idempotency_keys (business_id, key, operation, status, updated_at)
+    VALUES (v_biz_id, v_idem_key, 'LOAN_REPAYMENT', 'PROCESSING', now())
+    ON CONFLICT (business_id, key) DO NOTHING;
+
+    SELECT status, response INTO v_idem_status, v_cached_resp
+    FROM public.idempotency_keys
+    WHERE business_id = v_biz_id AND key = v_idem_key
+    FOR UPDATE;
+
+    IF v_idem_status = 'COMPLETED' AND v_cached_resp IS NOT NULL THEN
+      RETURN v_cached_resp;
+    END IF;
+  END IF;
+
+  v_loan_id := (payload->>'loan_id')::uuid;
+  IF v_loan_id IS NULL THEN
+    RAISE EXCEPTION 'LOAN_ID_REQUIRED' USING ERRCODE = 'P0001';
+  END IF;
+
+  SELECT * INTO v_loan
+  FROM public.loans
+  WHERE id = v_loan_id AND business_id = v_biz_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'LOAN_NOT_FOUND' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_date := COALESCE((payload->>'repayment_date')::date, (SELECT app.today()));
+  v_principal := ROUND(COALESCE((payload->>'principal')::numeric, 0), 2);
+  v_interest := ROUND(COALESCE((payload->>'interest')::numeric, 0), 2);
+
+  IF v_principal < 0 OR v_interest < 0 OR (v_principal = 0 AND v_interest = 0) THEN
+    RAISE EXCEPTION 'INVALID_REPAYMENT_AMOUNT' USING ERRCODE = 'P0001';
+  END IF;
+
+  v_mode := UPPER(COALESCE(payload->>'mode', 'BANK'));
+  IF v_mode NOT IN ('CASH', 'UPI', 'CARD', 'BANK', 'CHEQUE') THEN
+    RAISE EXCEPTION 'INVALID_PAYMENT_MODE' USING ERRCODE = 'P0001';
+  END IF;
+
+  IF payload ? 'bank_account_id' AND payload->>'bank_account_id' <> '' THEN
+    v_bank_account_id := (payload->>'bank_account_id')::uuid;
+    SELECT bank_name INTO v_bank_name
+    FROM public.bank_accounts
+    WHERE id = v_bank_account_id AND business_id = v_biz_id AND deleted_at IS NULL;
+  END IF;
+
+  v_notes := NULLIF(TRIM(payload->>'notes'), '');
+
+  SELECT COALESCE(SUM(principal), 0) INTO v_total_principal_repaid
+  FROM public.loan_repayments
+  WHERE loan_id = v_loan.id AND deleted_at IS NULL;
+
+  v_outstanding := v_loan.amount - v_total_principal_repaid;
+  IF v_principal > v_outstanding THEN
+    RAISE EXCEPTION 'REPAYMENT_EXCEEDS_LOAN_BALANCE' USING ERRCODE = 'P0001',
+      DETAIL = jsonb_build_object('outstanding', v_outstanding, 'attempted', v_principal)::text;
+  END IF;
+
+  INSERT INTO public.loan_repayments (
+    business_id, loan_id, repayment_date, principal, interest, mode,
+    bank_account_id, bank_name, notes, created_by, updated_by
+  ) VALUES (
+    v_biz_id, v_loan.id, v_date, v_principal, v_interest, v_mode,
+    v_bank_account_id, v_bank_name, v_notes, v_member_id, v_member_id
+  ) RETURNING * INTO v_repayment;
+
+  IF v_interest > 0 THEN
+    SELECT id INTO v_interest_cat_id
+    FROM public.expense_categories
+    WHERE name = 'Loan Interest' AND (business_id = v_biz_id OR business_id IS NULL)
+    LIMIT 1;
+
+    INSERT INTO public.expenses (
+      business_id, fy_label, expense_date, category_id, description,
+      amount, mode, bank_account_id, bank_name, payee, notes, loan_repayment_id,
+      created_by, updated_by
+    ) VALUES (
+      v_biz_id, public.fy_label(v_date), v_date, v_interest_cat_id,
+      'Interest payment for loan from ' || v_loan.lender_name,
+      v_interest, v_mode, v_bank_account_id, v_bank_name, v_loan.lender_name,
+      v_notes, v_repayment.id, v_member_id, v_member_id
+    ) RETURNING id INTO v_expense_id;
+  END IF;
+
+  v_result := jsonb_build_object(
+    'repayment', to_jsonb(v_repayment),
+    'remaining_principal', v_outstanding - v_principal,
+    'interest_expense_id', v_expense_id
+  );
+
+  IF v_idem_key IS NOT NULL THEN
+    INSERT INTO public.idempotency_keys (business_id, key, operation, status, response, updated_at)
+    VALUES (v_biz_id, v_idem_key, 'LOAN_REPAYMENT', 'COMPLETED', v_result, now())
+    ON CONFLICT (business_id, key)
+    DO UPDATE SET status = 'COMPLETED', response = v_result, updated_at = now();
+  END IF;
+
+  RETURN v_result;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.record_loan_repayment(jsonb) FROM anon, public;
+GRANT EXECUTE ON FUNCTION public.record_loan_repayment(jsonb) TO authenticated;
 
 
 -- 10. OCC Helper Functions for Direct Entity Edits

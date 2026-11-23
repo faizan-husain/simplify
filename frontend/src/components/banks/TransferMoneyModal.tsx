@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { generateIdempotencyKey, formatConcurrencyError } from '../../lib/idempotency';
@@ -56,10 +56,12 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
   const [reference, setReference] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey('xfer'));
 
   // Sync initial type and default bank selections when opened
   useEffect(() => {
     if (open) {
+      idempotencyKeyRef.current = generateIdempotencyKey('xfer');
       setType(initialType);
       setAmount('');
       setReference('');
@@ -162,11 +164,13 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
         transfer_date: transferDate,
         reference: reference.trim() || null,
         notes: notes.trim() || null,
-        idempotency_key: generateIdempotencyKey('xfer'),
+        idempotency_key: idempotencyKeyRef.current,
       };
 
       const { error } = await supabase.rpc('record_money_transfer', { payload });
       if (error) throw error;
+
+      idempotencyKeyRef.current = generateIdempotencyKey('xfer');
 
       let successMsg = 'Transfer recorded successfully';
       if (type === 'CASH_TO_BANK') {
@@ -205,11 +209,10 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
             <button
               type="button"
               onClick={() => handleTypeChange('CASH_TO_BANK')}
-              className={`p-2.5 rounded-control border text-left flex flex-col items-center justify-center text-center transition-all ${
-                type === 'CASH_TO_BANK'
+              className={`p-2.5 rounded-control border text-left flex flex-col items-center justify-center text-center transition-all ${type === 'CASH_TO_BANK'
                   ? 'bg-surface-2 border-accent text-text ring-1 ring-accent font-medium'
                   : 'bg-surface border-hair text-text-muted hover:bg-surface-2 hover:text-text'
-              }`}
+                }`}
             >
               <div className="w-8 h-8 rounded-full bg-surface-2 border border-hair flex items-center justify-center text-accent mb-1.5">
                 <ArrowDownLeft className="w-4 h-4" />
@@ -221,11 +224,10 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
             <button
               type="button"
               onClick={() => handleTypeChange('BANK_TO_CASH')}
-              className={`p-2.5 rounded-control border text-left flex flex-col items-center justify-center text-center transition-all ${
-                type === 'BANK_TO_CASH'
+              className={`p-2.5 rounded-control border text-left flex flex-col items-center justify-center text-center transition-all ${type === 'BANK_TO_CASH'
                   ? 'bg-surface-2 border-accent text-text ring-1 ring-accent font-medium'
                   : 'bg-surface border-hair text-text-muted hover:bg-surface-2 hover:text-text'
-              }`}
+                }`}
             >
               <div className="w-8 h-8 rounded-full bg-surface-2 border border-hair flex items-center justify-center text-accent mb-1.5">
                 <ArrowUpRight className="w-4 h-4" />
@@ -237,11 +239,10 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
             <button
               type="button"
               onClick={() => handleTypeChange('BANK_TO_BANK')}
-              className={`p-2.5 rounded-control border text-left flex flex-col items-center justify-center text-center transition-all ${
-                type === 'BANK_TO_BANK'
+              className={`p-2.5 rounded-control border text-left flex flex-col items-center justify-center text-center transition-all ${type === 'BANK_TO_BANK'
                   ? 'bg-surface-2 border-accent text-text ring-1 ring-accent font-medium'
                   : 'bg-surface border-hair text-text-muted hover:bg-surface-2 hover:text-text'
-              }`}
+                }`}
             >
               <div className="w-8 h-8 rounded-full bg-surface-2 border border-hair flex items-center justify-center text-accent mb-1.5">
                 <Repeat className="w-4 h-4" />
@@ -283,10 +284,10 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
                   bankAccounts.length === 0
                     ? [{ value: '', label: 'No Bank Accounts Configured' }]
                     : bankAccounts.map((b) => ({
-                        value: b.id,
-                        label: `${b.bank_name} - ${b.account_name}`,
-                        sublabel: formatINR(b.current_balance ?? b.opening_balance ?? 0),
-                      }))
+                      value: b.id,
+                      label: `${b.bank_name} - ${b.account_name}`,
+                      sublabel: formatINR(b.current_balance ?? b.opening_balance ?? 0),
+                    }))
                 }
                 size="sm"
                 searchable={bankAccounts.length > 5}

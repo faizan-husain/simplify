@@ -110,6 +110,7 @@ export const NewBillPage: React.FC = () => {
   const { registerSaveHandler } = useKeyboardShortcuts();
   const walkInNameRef = useRef<HTMLInputElement>(null);
   const customerSearchRef = useRef<HTMLInputElement>(null);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey('bill'));
 
   const [isWalkIn, setIsWalkIn] = useState(true); // Default Walk-in for rapid POS billing
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
@@ -828,7 +829,7 @@ export const NewBillPage: React.FC = () => {
         }
 
         // Attach unique idempotency key to prevent duplicates on double-click or network retry
-        payload.idempotency_key = generateIdempotencyKey('bill');
+        payload.idempotency_key = idempotencyKeyRef.current;
 
         if (editInvoiceId) {
           if (editingInvoiceUpdatedAt) {
@@ -840,6 +841,7 @@ export const NewBillPage: React.FC = () => {
           });
           if (error) throw error;
 
+          idempotencyKeyRef.current = generateIdempotencyKey('bill');
           showToast(`Bill #${editingInvoiceNumber || ''} updated successfully!`, 'success');
           navigate('/bills');
           return;
@@ -847,6 +849,9 @@ export const NewBillPage: React.FC = () => {
 
         const { data, error } = await supabase.rpc('create_invoice', { payload });
         if (error) throw error;
+
+        // Reset idempotency key for next bill
+        idempotencyKeyRef.current = generateIdempotencyKey('bill');
 
         // Clear local draft
         localStorage.removeItem(DRAFT_STORAGE_KEY);

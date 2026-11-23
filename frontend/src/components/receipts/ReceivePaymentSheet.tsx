@@ -112,6 +112,13 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
 
   const [saving, setSaving] = useState(false);
   const [savedReceipt, setSavedReceipt] = useState<any | null>(null);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey('rcpt'));
+
+  useEffect(() => {
+    if (open) {
+      idempotencyKeyRef.current = generateIdempotencyKey('rcpt');
+    }
+  }, [open]);
 
   // Fetch bank accounts
   useEffect(() => {
@@ -446,10 +453,12 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
       }
 
       // Idempotency token to prevent double receipts on fast taps or network retry
-      payload.idempotency_key = generateIdempotencyKey('rcpt');
+      payload.idempotency_key = idempotencyKeyRef.current;
 
       const { data, error } = await supabase.rpc('create_receipt', { payload });
       if (error) throw error;
+
+      idempotencyKeyRef.current = generateIdempotencyKey('rcpt');
 
       setSavedReceipt(data);
       showToast('Payment received & receipt generated!', 'success');

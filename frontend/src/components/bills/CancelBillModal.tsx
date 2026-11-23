@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { getErrorMessage } from '../../i18n';
@@ -41,6 +41,13 @@ export const CancelBillModal: React.FC<CancelBillModalProps> = ({
   const [otherExplanation, setOtherExplanation] = useState('');
   const [voidReceipts, setVoidReceipts] = useState(false);
   const [loading, setLoading] = useState(false);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey('cancel'));
+
+  useEffect(() => {
+    if (open) {
+      idempotencyKeyRef.current = generateIdempotencyKey('cancel');
+    }
+  }, [open]);
 
   if (!invoice) return null;
 
@@ -64,13 +71,15 @@ export const CancelBillModal: React.FC<CancelBillModalProps> = ({
         id: invoice.id,
         reason: finalReason,
         void_receipts: voidReceipts,
-        idempotency_key: generateIdempotencyKey('cancel'),
+        idempotency_key: idempotencyKeyRef.current,
       });
 
       if (error) {
         console.error('cancel_invoice error:', error);
         throw error;
       }
+
+      idempotencyKeyRef.current = generateIdempotencyKey('cancel');
 
       if (data?.already_cancelled) {
         showToast(`Bill #${invoice.number} was already cancelled on another device.`, 'info');

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { t } from '../../i18n';
@@ -40,9 +40,11 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
   const [repaymentDate, setRepaymentDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey('loan_repay'));
 
   useEffect(() => {
     if (open) {
+      idempotencyKeyRef.current = generateIdempotencyKey('loan_repay');
       supabase
         .from('bank_accounts')
         .select('id, bank_name, account_name, account_number')
@@ -92,11 +94,13 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
         bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
         bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
         notes: notes.trim() || null,
-        idempotency_key: generateIdempotencyKey('loan_repay'),
+        idempotency_key: idempotencyKeyRef.current,
       };
 
       const { error } = await supabase.rpc('record_loan_repayment', { payload });
       if (error) throw error;
+
+      idempotencyKeyRef.current = generateIdempotencyKey('loan_repay');
 
       if (iNum > 0) {
         showToast(`Repayment saved! ₹${iNum} interest recorded as business expense.`, 'success');

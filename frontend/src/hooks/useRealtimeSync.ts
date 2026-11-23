@@ -20,13 +20,21 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
 
   // Debounced cache invalidator to prevent refetch storms during rapid multi-record operations
   const debouncedInvalidate = useCallback(
-    (queryKey: string[], delay = 300) => {
+    (queryKey: string[], table?: string, delay = 300) => {
       const keyStr = queryKey.join(':');
       if (debounceTimerRef.current[keyStr]) {
         clearTimeout(debounceTimerRef.current[keyStr]);
       }
       debounceTimerRef.current[keyStr] = setTimeout(() => {
         queryClient.invalidateQueries({ queryKey });
+        // Dispatch window CustomEvent so active React components using local state re-fetch automatically
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('simplify:sync', {
+              detail: { queryKey, table },
+            })
+          );
+        }
         delete debounceTimerRef.current[keyStr];
       }, delay);
     },
@@ -52,10 +60,10 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['invoices']);
-        debouncedInvalidate(['dashboard']);
-        debouncedInvalidate(['dues']);
-        debouncedInvalidate(['reports']);
+        debouncedInvalidate(['invoices'], 'invoices');
+        debouncedInvalidate(['dashboard'], 'invoices');
+        debouncedInvalidate(['dues'], 'invoices');
+        debouncedInvalidate(['reports'], 'invoices');
       }
     );
 
@@ -69,11 +77,11 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['receipts']);
-        debouncedInvalidate(['dues']);
-        debouncedInvalidate(['cash_bank']);
-        debouncedInvalidate(['dashboard']);
-        debouncedInvalidate(['reports']);
+        debouncedInvalidate(['receipts'], 'receipts');
+        debouncedInvalidate(['dues'], 'receipts');
+        debouncedInvalidate(['cash_bank'], 'receipts');
+        debouncedInvalidate(['dashboard'], 'receipts');
+        debouncedInvalidate(['reports'], 'receipts');
       }
     );
 
@@ -87,9 +95,9 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['customers']);
-        debouncedInvalidate(['dues']);
-        debouncedInvalidate(['dashboard']);
+        debouncedInvalidate(['customers'], 'customers');
+        debouncedInvalidate(['dues'], 'customers');
+        debouncedInvalidate(['dashboard'], 'customers');
       }
     );
 
@@ -103,9 +111,9 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['jobs']);
-        debouncedInvalidate(['dashboard']);
-        debouncedInvalidate(['staff']);
+        debouncedInvalidate(['jobs'], 'jobs');
+        debouncedInvalidate(['dashboard'], 'jobs');
+        debouncedInvalidate(['staff'], 'jobs');
       }
     );
 
@@ -119,10 +127,10 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['expenses']);
-        debouncedInvalidate(['cash_bank']);
-        debouncedInvalidate(['dashboard']);
-        debouncedInvalidate(['reports']);
+        debouncedInvalidate(['expenses'], 'expenses');
+        debouncedInvalidate(['cash_bank'], 'expenses');
+        debouncedInvalidate(['dashboard'], 'expenses');
+        debouncedInvalidate(['reports'], 'expenses');
       }
     );
 
@@ -136,10 +144,10 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['payments']);
-        debouncedInvalidate(['cash_bank']);
-        debouncedInvalidate(['dashboard']);
-        debouncedInvalidate(['reports']);
+        debouncedInvalidate(['payments'], 'payments');
+        debouncedInvalidate(['cash_bank'], 'payments');
+        debouncedInvalidate(['dashboard'], 'payments');
+        debouncedInvalidate(['reports'], 'payments');
       }
     );
 
@@ -153,8 +161,8 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['cash_bank']);
-        debouncedInvalidate(['dashboard']);
+        debouncedInvalidate(['cash_bank'], 'money_transfers');
+        debouncedInvalidate(['dashboard'], 'money_transfers');
       }
     );
 
@@ -168,8 +176,8 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
         filter: `business_id=eq.${businessId}`,
       },
       () => {
-        debouncedInvalidate(['staff']);
-        debouncedInvalidate(['cash_bank']);
+        debouncedInvalidate(['staff'], 'staff_payouts');
+        debouncedInvalidate(['cash_bank'], 'staff_payouts');
       }
     );
 
@@ -185,11 +193,11 @@ export function useRealtimeSync({ businessId, enabled = true }: RealtimeSyncOpti
     // Network recovery and window focus handler: ensure stale state is updated after reconnection
     const handleReconnection = () => {
       if (navigator.onLine) {
-        debouncedInvalidate(['dashboard'], 50);
-        debouncedInvalidate(['invoices'], 50);
-        debouncedInvalidate(['dues'], 50);
-        debouncedInvalidate(['receipts'], 50);
-        debouncedInvalidate(['cash_bank'], 50);
+        debouncedInvalidate(['dashboard'], 'dashboard', 50);
+        debouncedInvalidate(['invoices'], 'invoices', 50);
+        debouncedInvalidate(['dues'], 'dues', 50);
+        debouncedInvalidate(['receipts'], 'receipts', 50);
+        debouncedInvalidate(['cash_bank'], 'cash_bank', 50);
       }
     };
 
