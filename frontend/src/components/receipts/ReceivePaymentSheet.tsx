@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { formatDate } from '../../lib/dates';
 import { getErrorMessage } from '../../i18n';
+import { generateIdempotencyKey, formatConcurrencyError } from '../../lib/idempotency';
 import { normalizeCustomerMobile } from '../documents/documentSharing';
 import { Sheet } from '../ui/Sheet';
 import { Button } from '../ui/Button';
@@ -444,6 +445,9 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
           }));
       }
 
+      // Idempotency token to prevent double receipts on fast taps or network retry
+      payload.idempotency_key = generateIdempotencyKey('rcpt');
+
       const { data, error } = await supabase.rpc('create_receipt', { payload });
       if (error) throw error;
 
@@ -456,7 +460,7 @@ export const ReceivePaymentSheet: React.FC<ReceivePaymentSheetProps> = ({
         onViewReceipt(data.id);
       }
     } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
+      showToast(formatConcurrencyError(err) || getErrorMessage(err.message), 'error');
     } finally {
       setSaving(false);
     }

@@ -3,6 +3,7 @@ import { clsx } from 'clsx';
 import { supabase } from '../lib/supabase';
 import { normaliseMobile, formatMobileDisplay, isValidIndianMobile } from '../lib/auth';
 import { t, getErrorMessage } from '../i18n';
+import { formatConcurrencyError } from '../lib/idempotency';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { Sheet } from '../components/ui/Sheet';
@@ -242,21 +243,41 @@ export const CustomersPage: React.FC = () => {
       const cleanWhatsapp = whatsapp ? normaliseMobile(whatsapp) : cleanMobile;
 
       if (editingCustomer) {
-        const { error } = await supabase
-          .from('customers')
-          .update({
-            name: name.trim(),
-            mobile: cleanMobile,
-            whatsapp: cleanWhatsapp,
-            email: email.trim() || null,
-            address: address.trim() || null,
-            notes: notes.trim() || null,
-            type: customerType,
-            possible_duplicate: possibleDuplicate || editingCustomer.possible_duplicate,
-          })
-          .eq('id', editingCustomer.id);
+        const payload: any = {
+          id: editingCustomer.id,
+          last_updated_at: (editingCustomer as any).updated_at || null,
+          name: name.trim(),
+          mobile: cleanMobile,
+          whatsapp: cleanWhatsapp,
+          email: email.trim() || null,
+          address: address.trim() || null,
+          notes: notes.trim() || null,
+          type: customerType,
+          possible_duplicate: possibleDuplicate || editingCustomer.possible_duplicate,
+        };
 
-        if (error) throw error;
+        const { error: occError } = await supabase.rpc('update_customer_occ', { payload });
+        if (occError) {
+          // If RPC doesn't exist yet in remote DB, fallback gracefully to direct update
+          if (occError.message?.includes('function') && occError.message?.includes('does not exist')) {
+            const { error: directError } = await supabase
+              .from('customers')
+              .update({
+                name: name.trim(),
+                mobile: cleanMobile,
+                whatsapp: cleanWhatsapp,
+                email: email.trim() || null,
+                address: address.trim() || null,
+                notes: notes.trim() || null,
+                type: customerType,
+                possible_duplicate: possibleDuplicate || editingCustomer.possible_duplicate,
+              })
+              .eq('id', editingCustomer.id);
+            if (directError) throw directError;
+          } else {
+            throw occError;
+          }
+        }
         showToast(t('common.success'), 'success');
       } else {
         const { error } = await supabase
@@ -279,7 +300,7 @@ export const CustomersPage: React.FC = () => {
       setIsSheetOpen(false);
       fetchCustomers();
     } catch (err: any) {
-      setFormError(getErrorMessage(err.message));
+      setFormError(formatConcurrencyError(err));
     } finally {
       setSaving(false);
     }

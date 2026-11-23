@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { getErrorMessage } from '../../i18n';
+import { generateIdempotencyKey, formatConcurrencyError } from '../../lib/idempotency';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
@@ -55,9 +56,11 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
 
     setLoading(true);
     try {
+      const idempotencyKey = generateIdempotencyKey('restore');
       let rpcRes = await supabase.rpc('restore_invoice', {
         id: invoice.id,
         reason: finalReason,
+        idempotency_key: idempotencyKey,
       });
 
       // If schema cache says argument mismatch or parameter named p_invoice_id
@@ -71,6 +74,7 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
         const retryRes = await supabase.rpc('restore_invoice', {
           p_invoice_id: invoice.id,
           p_reason: finalReason,
+          idempotency_key: idempotencyKey,
         } as any);
         if (!retryRes.error) {
           rpcRes = retryRes;
@@ -83,7 +87,9 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
       }
 
       const data = rpcRes.data;
-      if (data?.conflict_info) {
+      if (data?.already_active) {
+        showToast(`Bill #${invoice.number} was already restored on another device.`, 'info');
+      } else if (data?.conflict_info) {
         showToast(`Bill #${invoice.number} restored with note: ${data.conflict_info}`, 'info');
       } else {
         showToast(`Bill #${invoice.number} restored successfully!`, 'success');
@@ -97,7 +103,7 @@ export const RestoreBillModal: React.FC<RestoreBillModalProps> = ({
       if (rawMsg.includes('Could not find the function') || rawMsg.includes('schema cache')) {
         showToast('Database function not updated in Supabase. Please run the SQL migration in Supabase SQL Editor.', 'error');
       } else {
-        const friendly = getErrorMessage(rawMsg);
+        const friendly = formatConcurrencyError(err) || getErrorMessage(rawMsg);
         showToast(friendly !== 'An error occurred. Please try again.' ? friendly : (err.message || 'Failed to restore bill'), 'error');
       }
     } finally {

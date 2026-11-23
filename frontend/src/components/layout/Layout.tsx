@@ -29,11 +29,18 @@ import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { useKeyboardShortcuts } from '../../context/KeyboardShortcutContext';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { MobileProfileSheet } from '../mobile/MobileProfileSheet';
+import { useRealtimeSync } from '../../hooks/useRealtimeSync';
 
 export const Layout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { business, member, user, loading, signOut } = useAuth();
+
+  // Multi-device live Realtime synchronization
+  useRealtimeSync({
+    businessId: member?.business_id || business?.id,
+    enabled: !!user && !!member,
+  });
 
   const isRootScreen = ['/', '/bills', '/jobs', '/money', '/reports', '/more', '/earnings'].includes(location.pathname);
   const isFullscreenFlow = location.pathname === '/bills/new';

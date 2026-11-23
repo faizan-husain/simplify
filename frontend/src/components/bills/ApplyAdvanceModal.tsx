@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
-import { getErrorMessage, t } from '../../i18n';
+import { t } from '../../i18n';
+import { formatConcurrencyError } from '../../lib/idempotency';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { AmountInput } from '../ui/AmountInput';
@@ -56,7 +57,7 @@ export const ApplyAdvanceModal: React.FC<ApplyAdvanceModalProps> = ({
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
+      showToast(formatConcurrencyError(err), 'error');
     } finally {
       setApplying(false);
     }

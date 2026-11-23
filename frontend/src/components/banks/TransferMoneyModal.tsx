@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
-import { getErrorMessage } from '../../i18n';
+import { generateIdempotencyKey, formatConcurrencyError } from '../../lib/idempotency';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -154,7 +154,7 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
 
     setSubmitting(true);
     try {
-      const payload = {
+      const payload: any = {
         transfer_type: type,
         from_bank_account_id: type === 'CASH_TO_BANK' ? null : fromBankId,
         to_bank_account_id: type === 'BANK_TO_CASH' ? null : toBankId,
@@ -162,6 +162,7 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
         transfer_date: transferDate,
         reference: reference.trim() || null,
         notes: notes.trim() || null,
+        idempotency_key: generateIdempotencyKey('xfer'),
       };
 
       const { error } = await supabase.rpc('record_money_transfer', { payload });
@@ -180,7 +181,7 @@ export const TransferMoneyModal: React.FC<TransferMoneyModalProps> = ({
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
+      showToast(formatConcurrencyError(err), 'error');
     } finally {
       setSubmitting(false);
     }

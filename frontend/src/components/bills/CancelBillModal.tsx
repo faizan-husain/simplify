@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { getErrorMessage } from '../../i18n';
+import { generateIdempotencyKey, formatConcurrencyError } from '../../lib/idempotency';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
@@ -59,10 +60,11 @@ export const CancelBillModal: React.FC<CancelBillModalProps> = ({
 
     setLoading(true);
     try {
-      const { error } = await supabase.rpc('cancel_invoice', {
+      const { data, error } = await supabase.rpc('cancel_invoice', {
         id: invoice.id,
         reason: finalReason,
         void_receipts: voidReceipts,
+        idempotency_key: generateIdempotencyKey('cancel'),
       });
 
       if (error) {
@@ -70,16 +72,20 @@ export const CancelBillModal: React.FC<CancelBillModalProps> = ({
         throw error;
       }
 
-      showToast(`Bill #${invoice.number} cancelled successfully`, 'success');
+      if (data?.already_cancelled) {
+        showToast(`Bill #${invoice.number} was already cancelled on another device.`, 'info');
+      } else {
+        showToast(`Bill #${invoice.number} cancelled successfully`, 'success');
+      }
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
       console.error('Failed to cancel bill:', err);
       const rawMsg = err.message || err.error_description || String(err);
       if (rawMsg.includes('Could not find the function') || rawMsg.includes('schema cache')) {
-        showToast('Database function not updated. Please run Migration 56 in Supabase SQL editor.', 'error');
+        showToast('Database function not updated. Please run Migration in Supabase SQL editor.', 'error');
       } else {
-        showToast(getErrorMessage(rawMsg), 'error');
+        showToast(formatConcurrencyError(err) || getErrorMessage(rawMsg), 'error');
       }
     } finally {
       setLoading(false);

@@ -6,6 +6,7 @@ import { formatInputDate, getFYLabel } from '../lib/dates';
 import { addDays, parseISO } from 'date-fns';
 import { normaliseMobile, isValidIndianMobile } from '../lib/auth';
 import { getErrorMessage } from '../i18n';
+import { generateIdempotencyKey, formatConcurrencyError } from '../lib/idempotency';
 import { useToast } from '../components/ui/Toast';
 import { useAuth } from '../context/AuthContext';
 import { QRCodeSVG } from 'qrcode.react';
@@ -94,6 +95,7 @@ export const NewBillPage: React.FC = () => {
 
   // Edit mode state
   const [editingInvoiceNumber, setEditingInvoiceNumber] = useState<string | null>(null);
+  const [editingInvoiceUpdatedAt, setEditingInvoiceUpdatedAt] = useState<string | null>(null);
   const [nextInvoiceNumber, setNextInvoiceNumber] = useState<string>('INV-1001');
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [copiedUpi, setCopiedUpi] = useState(false);
@@ -358,6 +360,8 @@ export const NewBillPage: React.FC = () => {
           navigate('/bills');
           return;
         }
+
+        setEditingInvoiceUpdatedAt(inv.updated_at);
 
         if (inv.status === 'CANCELLED') {
           showToast('Cancelled bills cannot be edited', 'error');
@@ -823,7 +827,13 @@ export const NewBillPage: React.FC = () => {
           };
         }
 
+        // Attach unique idempotency key to prevent duplicates on double-click or network retry
+        payload.idempotency_key = generateIdempotencyKey('bill');
+
         if (editInvoiceId) {
+          if (editingInvoiceUpdatedAt) {
+            payload.last_updated_at = editingInvoiceUpdatedAt;
+          }
           const { error } = await supabase.rpc('update_invoice', {
             p_invoice_id: editInvoiceId,
             payload,
@@ -841,17 +851,19 @@ export const NewBillPage: React.FC = () => {
         // Clear local draft
         localStorage.removeItem(DRAFT_STORAGE_KEY);
 
+        const targetInvId = data.invoice_id || data.id;
+
         // Fetch complete invoice data and items
         const { data: invData } = await supabase
           .from('invoices')
           .select('*')
-          .eq('id', data.id)
+          .eq('id', targetInvId)
           .single();
 
         const { data: itemsData } = await supabase
           .from('invoice_items')
           .select('*')
-          .eq('invoice_id', data.id);
+          .eq('invoice_id', targetInvId);
 
         const fullInvoice: Invoice & { invoice_items?: InvoiceItem[] } = {
           ...(invData || data),
@@ -868,7 +880,7 @@ export const NewBillPage: React.FC = () => {
           'success'
         );
       } catch (err: any) {
-        showToast(getErrorMessage(err.message), 'error');
+        showToast(formatConcurrencyError(err) || getErrorMessage(err.message), 'error');
       } finally {
         setSaving(false);
       }

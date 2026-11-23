@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
-import { getErrorMessage, t } from '../../i18n';
+import { t } from '../../i18n';
+import { generateIdempotencyKey, formatConcurrencyError } from '../../lib/idempotency';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -82,7 +83,7 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
     setSaving(true);
     try {
       const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
-      const payload = {
+      const payload: any = {
         loan_id: loan.loan_id,
         repayment_date: repaymentDate,
         principal: pNum,
@@ -91,6 +92,7 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
         bank_account_id: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBankId || null : null,
         bank_name: ['BANK', 'UPI', 'CARD', 'CHEQUE'].includes(mode) ? selectedBank?.bank_name || null : null,
         notes: notes.trim() || null,
+        idempotency_key: generateIdempotencyKey('loan_repay'),
       };
 
       const { error } = await supabase.rpc('record_loan_repayment', { payload });
@@ -105,7 +107,7 @@ export const RecordRepaymentModal: React.FC<RecordRepaymentModalProps> = ({
       onOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
-      showToast(getErrorMessage(err.message), 'error');
+      showToast(formatConcurrencyError(err), 'error');
     } finally {
       setSaving(false);
     }

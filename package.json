@@ -15,7 +15,8 @@
     "gen:types": "supabase gen types typescript --local > frontend/src/types/supabase.ts || tsx scripts/gen-types.ts",
     "secret-leak-check": "tsx scripts/check-secret-leak.ts",
     "bridge": "tsx scripts/local-dev-bridge.ts",
-    "qa:pilot": "tsx qa/suites/run-pilot-audit.ts"
+    "qa:pilot": "tsx qa/suites/run-pilot-audit.ts",
+    "test:concurrency": "tsx scripts/test-enterprise-concurrency.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
