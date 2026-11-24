@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 
 export const PwaInstallModal: React.FC = () => {
-  const { isModalOpen, closeInstallModal, platform, isInstalled, promptInstall } = usePwa();
+  const { isModalOpen, closeInstallModal, platform, isInstalled, canPromptInstall, promptInstall } = usePwa();
   const [copied, setCopied] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
@@ -77,8 +77,18 @@ export const PwaInstallModal: React.FC = () => {
           </div>
         </div>
 
-        {/* 1. iOS Safari: 3 Clean Steps */}
-        {platform.isIOSSafari && !isInstalled && (
+        {/* 1. Direct prompt ready banner */}
+        {canPromptInstall && !isInstalled && (
+          <div className="p-3.5 rounded-xl bg-emerald-50 text-emerald-900 text-xs font-medium space-y-1">
+            <p className="font-bold text-emerald-950 text-[13px]">Ready to Install</p>
+            <p className="text-emerald-800 text-[12px] leading-relaxed">
+              Tap <strong>Install App</strong> below to add Simplify directly to your home screen.
+            </p>
+          </div>
+        )}
+
+        {/* 2. iOS Safari: 3 Clean Steps */}
+        {platform.isIOSSafari && !isInstalled && !canPromptInstall && (
           <div className="space-y-2">
             <div className="flex items-center gap-2.5 p-2.5 rounded-xl bg-[#F6F7F9] text-xs text-slate-700 font-medium">
               <span className="w-5 h-5 rounded-md bg-white text-slate-900 font-bold flex items-center justify-center shrink-0 shadow-2xs text-[11px]">
@@ -107,8 +117,8 @@ export const PwaInstallModal: React.FC = () => {
           </div>
         )}
 
-        {/* 2. iOS Other Browsers */}
-        {platform.isIOSOther && !isInstalled && (
+        {/* 3. iOS Other Browsers */}
+        {platform.isIOSOther && !isInstalled && !canPromptInstall && (
           <div className="p-3 rounded-xl bg-amber-50 text-xs text-amber-900 space-y-2">
             <p className="text-xs text-amber-800 font-medium">
               Please open Simplify in Safari to install on your iPhone.
@@ -135,7 +145,46 @@ export const PwaInstallModal: React.FC = () => {
           </div>
         )}
 
-        {/* 3. Hint message if direct browser trigger is unavailable */}
+        {/* 4. Android Chrome: 3 Steps when native prompt is temporarily waiting */}
+        {platform.isAndroid && !isInstalled && !canPromptInstall && (
+          <div className="space-y-2">
+            <p className="text-xs text-slate-600 font-medium">
+              To install or reinstall Simplify from Chrome:
+            </p>
+            <div className="flex items-center gap-2.5 p-2.5 rounded-xl bg-[#F6F7F9] text-xs text-slate-700 font-medium">
+              <span className="w-5 h-5 rounded-md bg-white text-slate-900 font-bold flex items-center justify-center shrink-0 shadow-2xs text-[11px]">
+                1
+              </span>
+              <span>Tap browser menu (⋮) at top-right</span>
+            </div>
+
+            <div className="flex items-center gap-2.5 p-2.5 rounded-xl bg-[#F6F7F9] text-xs text-slate-700 font-medium">
+              <span className="w-5 h-5 rounded-md bg-white text-slate-900 font-bold flex items-center justify-center shrink-0 shadow-2xs text-[11px]">
+                2
+              </span>
+              <span>Select <strong>Install app</strong> or <strong>Add to Home screen</strong></span>
+            </div>
+
+            <div className="flex items-center gap-2.5 p-2.5 rounded-xl bg-[#F6F7F9] text-xs text-slate-700 font-medium">
+              <span className="w-5 h-5 rounded-md bg-white text-slate-900 font-bold flex items-center justify-center shrink-0 shadow-2xs text-[11px]">
+                3
+              </span>
+              <span>Tap <strong>Install</strong> to confirm</span>
+            </div>
+          </div>
+        )}
+
+        {/* 5. Desktop: Steps when native prompt is not available */}
+        {platform.isDesktop && !isInstalled && !canPromptInstall && (
+          <div className="p-3 rounded-xl bg-[#F6F7F9] text-xs text-slate-700 space-y-1.5">
+            <p className="font-semibold text-slate-900">Install via browser:</p>
+            <p className="leading-relaxed">
+              Click the <strong>⊕ Install</strong> icon in the browser address bar at the top-right, or open menu (⋮) &gt; <strong>Install Simplify</strong>.
+            </p>
+          </div>
+        )}
+
+        {/* 6. Hint message if direct browser trigger is unavailable */}
         {hint && (
           <div className="p-2.5 rounded-xl bg-blue-50 text-blue-900 text-xs font-semibold flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-blue-600 shrink-0" />
@@ -143,7 +192,7 @@ export const PwaInstallModal: React.FC = () => {
           </div>
         )}
 
-        {/* 4. If Installed */}
+        {/* 7. If Currently Running in Standalone App Mode */}
         {isInstalled && (
           <div className="p-3.5 rounded-xl bg-emerald-50 text-center flex flex-col items-center justify-center gap-1.5 text-xs text-emerald-800">
             <div className="flex items-center gap-2 font-bold text-[13px]">
@@ -151,7 +200,7 @@ export const PwaInstallModal: React.FC = () => {
               <span>Simplify is Installed</span>
             </div>
             <p className="text-emerald-700 text-[11.5px] font-medium">
-              The app is installed and ready to use on this device.
+              Simplify is currently running as an installed standalone app on this device.
             </p>
           </div>
         )}

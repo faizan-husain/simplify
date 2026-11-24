@@ -345,7 +345,7 @@ export const ReportsPage: React.FC = () => {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-5 print:p-0 print:m-0 print:max-w-none print:space-y-3">
+    <div className="max-w-6xl mx-auto space-y-5 pb-12 print:p-0 print:m-0 print:max-w-none print:space-y-3">
       {/* Top Header & Contextual Controls Bar */}
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-0 pb-1 print:hidden">
         <div>

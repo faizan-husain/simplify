@@ -1279,7 +1279,7 @@ export const DashboardPage: React.FC = () => {
 
   if (loading && !data) {
     return (
-      <div className="space-y-6 max-w-[1240px] mx-auto p-2 sm:p-4">
+      <div className="space-y-6 max-w-[1240px] mx-auto">
         <div className="flex justify-between items-center">
           <Skeleton className="h-10 w-64" />
           <Skeleton className="h-10 w-48" />

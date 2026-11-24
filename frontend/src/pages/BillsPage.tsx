@@ -336,7 +336,7 @@ export const BillsPage: React.FC = () => {
   }, [filteredInvoices, focusedRowIndex, isDetailOpen, isReceivePaymentOpen, billToCancel]);
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-5">
+    <div className="max-w-6xl mx-auto space-y-5 pb-12">
       {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>

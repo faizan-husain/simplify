@@ -35,7 +35,7 @@ export const MorePage: React.FC = () => {
   };
 
   return (
-    <div className="p-4 md:p-6 max-w-xl mx-auto space-y-4 pb-12">
+    <div className="max-w-xl mx-auto space-y-4 pb-12">
       {/* Business & Profile Header */}
       <div
         onClick={() => navigate('/profile')}

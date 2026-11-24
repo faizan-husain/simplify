@@ -311,7 +311,7 @@ export const StaffDetailPage: React.FC = () => {
   };
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-5 print:p-0 print:m-0 print:max-w-none print:space-y-0">
+    <div className="max-w-6xl mx-auto space-y-5 pb-12 print:p-0 print:m-0 print:max-w-none print:space-y-0">
       {/* Back button & Breadcrumbs */}
       <div className="flex items-center justify-between gap-3 print:hidden no-print">
         <button

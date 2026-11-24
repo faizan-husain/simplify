@@ -82,7 +82,7 @@ export const RecentlyDeletedPage: React.FC = () => {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-4 pb-12">
+    <div className="max-w-2xl mx-auto space-y-4 pb-12">
       {/* Header */}
       <div className="flex items-center justify-between pb-2">
         <div className="flex items-center gap-3">

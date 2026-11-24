@@ -130,7 +130,7 @@ export const ProfilePage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-xl mx-auto space-y-5 py-2 sm:py-5 px-3 sm:px-0 select-none">
+    <div className="max-w-xl mx-auto space-y-5 py-2 sm:py-5 select-none pb-12">
       {/* Top Navigation Bar with Back Button */}
       <div className="flex items-center justify-between px-1">
         <button

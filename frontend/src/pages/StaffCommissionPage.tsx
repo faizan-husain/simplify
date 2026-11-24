@@ -182,7 +182,7 @@ export const StaffCommissionPage: React.FC = () => {
   });
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
+    <div className="max-w-5xl mx-auto space-y-5 pb-12">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>

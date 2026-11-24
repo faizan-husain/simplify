@@ -49,15 +49,9 @@ export function checkIsStandalone(): boolean {
   // 4. URL query param (?app=simplify) from manifest start_url
   const isAppUrl = typeof window !== 'undefined' && window.location.search.includes('app=simplify');
 
-  // 5. Persistent local flag from previous successful installation on this device
-  let isStoredInstalled = false;
-  try {
-    isStoredInstalled =
-      localStorage.getItem('simplify_pwa_installed') === 'true' ||
-      (window as any).__isSimplifyInstalled === true;
-  } catch (_) {}
-
-  return isDisplayStandalone || isNavStandalone || isAndroidTWA || isAppUrl || isStoredInstalled;
+  // Never treat a persisted localStorage flag as proof of installation!
+  // True installation state must come from real browser standalone display-mode signals.
+  return isDisplayStandalone || isNavStandalone || isAndroidTWA || isAppUrl;
 }
 
 export const checkIsInstalled = checkIsStandalone;
@@ -73,9 +67,16 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [installStatus, setInstallStatus] = useState<PwaInstallStatus>(() => {
     if (typeof window !== 'undefined' && checkIsStandalone()) return 'INSTALLED';
     if (typeof window !== 'undefined' && (window as any).__deferredInstallPrompt) return 'AVAILABLE';
-    return 'AVAILABLE';
+    return 'INSTRUCTIONS_NEEDED';
   });
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  // Proactively clear any stale installation flags from previous versions
+  useEffect(() => {
+    try {
+      localStorage.removeItem('simplify_pwa_installed');
+    } catch (_) {}
+  }, []);
 
   // Register service worker with auto-update in production
   useEffect(() => {
@@ -122,11 +123,34 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  // Listen for standalone mode changes and installation events
+  // Re-evaluate installation signals on demand (load, visibilitychange, focus, modal open)
+  const reevaluateState = useCallback(() => {
+    const isCurrentlyStandalone = checkIsStandalone();
+    setIsInstalled(isCurrentlyStandalone);
+
+    if (isCurrentlyStandalone) {
+      setInstallStatus('INSTALLED');
+      setDeferredPrompt(null);
+      if (typeof window !== 'undefined') {
+        (window as any).__deferredInstallPrompt = null;
+      }
+    } else {
+      const cachedPrompt = typeof window !== 'undefined' ? (window as any).__deferredInstallPrompt : null;
+      if (cachedPrompt) {
+        setDeferredPrompt(cachedPrompt);
+        setInstallStatus('AVAILABLE');
+      } else {
+        setInstallStatus((prev) =>
+          prev === 'IN_PROGRESS' || prev === 'DISMISSED' ? prev : 'INSTRUCTIONS_NEEDED'
+        );
+      }
+    }
+  }, []);
+
+  // Listen for standalone mode changes, visibility changes, and installation events
   useEffect(() => {
     // 1. Initial detection
-    const standaloneInitial = checkIsStandalone();
-    setIsInstalled(standaloneInitial);
+    reevaluateState();
 
     // 2. Media query listener for real-time display-mode transitions
     let mediaQuery: MediaQueryList | null = null;
@@ -134,39 +158,29 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (typeof window.matchMedia === 'function') {
       mediaQuery = window.matchMedia('(display-mode: standalone)');
       handleMediaChange = (e: MediaQueryListEvent) => {
+        setIsInstalled(e.matches);
         if (e.matches) {
-          setIsInstalled(true);
           setInstallStatus('INSTALLED');
           setDeferredPrompt(null);
-          (window as any).__deferredInstallPrompt = null;
-          try {
-            localStorage.setItem('simplify_pwa_installed', 'true');
-          } catch (_) {}
+          if (typeof window !== 'undefined') {
+            (window as any).__deferredInstallPrompt = null;
+          }
+        } else {
+          reevaluateState();
         }
       };
       mediaQuery.addEventListener?.('change', handleMediaChange);
     }
 
-    // 3. Query navigator.getInstalledRelatedApps (supported in Chromium browsers & Android)
-    if (
-      typeof navigator !== 'undefined' &&
-      'getInstalledRelatedApps' in navigator &&
-      typeof (navigator as any).getInstalledRelatedApps === 'function'
-    ) {
-      (navigator as any)
-        .getInstalledRelatedApps()
-        .then((apps: any[]) => {
-          if (Array.isArray(apps) && apps.length > 0) {
-            console.log('[PWA] Verified installed via getInstalledRelatedApps:', apps);
-            setIsInstalled(true);
-            setInstallStatus('INSTALLED');
-            try {
-              localStorage.setItem('simplify_pwa_installed', 'true');
-            } catch (_) {}
-          }
-        })
-        .catch(() => {});
-    }
+    // 3. Focus and Visibility Change re-evaluation (e.g. user uninstalls app, returns to Chrome)
+    const handleFocus = () => reevaluateState();
+    const handleVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        reevaluateState();
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     // 4. Capture beforeinstallprompt (Android, Chrome, Edge)
     const syncPrompt = (e?: Event) => {
@@ -174,6 +188,7 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (prompt) {
         setDeferredPrompt(prompt);
         setInstallStatus('AVAILABLE');
+        setIsInstalled(false); // Browser offers install prompt, so it is eligible for install/reinstall!
         console.log('[PWA] beforeinstallprompt captured and ready');
       }
     };
@@ -199,10 +214,9 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsInstalled(true);
       setInstallStatus('INSTALLED');
       setDeferredPrompt(null);
-      (window as any).__deferredInstallPrompt = null;
-      try {
-        localStorage.setItem('simplify_pwa_installed', 'true');
-      } catch (_) {}
+      if (typeof window !== 'undefined') {
+        (window as any).__deferredInstallPrompt = null;
+      }
       setIsModalOpen(false);
     };
     window.addEventListener('appinstalled', handleAppInstalled);
@@ -212,18 +226,20 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (mediaQuery && handleMediaChange) {
         mediaQuery.removeEventListener?.('change', handleMediaChange);
       }
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('simplify:pwa_prompt_ready', handlePromptReady);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
       window.removeEventListener('simplify:pwa_installed', handleAppInstalled);
     };
-  }, []);
+  }, [reevaluateState]);
 
   // Computed status considering platform & prompt state
   const computedStatus: PwaInstallStatus = useMemo(() => {
-    if (isInstalled) return 'INSTALLED';
+    if (isInstalled || checkIsStandalone()) return 'INSTALLED';
     if (installStatus === 'IN_PROGRESS') return 'IN_PROGRESS';
-    if (deferredPrompt || ((typeof window !== 'undefined') && (window as any).__deferredInstallPrompt)) return 'AVAILABLE';
+    if (deferredPrompt || (typeof window !== 'undefined' && (window as any).__deferredInstallPrompt)) return 'AVAILABLE';
     if (platform.isIOSOther) return 'UNSUPPORTED_IOS';
     if (installStatus === 'DISMISSED') return 'DISMISSED';
     return 'INSTRUCTIONS_NEEDED';
@@ -231,8 +247,8 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Prompt install handler
   const promptInstall = useCallback(async (): Promise<boolean> => {
-    // If already genuinely installed, never prompt
-    if (isInstalled) {
+    // If already running in standalone mode, do not prompt
+    if (checkIsStandalone()) {
       return true;
     }
 
@@ -252,9 +268,6 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (typeof window !== 'undefined') {
             (window as any).__deferredInstallPrompt = null;
           }
-          try {
-            localStorage.setItem('simplify_pwa_installed', 'true');
-          } catch (_) {}
           setIsModalOpen(false);
           return true;
         } else {
@@ -269,18 +282,21 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    // If native prompt is not available, open the install modal
+    // If native prompt is not available, open the install modal with platform guidance
     setIsModalOpen(true);
     return false;
-  }, [isInstalled, deferredPrompt]);
+  }, [deferredPrompt]);
 
-  const openInstallModal = useCallback(() => setIsModalOpen(true), []);
+  const openInstallModal = useCallback(() => {
+    reevaluateState();
+    setIsModalOpen(true);
+  }, [reevaluateState]);
   const closeInstallModal = useCallback(() => setIsModalOpen(false), []);
 
   const value = useMemo(
     () => ({
       isInstalled,
-      canPromptInstall: !isInstalled && Boolean(deferredPrompt),
+      canPromptInstall: !isInstalled && Boolean(deferredPrompt || (typeof window !== 'undefined' && (window as any).__deferredInstallPrompt)),
       installStatus: computedStatus,
       platform,
       promptInstall,
