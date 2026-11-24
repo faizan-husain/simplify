@@ -52,7 +52,10 @@ export function getErrorMessage(errorCodeOrMessage: string): string {
     'JOB_HAS_PROGRESS',
     'UNAUTHORIZED',
     'DUPLICATE_MOBILE',
-    'INVALID_PIN'
+    'INVALID_PIN',
+    'INVALID_QUANTITY_PRECISION',
+    'INVALID_QUANTITY_MIN',
+    'INVALID_QUANTITY'
   ];
 
   for (const code of knownCodes) {

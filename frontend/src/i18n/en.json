@@ -306,6 +306,9 @@
     "RESTORE_REASON_REQUIRED": "A restoration reason is required.",
     "INVOICE_NOT_CANCELLED": "This bill is not cancelled and cannot be restored.",
     "INVOICE_ALREADY_CANCELLED": "This bill is already cancelled.",
-    "INVOICE_NOT_FOUND": "Bill was not found."
+    "INVOICE_NOT_FOUND": "Bill was not found.",
+    "INVALID_QUANTITY": "Quantity must be a valid positive number.",
+    "INVALID_QUANTITY_MIN": "Quantity must be at least 0.01.",
+    "INVALID_QUANTITY_PRECISION": "Quantity cannot have more than 2 decimal places (e.g. 1.25)."
   }
 }

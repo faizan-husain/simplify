@@ -124,18 +124,30 @@ export const Layout: React.FC = () => {
   if (loading) {
     return (
       <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-white select-none">
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative flex items-center justify-center">
-            <img
-              src="/simplify-mark.png"
-              alt="SIMPLIFY"
-              className="w-[72px] h-[72px] object-contain select-none"
-            />
-          </div>
-          <div className="flex items-center gap-2 mt-1">
-            <div className="w-2.5 h-2.5 rounded-full bg-[#0F766E] animate-bounce [animation-delay:-0.3s]" />
-            <div className="w-2.5 h-2.5 rounded-full bg-[#0F766E] animate-bounce [animation-delay:-0.15s]" />
-            <div className="w-2.5 h-2.5 rounded-full bg-[#0F766E] animate-bounce" />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <img
+            src="/simplify-mark.png"
+            alt="SIMPLIFY"
+            width={72}
+            height={72}
+            style={{
+              width: '72px',
+              height: '72px',
+              minWidth: '72px',
+              minHeight: '72px',
+              maxWidth: '72px',
+              maxHeight: '72px',
+              objectFit: 'contain',
+              margin: '0 0 16px 0',
+              display: 'block',
+              aspectRatio: '1 / 1',
+            }}
+            className="select-none"
+          />
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <div style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#0F766E', animation: 'splashPulse 1.2s infinite ease-in-out' }} />
+            <div style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#0F766E', animation: 'splashPulse 1.2s infinite ease-in-out', animationDelay: '0.2s' }} />
+            <div style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#0F766E', animation: 'splashPulse 1.2s infinite ease-in-out', animationDelay: '0.4s' }} />
           </div>
         </div>
       </div>

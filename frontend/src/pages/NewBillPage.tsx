@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { computeBillTotals, computeLineAmount, formatINR } from '../lib/money';
+import { computeBillTotals, computeLineAmount, formatINR, validateQuantityPrecision } from '../lib/money';
 import { formatInputDate, getFYLabel } from '../lib/dates';
 import { addDays, parseISO } from 'date-fns';
 import { normaliseMobile, isValidIndianMobile } from '../lib/auth';
@@ -698,14 +698,13 @@ export const NewBillPage: React.FC = () => {
         return;
       }
 
-      // Check quantity validity: must be positive (> 0)
-      const invalidQtyItem = validItems.find((it) => {
-        const q = parseFloat(it.quantity || '0');
-        return isNaN(q) || q <= 0;
-      });
-      if (invalidQtyItem) {
-        showToast('Quantity must be greater than 0 for all items.', 'error');
-        return;
+      // Check quantity validity: must be at least 0.01 and have at most 2 decimal places
+      for (const it of validItems) {
+        const valRes = validateQuantityPrecision(it.quantity);
+        if (!valRes.valid) {
+          showToast(valRes.message || 'Invalid quantity.', 'error');
+          return;
+        }
       }
 
       // 2. USER MANDATORY RULE: If ANY item has Job ON, Job Service selection is mandatory!
@@ -1472,7 +1471,7 @@ export const NewBillPage: React.FC = () => {
                             <input
                               id={`item-qty-mob-${item.id}`}
                               type="number"
-                              step="any"
+                              step="0.01"
                               min="0.01"
                               value={item.quantity}
                               onKeyDown={(e) => {
@@ -1578,7 +1577,7 @@ export const NewBillPage: React.FC = () => {
                           <input
                             id={`item-qty-${item.id}`}
                             type="number"
-                            step="any"
+                            step="0.01"
                             min="0.01"
                             value={item.quantity}
                             onKeyDown={(e) => {

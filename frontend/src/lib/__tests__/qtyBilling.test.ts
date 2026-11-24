@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { computeLineAmount, computeBillTotals, formatINR, formatDecimal } from '../money';
+import {
+  computeLineAmount,
+  computeBillTotals,
+  formatINR,
+  formatDecimal,
+  validateQuantityPrecision,
+} from '../money';
 
 describe('QTY Field Behavior & Billing Calculations', () => {
   // Requirement 1 & 2 & 4: Default QTY 1 and calculations
@@ -147,5 +153,57 @@ describe('QTY Field Behavior & Billing Calculations', () => {
 
     const printLine = `${qty} x ${formatINR(rate)} = ${formatINR(amount)}`;
     expect(printLine).toBe('5 x ₹120 = ₹600');
+  });
+
+  // Precision Rules: Requirement 1, 2, 3, 4, 8 & 11
+  describe('validateQuantityPrecision', () => {
+    it('accepts valid integers and decimals with up to 2 decimal places', () => {
+      expect(validateQuantityPrecision(1)).toEqual({ valid: true });
+      expect(validateQuantityPrecision('1')).toEqual({ valid: true });
+      expect(validateQuantityPrecision(5)).toEqual({ valid: true });
+      expect(validateQuantityPrecision('5')).toEqual({ valid: true });
+      expect(validateQuantityPrecision(1.5)).toEqual({ valid: true });
+      expect(validateQuantityPrecision('1.5')).toEqual({ valid: true });
+      expect(validateQuantityPrecision(1.25)).toEqual({ valid: true });
+      expect(validateQuantityPrecision('1.25')).toEqual({ valid: true });
+      expect(validateQuantityPrecision(0.01)).toEqual({ valid: true });
+      expect(validateQuantityPrecision('0.01')).toEqual({ valid: true });
+    });
+
+    it('rejects values with more than 2 decimal places (such as 1.345 and 1.34535) without silent rounding', () => {
+      const res3Dec = validateQuantityPrecision('1.345');
+      expect(res3Dec.valid).toBe(false);
+      expect(res3Dec.error).toBe('MAX_DECIMALS');
+      expect(res3Dec.message).toBe('Quantity cannot have more than 2 decimal places (e.g. 1.25).');
+
+      const res5Dec = validateQuantityPrecision('1.34535');
+      expect(res5Dec.valid).toBe(false);
+      expect(res5Dec.error).toBe('MAX_DECIMALS');
+      expect(res5Dec.message).toBe('Quantity cannot have more than 2 decimal places (e.g. 1.25).');
+
+      // Ensure that raw number inputs with > 2 decimals are also rejected
+      expect(validateQuantityPrecision(1.345).valid).toBe(false);
+      expect(validateQuantityPrecision(1.34535).valid).toBe(false);
+    });
+
+    it('rejects zero and negative values as invalid', () => {
+      const resZero = validateQuantityPrecision('0');
+      expect(resZero.valid).toBe(false);
+      expect(resZero.error).toBe('MIN_VALUE');
+
+      const resNeg = validateQuantityPrecision('-1');
+      expect(resNeg.valid).toBe(false);
+      expect(resNeg.error).toBe('MIN_VALUE');
+
+      const resBelowMin = validateQuantityPrecision('0.005');
+      expect(resBelowMin.valid).toBe(false);
+    });
+
+    it('rejects empty, null, undefined, or non-numeric input', () => {
+      expect(validateQuantityPrecision('').valid).toBe(false);
+      expect(validateQuantityPrecision(null).valid).toBe(false);
+      expect(validateQuantityPrecision(undefined).valid).toBe(false);
+      expect(validateQuantityPrecision('abc').valid).toBe(false);
+    });
   });
 });

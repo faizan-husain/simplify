@@ -93,3 +93,42 @@ export function computeBillTotals(
     balance,
   };
 }
+
+/**
+ * Validates whether a quantity is valid per SIMPLIFY rules:
+ * - Positive number >= 0.01
+ * - Maximum 2 decimal places (no 1.345, 1.34535, etc.)
+ * - Valid integers and decimals: 1, 5, 1.5, 1.25, 0.01
+ */
+export function validateQuantityPrecision(qty: string | number | null | undefined): {
+  valid: boolean;
+  error?: 'REQUIRED' | 'INVALID_NUMBER' | 'MIN_VALUE' | 'MAX_DECIMALS';
+  message?: string;
+} {
+  if (qty === null || qty === undefined || String(qty).trim() === '') {
+    return { valid: false, error: 'REQUIRED', message: 'Quantity is required.' };
+  }
+
+  const str = String(qty).trim();
+  const num = parseFloat(str);
+
+  if (isNaN(num)) {
+    return { valid: false, error: 'INVALID_NUMBER', message: 'Quantity must be a valid number.' };
+  }
+
+  if (num < 0.01) {
+    return { valid: false, error: 'MIN_VALUE', message: 'Quantity must be at least 0.01.' };
+  }
+
+  // Check decimal places directly from string representation to avoid float rounding inaccuracies
+  const parts = str.split('.');
+  if (parts.length > 1 && parts[1].length > 2) {
+    return {
+      valid: false,
+      error: 'MAX_DECIMALS',
+      message: 'Quantity cannot have more than 2 decimal places (e.g. 1.25).',
+    };
+  }
+
+  return { valid: true };
+}
