@@ -206,13 +206,17 @@ describe('QTY Field Behavior & Billing Calculations', () => {
       expect(validateQuantityPrecision('abc').valid).toBe(false);
     });
 
-    // Requirement 10: Typing, pasting, editing natural transitions, and invalid precision restrictions
+    // Requirement 10: Typing, pasting, editing natural transitions, and blocking precision overflow
     describe('Natural typing, pasting and editing lifecycle', () => {
       const simulateQtyInput = (rawVal: string) => {
         let clean = rawVal.replace(/[^0-9.]/g, '');
         const parts = clean.split('.');
         if (parts.length > 2) {
           clean = parts[0] + '.' + parts.slice(1).join('');
+        }
+        const splitClean = clean.split('.');
+        if (splitClean.length > 1 && splitClean[1].length > 2) {
+          clean = splitClean[0] + '.' + splitClean[1].slice(0, 2);
         }
         const validation = validateQuantityPrecision(clean, { allowIntermediate: true });
         return { clean, validation };
@@ -239,29 +243,54 @@ describe('QTY Field Behavior & Billing Calculations', () => {
         expect(step4.clean).toBe('1.23');
         expect(step4.validation.valid).toBe(true);
 
-        // Step 5: User types 3rd decimal '2' -> '1.232' (INVALID)
+        // Step 5: User tries to type 3rd decimal '2' -> blocked from being typed, remains '1.23'
         const step5 = simulateQtyInput('1.232');
-        expect(step5.clean).toBe('1.232'); // Not silently truncated or rounded!
-        expect(step5.validation.valid).toBe(false);
-        expect(step5.validation.error).toBe('MAX_DECIMALS');
+        expect(step5.clean).toBe('1.23'); // 3rd decimal is NOT typed into the field!
+        expect(step5.validation.valid).toBe(true);
 
-        // Step 6: User backspaces to fix -> '1.23' (VALID AGAIN)
-        const step6 = simulateQtyInput('1.23');
-        expect(step6.clean).toBe('1.23');
+        // Step 6: User backspaces to fix -> '1.2'
+        const step6 = simulateQtyInput('1.2');
+        expect(step6.clean).toBe('1.2');
         expect(step6.validation.valid).toBe(true);
       });
 
-      it('handles pasted values with > 2 decimals without silent rounding and flags them immediately', () => {
-        // User pastes '1.23232'
+      it('blocks extra digits when pasting values with > 2 decimals so input never exceeds 2 decimals', () => {
+        // User pastes '1.23232' -> extra digits beyond 2 decimals are not accepted
         const pasted = simulateQtyInput('1.23232');
-        expect(pasted.clean).toBe('1.23232'); // Preserved in state for user to see
-        expect(pasted.validation.valid).toBe(false);
-        expect(pasted.validation.error).toBe('MAX_DECIMALS');
-        expect(pasted.validation.message).toBe('Quantity cannot have more than 2 decimal places (e.g. 1.25).');
+        expect(pasted.clean).toBe('1.23');
+        expect(pasted.validation.valid).toBe(true);
 
-        // Line calculation remains safe during intermediate state
+        // Line calculation remains accurate
         const lineAmt = computeLineAmount(pasted.clean, 100);
-        expect(lineAmt.toString()).toBe('123.23'); // Preview calculation is robust
+        expect(lineAmt.toString()).toBe('123');
+      });
+
+      it('prevents typing extra decimal digits via keyboard event prevention', () => {
+        const simulateKeyDown = (val: string, key: string, selectionStart: number, selectionEnd: number) => {
+          let defaultPrevented = false;
+          const dotIndex = val.indexOf('.');
+          if (dotIndex !== -1 && /^\d$/.test(key)) {
+            if (selectionStart === selectionEnd && selectionStart > dotIndex) {
+              const dec = val.slice(dotIndex + 1);
+              if (dec.length >= 2) {
+                defaultPrevented = true;
+              }
+            }
+          }
+          return defaultPrevented;
+        };
+
+        // 1.23 with cursor at end (index 4), user types '4' -> prevented!
+        expect(simulateKeyDown('1.23', '4', 4, 4)).toBe(true);
+
+        // 1.2 with cursor at end (index 3), user types '3' -> allowed!
+        expect(simulateKeyDown('1.2', '3', 3, 3)).toBe(false);
+
+        // 1.23 with cursor in integer part (index 1 before dot), user types '5' -> allowed!
+        expect(simulateKeyDown('1.23', '5', 1, 1)).toBe(false);
+
+        // 1.23 with decimal part selected (replacing '23'), user types '5' -> allowed!
+        expect(simulateKeyDown('1.23', '5', 2, 4)).toBe(false);
       });
 
       it('prevents multiple decimal points and filters out non-numeric characters', () => {
@@ -284,9 +313,8 @@ describe('QTY Field Behavior & Billing Calculations', () => {
         expect(dotTwentyFive.validation.valid).toBe(true);
 
         const dotThreeDec = simulateQtyInput('.123');
-        expect(dotThreeDec.clean).toBe('.123');
-        expect(dotThreeDec.validation.valid).toBe(false);
-        expect(dotThreeDec.validation.error).toBe('MAX_DECIMALS');
+        expect(dotThreeDec.clean).toBe('.12'); // 3rd decimal digit is blocked!
+        expect(dotThreeDec.validation.valid).toBe(true);
       });
     });
   });

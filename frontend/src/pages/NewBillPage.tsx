@@ -667,6 +667,23 @@ export const NewBillPage: React.FC = () => {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...updates } : it)));
   };
 
+  const handlePreventExtraDecimals = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') return;
+    const val = e.currentTarget.value;
+    const dotIndex = val.indexOf('.');
+    if (dotIndex !== -1 && /^\d$/.test(e.key)) {
+      const start = e.currentTarget.selectionStart ?? val.length;
+      const end = e.currentTarget.selectionEnd ?? val.length;
+      // If user is not replacing selected text and cursor is located in the decimal portion
+      if (start === end && start > dotIndex) {
+        const dec = val.slice(dotIndex + 1);
+        if (dec.length >= 2) {
+          e.preventDefault();
+        }
+      }
+    }
+  };
+
   const handleQtyChange = (itemId: string, rawVal: string) => {
     // Only allow digits and at most one decimal point
     let clean = rawVal.replace(/[^0-9.]/g, '');
@@ -675,14 +692,13 @@ export const NewBillPage: React.FC = () => {
       clean = parts[0] + '.' + parts.slice(1).join('');
     }
 
-    // Update state directly - DO NOT silently truncate or silently round!
-    handleUpdateItem(itemId, { quantity: clean });
-
-    // Validate precision immediately and notify user if invalid
-    const check = validateQuantityPrecision(clean, { allowIntermediate: true });
-    if (!check.valid && check.error === 'MAX_DECIMALS') {
-      showToast('Quantity cannot have more than 2 decimal places (e.g. 1.25)', 'error');
+    // Strictly limit decimal digits to maximum 2 places (cannot type or paste >2 decimal digits)
+    const splitClean = clean.split('.');
+    if (splitClean.length > 1 && splitClean[1].length > 2) {
+      clean = splitClean[0] + '.' + splitClean[1].slice(0, 2);
     }
+
+    handleUpdateItem(itemId, { quantity: clean });
   };
 
   const handleRemoveItem = (id: string) => {
@@ -1498,7 +1514,9 @@ export const NewBillPage: React.FC = () => {
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
                                   document.getElementById(`item-rate-mob-${item.id}`)?.focus();
+                                  return;
                                 }
+                                handlePreventExtraDecimals(e);
                               }}
                               onChange={(e) => handleQtyChange(item.id, e.target.value)}
                               onBlur={() => {
@@ -1618,7 +1636,9 @@ export const NewBillPage: React.FC = () => {
                               if (e.key === 'Enter') {
                                 e.preventDefault();
                                 document.getElementById(`item-rate-${item.id}`)?.focus();
+                                return;
                               }
+                              handlePreventExtraDecimals(e);
                             }}
                             onChange={(e) => handleQtyChange(item.id, e.target.value)}
                             onBlur={() => {
