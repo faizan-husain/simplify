@@ -31,7 +31,6 @@ import {
   User,
   UserCheck,
   X,
-  Lock,
   Plus,
 } from 'lucide-react';
 import { Database } from '../types/supabase';
@@ -696,6 +695,16 @@ export const NewBillPage: React.FC = () => {
 
       if (validItems.length === 0) {
         showToast('Please add at least one item to the bill', 'error');
+        return;
+      }
+
+      // Check quantity validity: must be positive (> 0)
+      const invalidQtyItem = validItems.find((it) => {
+        const q = parseFloat(it.quantity || '0');
+        return isNaN(q) || q <= 0;
+      });
+      if (invalidQtyItem) {
+        showToast('Quantity must be greater than 0 for all items.', 'error');
         return;
       }
 
@@ -1413,6 +1422,12 @@ export const NewBillPage: React.FC = () => {
                               list={`service-list-${item.id}`}
                               placeholder={isJob ? 'Select Job Service (Required) *' : 'Service or item name'}
                               value={item.description}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  document.getElementById(`item-qty-mob-${item.id}`)?.focus();
+                                }
+                              }}
                               onChange={(e) => {
                                 const val = e.target.value;
                                 const matched = services.find(
@@ -1454,23 +1469,21 @@ export const NewBillPage: React.FC = () => {
                         <div className="flex items-center gap-2.5">
                           <div className="w-20 shrink-0">
                             <label className="block text-[10.5px] font-medium text-[#64748B] mb-0.5">Qty</label>
-                            <div className="relative flex items-center">
-                              {isJob && (
-                                <Lock className="w-3 h-3 text-[#94A3B8] absolute left-2 pointer-events-none" />
-                              )}
-                              <input
-                                id={`item-qty-mob-${item.id}`}
-                                type="number"
-                                step="any"
-                                min="1"
-                                value={item.quantity}
-                                disabled={isJob}
-                                onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
-                                className={`w-full h-9 rounded-lg border border-[#E2E8F0] bg-white text-[13px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:outline-none ${
-                                  isJob ? 'pl-5 pr-1 bg-slate-50 text-[#475569]' : 'px-1'
-                                }`}
-                              />
-                            </div>
+                            <input
+                              id={`item-qty-mob-${item.id}`}
+                              type="number"
+                              step="any"
+                              min="0.01"
+                              value={item.quantity}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  document.getElementById(`item-rate-mob-${item.id}`)?.focus();
+                                }
+                              }}
+                              onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
+                              className="w-full h-9 px-1 rounded-lg border border-[#E2E8F0] bg-white text-[13px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:outline-none"
+                            />
                           </div>
                           <div className="flex-1 min-w-0">
                             <label className="block text-[10.5px] font-medium text-[#64748B] mb-0.5">Rate (₹)</label>
@@ -1481,6 +1494,18 @@ export const NewBillPage: React.FC = () => {
                               min="0"
                               placeholder="0"
                               value={item.rate}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  const currentIndex = items.findIndex((it) => it.id === item.id);
+                                  if (currentIndex === items.length - 1) {
+                                    handleAddItem();
+                                  } else {
+                                    const nextItem = items[currentIndex + 1];
+                                    document.getElementById(`item-desc-mob-${nextItem.id}`)?.focus();
+                                  }
+                                }
+                              }}
                               onChange={(e) => handleUpdateItem(item.id, { rate: e.target.value })}
                               className="w-full h-9 px-2 rounded-lg border border-[#E2E8F0] bg-white text-[13px] font-semibold text-center text-[#0F172A] tabular-nums focus:border-[#0F766E] focus:outline-none"
                             />
@@ -1511,11 +1536,7 @@ export const NewBillPage: React.FC = () => {
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
-                                  if (isJob) {
-                                    document.getElementById(`item-rate-${item.id}`)?.focus();
-                                  } else {
-                                    document.getElementById(`item-qty-${item.id}`)?.focus();
-                                  }
+                                  document.getElementById(`item-qty-${item.id}`)?.focus();
                                 }
                               }}
                               onChange={(e) => {
@@ -1552,31 +1573,23 @@ export const NewBillPage: React.FC = () => {
                           </div>
                         </div>
 
-                        {/* Qty Input (Locked to 1 if Job) */}
+                        {/* Qty Input */}
                         <div className="col-span-2">
-                          <div className="relative flex items-center justify-center">
-                            {isJob && (
-                              <Lock className="w-3.5 h-3.5 text-[#94A3B8] absolute left-3 pointer-events-none" />
-                            )}
-                            <input
-                              id={`item-qty-${item.id}`}
-                              type="number"
-                              step="any"
-                              min="1"
-                              value={item.quantity}
-                              disabled={isJob}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  document.getElementById(`item-rate-${item.id}`)?.focus();
-                                }
-                              }}
-                              onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
-                              className={`w-full h-11 rounded-xl border border-[#E2E8F0] bg-white text-[14px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none shadow-2xs ${
-                                isJob ? 'pl-6 pr-2 bg-slate-50/70 cursor-not-allowed text-[#475569]' : 'px-2'
-                              }`}
-                            />
-                          </div>
+                          <input
+                            id={`item-qty-${item.id}`}
+                            type="number"
+                            step="any"
+                            min="0.01"
+                            value={item.quantity}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                document.getElementById(`item-rate-${item.id}`)?.focus();
+                              }
+                            }}
+                            onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
+                            className="w-full h-11 px-2 rounded-xl border border-[#E2E8F0] bg-white text-[14px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none shadow-2xs"
+                          />
                         </div>
 
                         {/* Rate Input */}
@@ -1646,7 +1659,7 @@ export const NewBillPage: React.FC = () => {
                             if (isJob) {
                               handleUpdateItem(item.id, { create_job: false });
                             } else {
-                              handleUpdateItem(item.id, { create_job: true, quantity: '1' });
+                              handleUpdateItem(item.id, { create_job: true });
                             }
                           }}
                           className={`h-10 w-[136px] shrink-0 px-3 rounded-xl border flex items-center justify-between text-[12px] font-semibold shadow-2xs transition-all cursor-pointer select-none ${
