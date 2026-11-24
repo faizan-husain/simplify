@@ -205,5 +205,89 @@ describe('QTY Field Behavior & Billing Calculations', () => {
       expect(validateQuantityPrecision(undefined).valid).toBe(false);
       expect(validateQuantityPrecision('abc').valid).toBe(false);
     });
+
+    // Requirement 10: Typing, pasting, editing natural transitions, and invalid precision restrictions
+    describe('Natural typing, pasting and editing lifecycle', () => {
+      const simulateQtyInput = (rawVal: string) => {
+        let clean = rawVal.replace(/[^0-9.]/g, '');
+        const parts = clean.split('.');
+        if (parts.length > 2) {
+          clean = parts[0] + '.' + parts.slice(1).join('');
+        }
+        const validation = validateQuantityPrecision(clean, { allowIntermediate: true });
+        return { clean, validation };
+      };
+
+      it('allows natural typing keystroke by keystroke with intermediate decimal points', () => {
+        // Step 1: User types '1'
+        const step1 = simulateQtyInput('1');
+        expect(step1.clean).toBe('1');
+        expect(step1.validation.valid).toBe(true);
+
+        // Step 2: User types '.' -> '1.'
+        const step2 = simulateQtyInput('1.');
+        expect(step2.clean).toBe('1.');
+        expect(step2.validation.valid).toBe(true); // Intermediate decimal point allowed
+
+        // Step 3: User types '2' -> '1.2'
+        const step3 = simulateQtyInput('1.2');
+        expect(step3.clean).toBe('1.2');
+        expect(step3.validation.valid).toBe(true);
+
+        // Step 4: User types '3' -> '1.23'
+        const step4 = simulateQtyInput('1.23');
+        expect(step4.clean).toBe('1.23');
+        expect(step4.validation.valid).toBe(true);
+
+        // Step 5: User types 3rd decimal '2' -> '1.232' (INVALID)
+        const step5 = simulateQtyInput('1.232');
+        expect(step5.clean).toBe('1.232'); // Not silently truncated or rounded!
+        expect(step5.validation.valid).toBe(false);
+        expect(step5.validation.error).toBe('MAX_DECIMALS');
+
+        // Step 6: User backspaces to fix -> '1.23' (VALID AGAIN)
+        const step6 = simulateQtyInput('1.23');
+        expect(step6.clean).toBe('1.23');
+        expect(step6.validation.valid).toBe(true);
+      });
+
+      it('handles pasted values with > 2 decimals without silent rounding and flags them immediately', () => {
+        // User pastes '1.23232'
+        const pasted = simulateQtyInput('1.23232');
+        expect(pasted.clean).toBe('1.23232'); // Preserved in state for user to see
+        expect(pasted.validation.valid).toBe(false);
+        expect(pasted.validation.error).toBe('MAX_DECIMALS');
+        expect(pasted.validation.message).toBe('Quantity cannot have more than 2 decimal places (e.g. 1.25).');
+
+        // Line calculation remains safe during intermediate state
+        const lineAmt = computeLineAmount(pasted.clean, 100);
+        expect(lineAmt.toString()).toBe('123.23'); // Preview calculation is robust
+      });
+
+      it('prevents multiple decimal points and filters out non-numeric characters', () => {
+        const multiDot = simulateQtyInput('1.2.5');
+        expect(multiDot.clean).toBe('1.25');
+        expect(multiDot.validation.valid).toBe(true);
+
+        const letters = simulateQtyInput('1a.5b0c');
+        expect(letters.clean).toBe('1.50');
+        expect(letters.validation.valid).toBe(true);
+      });
+
+      it('handles starting with decimal point (.5, .25)', () => {
+        const dotFive = simulateQtyInput('.5');
+        expect(dotFive.clean).toBe('.5');
+        expect(dotFive.validation.valid).toBe(true);
+
+        const dotTwentyFive = simulateQtyInput('.25');
+        expect(dotTwentyFive.clean).toBe('.25');
+        expect(dotTwentyFive.validation.valid).toBe(true);
+
+        const dotThreeDec = simulateQtyInput('.123');
+        expect(dotThreeDec.clean).toBe('.123');
+        expect(dotThreeDec.validation.valid).toBe(false);
+        expect(dotThreeDec.validation.error).toBe('MAX_DECIMALS');
+      });
+    });
   });
 });

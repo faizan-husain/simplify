@@ -55,9 +55,15 @@ export interface BillLinePreview {
 }
 
 export function computeLineAmount(quantity: number | string, rate: number | string): Decimal {
-  const q = new Decimal(String(quantity || '0'));
-  const r = new Decimal(String(rate || '0'));
-  return q.times(r).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  try {
+    const qStr = String(quantity ?? '0').trim();
+    const rStr = String(rate ?? '0').trim();
+    const q = new Decimal(qStr === '' || qStr === '.' ? '0' : qStr);
+    const r = new Decimal(rStr === '' || rStr === '.' ? '0' : rStr);
+    return q.times(r).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  } catch {
+    return new Decimal(0);
+  }
 }
 
 export function computeBillTotals(
@@ -100,7 +106,10 @@ export function computeBillTotals(
  * - Maximum 2 decimal places (no 1.345, 1.34535, etc.)
  * - Valid integers and decimals: 1, 5, 1.5, 1.25, 0.01
  */
-export function validateQuantityPrecision(qty: string | number | null | undefined): {
+export function validateQuantityPrecision(
+  qty: string | number | null | undefined,
+  options?: { allowIntermediate?: boolean }
+): {
   valid: boolean;
   error?: 'REQUIRED' | 'INVALID_NUMBER' | 'MIN_VALUE' | 'MAX_DECIMALS';
   message?: string;
@@ -110,15 +119,6 @@ export function validateQuantityPrecision(qty: string | number | null | undefine
   }
 
   const str = String(qty).trim();
-  const num = parseFloat(str);
-
-  if (isNaN(num)) {
-    return { valid: false, error: 'INVALID_NUMBER', message: 'Quantity must be a valid number.' };
-  }
-
-  if (num < 0.01) {
-    return { valid: false, error: 'MIN_VALUE', message: 'Quantity must be at least 0.01.' };
-  }
 
   // Check decimal places directly from string representation to avoid float rounding inaccuracies
   const parts = str.split('.');
@@ -128,6 +128,21 @@ export function validateQuantityPrecision(qty: string | number | null | undefine
       error: 'MAX_DECIMALS',
       message: 'Quantity cannot have more than 2 decimal places (e.g. 1.25).',
     };
+  }
+
+  // If user is actively typing a decimal point (e.g., "1." or "."), allow it temporarily if intermediate flag is on
+  if (options?.allowIntermediate && (str === '.' || str.endsWith('.'))) {
+    return { valid: true };
+  }
+
+  const num = parseFloat(str);
+
+  if (isNaN(num)) {
+    return { valid: false, error: 'INVALID_NUMBER', message: 'Quantity must be a valid number.' };
+  }
+
+  if (num < 0.01) {
+    return { valid: false, error: 'MIN_VALUE', message: 'Quantity must be at least 0.01.' };
   }
 
   return { valid: true };

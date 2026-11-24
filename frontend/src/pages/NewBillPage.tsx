@@ -667,6 +667,24 @@ export const NewBillPage: React.FC = () => {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...updates } : it)));
   };
 
+  const handleQtyChange = (itemId: string, rawVal: string) => {
+    // Only allow digits and at most one decimal point
+    let clean = rawVal.replace(/[^0-9.]/g, '');
+    const parts = clean.split('.');
+    if (parts.length > 2) {
+      clean = parts[0] + '.' + parts.slice(1).join('');
+    }
+
+    // Update state directly - DO NOT silently truncate or silently round!
+    handleUpdateItem(itemId, { quantity: clean });
+
+    // Validate precision immediately and notify user if invalid
+    const check = validateQuantityPrecision(clean, { allowIntermediate: true });
+    if (!check.valid && check.error === 'MAX_DECIMALS') {
+      showToast('Quantity cannot have more than 2 decimal places (e.g. 1.25)', 'error');
+    }
+  };
+
   const handleRemoveItem = (id: string) => {
     if (items.length <= 1) {
       setItems([
@@ -1401,6 +1419,8 @@ export const NewBillPage: React.FC = () => {
                   const lineAmt = computeLineAmount(item.quantity, item.rate);
                   const isJob = item.create_job;
                   const isJobServiceMissing = isJob && !item.description.trim();
+                  const qtyCheck = validateQuantityPrecision(item.quantity, { allowIntermediate: true });
+                  const isQtyInvalid = !qtyCheck.valid && item.quantity.trim() !== '' && item.quantity.trim() !== '.';
 
                   return (
                     <div
@@ -1465,14 +1485,14 @@ export const NewBillPage: React.FC = () => {
                         </div>
 
                         {/* Mobile Row 2: Qty, Rate, and Line Total Amount */}
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex items-start gap-2.5">
                           <div className="w-20 shrink-0">
                             <label className="block text-[10.5px] font-medium text-[#64748B] mb-0.5">Qty</label>
                             <input
                               id={`item-qty-mob-${item.id}`}
-                              type="number"
-                              step="0.01"
-                              min="0.01"
+                              type="text"
+                              inputMode="decimal"
+                              placeholder="1"
                               value={item.quantity}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') {
@@ -1480,9 +1500,23 @@ export const NewBillPage: React.FC = () => {
                                   document.getElementById(`item-rate-mob-${item.id}`)?.focus();
                                 }
                               }}
-                              onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
-                              className="w-full h-9 px-1 rounded-lg border border-[#E2E8F0] bg-white text-[13px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:outline-none"
+                              onChange={(e) => handleQtyChange(item.id, e.target.value)}
+                              onBlur={() => {
+                                if (item.quantity.trim() === '' || item.quantity.trim() === '.') {
+                                  handleUpdateItem(item.id, { quantity: '1' });
+                                }
+                              }}
+                              className={`w-full h-9 px-1 rounded-lg border bg-white text-[13px] font-semibold text-center transition-colors focus:outline-none ${
+                                isQtyInvalid
+                                  ? 'border-red-500 text-red-600 focus:border-red-500'
+                                  : 'border-[#E2E8F0] text-[#0F172A] focus:border-[#0F766E]'
+                              }`}
                             />
+                            {isQtyInvalid && (
+                              <span className="block text-[9.5px] text-red-600 font-medium text-center mt-0.5 truncate leading-tight">
+                                {qtyCheck.error === 'MAX_DECIMALS' ? 'Max 2 dec' : 'Min 0.01'}
+                              </span>
+                            )}
                           </div>
                           <div className="flex-1 min-w-0">
                             <label className="block text-[10.5px] font-medium text-[#64748B] mb-0.5">Rate (₹)</label>
@@ -1519,7 +1553,7 @@ export const NewBillPage: React.FC = () => {
                       </div>
 
                       {/* Desktop Main Item Row: Item, Qty, Rate, Amount & Delete */}
-                      <div className="hidden sm:grid grid-cols-12 gap-3 items-center">
+                      <div className="hidden sm:grid grid-cols-12 gap-3 items-start">
                         {/* Item Service Input */}
                         <div className="col-span-6 sm:col-span-5 relative">
                           <div className="relative flex items-center">
@@ -1573,12 +1607,12 @@ export const NewBillPage: React.FC = () => {
                         </div>
 
                         {/* Qty Input */}
-                        <div className="col-span-2">
+                        <div className="col-span-2 relative">
                           <input
                             id={`item-qty-${item.id}`}
-                            type="number"
-                            step="0.01"
-                            min="0.01"
+                            type="text"
+                            inputMode="decimal"
+                            placeholder="1"
                             value={item.quantity}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
@@ -1586,9 +1620,23 @@ export const NewBillPage: React.FC = () => {
                                 document.getElementById(`item-rate-${item.id}`)?.focus();
                               }
                             }}
-                            onChange={(e) => handleUpdateItem(item.id, { quantity: e.target.value })}
-                            className="w-full h-11 px-2 rounded-xl border border-[#E2E8F0] bg-white text-[14px] font-semibold text-center text-[#0F172A] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20 focus:outline-none shadow-2xs"
+                            onChange={(e) => handleQtyChange(item.id, e.target.value)}
+                            onBlur={() => {
+                              if (item.quantity.trim() === '' || item.quantity.trim() === '.') {
+                                handleUpdateItem(item.id, { quantity: '1' });
+                              }
+                            }}
+                            className={`w-full h-11 px-2 rounded-xl border bg-white text-[14px] font-semibold text-center transition-colors focus:outline-none shadow-2xs ${
+                              isQtyInvalid
+                                ? 'border-red-500 text-red-600 focus:border-red-500 focus:ring-1 focus:ring-red-200'
+                                : 'border-[#E2E8F0] text-[#0F172A] focus:border-[#0F766E] focus:ring-1 focus:ring-[#0F766E]/20'
+                            }`}
                           />
+                          {isQtyInvalid && (
+                            <span className="block text-[10px] text-red-600 font-medium text-center mt-1 truncate">
+                              {qtyCheck.error === 'MAX_DECIMALS' ? 'Max 2 decimals' : 'Min 0.01'}
+                            </span>
+                          )}
                         </div>
 
                         {/* Rate Input */}
@@ -1618,7 +1666,7 @@ export const NewBillPage: React.FC = () => {
                         </div>
 
                         {/* Amount & Delete */}
-                        <div className="col-span-2 sm:col-span-3 flex items-center justify-end gap-2 pr-1">
+                        <div className="col-span-2 sm:col-span-3 h-11 flex items-center justify-end gap-2 pr-1">
                           <span className="font-bold text-[15px] text-[#0F172A] tabular-nums text-right truncate">
                             {formatINR(lineAmt)}
                           </span>
