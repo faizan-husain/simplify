@@ -16,7 +16,7 @@ import { CancelBillModal } from './CancelBillModal';
 import { RestoreBillModal } from './RestoreBillModal';
 import { BillActivityHistory } from './BillActivityHistory';
 import { InvoiceDocument } from '../documents/InvoiceDocument';
-import { exportInvoicePDF, setPrintPageSize, generateDocumentPdfBlob } from '../documents/pdfExport';
+import { setPrintPageSize, generateDocumentPdfBlob } from '../documents/pdfExport';
 import {
   normalizeCustomerMobile,
   buildInvoiceWhatsAppMessage,
@@ -131,17 +131,8 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
     return blob;
   };
 
-  const handleDownloadPDF = async () => {
-    if (!docRef.current) return;
-    setSharingState('generating');
-    try {
-      await exportInvoicePDF(docRef.current, `bill-${invoice.number}.pdf`);
-      showToast('PDF downloaded successfully', 'success');
-    } catch (err: any) {
-      showToast('Failed to export PDF: ' + err.message, 'error');
-    } finally {
-      setSharingState('idle');
-    }
+  const handleDownloadPDF = () => {
+    handlePrint();
   };
 
   const handleWhatsAppDirect = async (overrideMobile?: string) => {

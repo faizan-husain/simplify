@@ -7,7 +7,7 @@ import { getErrorMessage, t } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
-import { exportDocumentPDF, setPrintPageSize } from '../documents/pdfExport';
+import { setPrintPageSize } from '../documents/pdfExport';
 import { Printer, Download, Plus, Share2, Building2 } from 'lucide-react';
 
 export interface CustomerLedgerModalProps {
@@ -85,7 +85,6 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
   const [business, setBusiness] = useState<BusinessInfo | null>(null);
   const [summary, setSummary] = useState<LedgerSummary | null>(null);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
-  const [exporting, setExporting] = useState(false);
 
   const getDateBounds = (p: PeriodType): { fromDate: string | null; toDate: string | null } => {
     const now = new Date();
@@ -157,20 +156,8 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
     window.print();
   };
 
-  const handleExportPDF = async () => {
-    if (!printRef.current || !customer) return;
-    setExporting(true);
-    try {
-      await exportDocumentPDF(
-        printRef.current,
-        `Customer-Statement-${customer.name}.pdf`
-      );
-      showToast('Customer statement downloaded successfully', 'success');
-    } catch (err: any) {
-      showToast('Failed to export PDF: ' + err.message, 'error');
-    } finally {
-      setExporting(false);
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const getPeriodLabel = (): string => {
@@ -271,7 +258,7 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
               <button
                 type="button"
                 onClick={handleExportPDF}
-                disabled={exporting || loading}
+                disabled={loading}
                 title="Export PDF Document"
                 className="h-8 px-2.5 rounded-xl border-0 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 text-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
               >

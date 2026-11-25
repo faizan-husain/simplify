@@ -8,7 +8,7 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../ui/Toast';
-import { exportDocumentPDF, setPrintPageSize } from '../documents/pdfExport';
+import { setPrintPageSize } from '../documents/pdfExport';
 import { Printer, Download, Plus, Share2, Building2, Pencil, Trash2 } from 'lucide-react';
 
 export interface VendorDetailModalProps {
@@ -84,7 +84,6 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
   const [business, setBusiness] = useState<BusinessInfo | null>(null);
   const [summary, setSummary] = useState<VendorSummary | null>(null);
   const [payments, setPayments] = useState<VendorPayment[]>([]);
-  const [exporting, setExporting] = useState(false);
 
   // Edit / Delete vendor states
   const [isEditVendorOpen, setIsEditVendorOpen] = useState(false);
@@ -210,20 +209,8 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
     window.print();
   };
 
-  const handleExportPDF = async () => {
-    if (!printRef.current || !vendor) return;
-    setExporting(true);
-    try {
-      await exportDocumentPDF(
-        printRef.current,
-        `Vendor-Statement-${vendor.name}.pdf`
-      );
-      showToast('Vendor statement downloaded successfully', 'success');
-    } catch (err: any) {
-      showToast('Failed to export PDF: ' + err.message, 'error');
-    } finally {
-      setExporting(false);
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const getPeriodLabel = (): string => {
@@ -368,7 +355,7 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
               <button
                 type="button"
                 onClick={handleExportPDF}
-                disabled={exporting || loading}
+                disabled={loading}
                 title="Export PDF Document"
                 className="h-8 px-2.5 rounded-xl border-0 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 text-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
               >

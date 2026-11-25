@@ -11,7 +11,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { PrivacyPinModal } from '../components/privacy/PrivacyPinModal';
 import { CustomerLedgerModal } from '../components/customers/CustomerLedgerModal';
 import { VendorDetailModal } from '../components/payments/VendorDetailModal';
-import { exportDocumentPDF, setPrintPageSize } from '../components/documents/pdfExport';
+import { setPrintPageSize } from '../components/documents/pdfExport';
 import { exportReportExcel } from '../components/documents/excelExport';
 import {
   Download,
@@ -79,7 +79,6 @@ export const ReportsPage: React.FC = () => {
   const [customTo, setCustomTo] = useState(() => new Date().toISOString().split('T')[0]);
 
   const [loading, setLoading] = useState(true);
-  const [exportingPDF, setExportingPDF] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
   const [partySearch, setPartySearch] = useState('');
 
@@ -239,20 +238,8 @@ export const ReportsPage: React.FC = () => {
     window.print();
   };
 
-  const handleExportPDF = async () => {
-    if (!reportPrintRef.current || !reportData || loading) return;
-    setExportingPDF(true);
-    try {
-      const periodTag = activeTab === 'pnl' ? pnlPeriod : activeTab === 'ledger' ? ledgerSubTab : regPeriod;
-      const statusSuffix = activeTab === 'invoices' && invoiceStatusFilter !== 'ALL' ? `-${invoiceStatusFilter.toLowerCase()}` : '';
-      const filename = `Report-${activeTab}${statusSuffix}-${periodTag}-${selectedFY}.pdf`;
-      await exportDocumentPDF(reportPrintRef.current, filename);
-      showToast('Report PDF downloaded successfully', 'success');
-    } catch (err: any) {
-      showToast('Failed to export PDF: ' + err.message, 'error');
-    } finally {
-      setExportingPDF(false);
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const handleExportExcel = async () => {
@@ -431,12 +418,12 @@ export const ReportsPage: React.FC = () => {
             <button
               type="button"
               onClick={handleExportPDF}
-              disabled={loading || exportingPDF || !reportData}
+              disabled={loading || !reportData}
               title="Save report as PDF"
               className="h-9 px-3 rounded-xl border-0 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 text-xs font-semibold shadow-[0_2px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)] flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5 text-accent" />
-              <span>{exportingPDF ? 'Saving...' : 'PDF'}</span>
+              <span>PDF</span>
             </button>
 
             <button
@@ -536,11 +523,11 @@ export const ReportsPage: React.FC = () => {
           <button
             type="button"
             onClick={handleExportPDF}
-            disabled={loading || exportingPDF || !reportData}
+            disabled={loading || !reportData}
             className="h-10 px-2 rounded-xl bg-white text-slate-700 text-xs font-semibold shadow-2xs flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5 text-accent" />
-            <span>{exportingPDF ? 'Saving...' : 'PDF'}</span>
+            <span>PDF</span>
           </button>
 
           <button

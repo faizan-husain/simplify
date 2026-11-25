@@ -12,7 +12,7 @@ import { useToast } from '../ui/Toast';
 import { useAuth } from '../../context/AuthContext';
 import { NewBankAccountModal } from './NewBankAccountModal';
 import { TransferMoneyModal, TransferType } from './TransferMoneyModal';
-import { exportDocumentPDF, setPrintPageSize } from '../documents/pdfExport';
+import { setPrintPageSize } from '../documents/pdfExport';
 import { BankStatementPrintDocument } from './BankStatementPrintDocument';
 import {
   Building2,
@@ -110,7 +110,6 @@ export const BankLedgerTab: React.FC<BankLedgerTabProps> = () => {
   const [transferInitialType, setTransferInitialType] = useState<TransferType>('CASH_TO_BANK');
   const [transferToDelete, setTransferToDelete] = useState<any | null>(null);
   const [deletingTransfer, setDeletingTransfer] = useState(false);
-  const [exporting, setExporting] = useState(false);
 
   const currentFY = getFYLabel();
 
@@ -221,24 +220,8 @@ export const BankLedgerTab: React.FC<BankLedgerTabProps> = () => {
     window.print();
   };
 
-  const handleExportPDF = async () => {
-    setExporting(true);
-    try {
-      const printRoot = document.getElementById('print-bank-statement-root');
-      const targetEl = printRoot ? ((printRoot.firstElementChild as HTMLElement) || printRoot) : printRef.current;
-      if (!targetEl) return;
-      const cleanBankName = (selectedBank?.bank_name || 'All-Banks').replace(/\s+/g, '-');
-      const filename =
-        activeSubView === 'LEDGER'
-          ? `Bank-Statement-${cleanBankName}-${period}.pdf`
-          : `Transfers-History-${period}.pdf`;
-      await exportDocumentPDF(targetEl, filename);
-      showToast('Document downloaded successfully', 'success');
-    } catch (err: any) {
-      showToast('Failed to export PDF: ' + err.message, 'error');
-    } finally {
-      setExporting(false);
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   // Helper to format short date like "2 Nov"
@@ -424,7 +407,6 @@ export const BankLedgerTab: React.FC<BankLedgerTabProps> = () => {
             <button
               type="button"
               onClick={handleExportPDF}
-              disabled={exporting}
               title="Download PDF"
               className="w-9 h-9 flex items-center justify-center rounded-xl border border-slate-200/90 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-2xs transition-colors disabled:opacity-50"
             >

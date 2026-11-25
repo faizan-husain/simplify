@@ -317,18 +317,18 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
           {/* UPI QR Payment Block (BR-19) */}
           {upiQrString && balance > 0 ? (
             <div
-              className="p-2.5 rounded-lg bg-white flex items-center gap-2"
+              className="p-2 rounded-lg bg-white flex items-center gap-2"
               style={{ border: '1px solid #CBD5E1' }}
             >
-              <QRCodeSVG value={upiQrString} size={62} level="M" />
+              <QRCodeSVG value={upiQrString} size={54} level="M" />
               <div className="min-w-0 flex-1 leading-normal">
                 <div className="text-[9.5px] font-bold text-slate-800">Scan &amp; Pay UPI</div>
                 <div className="text-[11px] font-bold text-teal-700 mt-0.5 leading-normal">
                   {formatINR(balance)}
                 </div>
                 <div
-                  className="text-[8px] text-slate-600 mt-0.5 font-mono leading-tight break-words"
-                  style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
+                  className="text-[7.5px] text-slate-600 mt-0.5 font-mono font-medium tracking-tight leading-tight whitespace-nowrap overflow-hidden text-ellipsis"
+                  title={business?.upi_id || ''}
                 >
                   {business?.upi_id}
                 </div>

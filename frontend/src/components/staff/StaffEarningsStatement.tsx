@@ -2,8 +2,7 @@ import React, { useState, useMemo, useRef } from 'react';
 import { formatINR } from '../../lib/money';
 import { Select } from '../ui/Select';
 import { useAuth } from '../../context/AuthContext';
-import { useToast } from '../ui/Toast';
-import { exportDocumentPDF, setPrintPageSize } from '../documents/pdfExport';
+import { setPrintPageSize } from '../documents/pdfExport';
 import {
   BarChart3,
   Calendar,
@@ -65,12 +64,10 @@ export const StaffEarningsStatement: React.FC<StaffEarningsStatementProps> = ({
   staffInfo,
 }) => {
   const { business } = useAuth();
-  const { showToast } = useToast();
   const printRef = useRef<HTMLDivElement>(null);
 
   // Default to FY 2026-27
   const [selectedFY, setSelectedFY] = useState<string>('2026-27');
-  const [exporting, setExporting] = useState<boolean>(false);
 
   // List of all unique Financial Years available in data (Strictly Year-wise only, no 'ALL')
   const availableFYs = useMemo(() => {
@@ -121,19 +118,8 @@ export const StaffEarningsStatement: React.FC<StaffEarningsStatementProps> = ({
     ? `Fixed Salary (₹${monthlySalary.toLocaleString('en-IN')}/mo)`
     : 'Commission Based';
 
-  const handleExportPDF = async () => {
-    if (!printRef.current) return;
-    setExporting(true);
-    try {
-      const cleanName = staffName.replace(/\s+/g, '-');
-      const filename = `Staff-Statement-${cleanName}-FY-${selectedFY}.pdf`;
-      await exportDocumentPDF(printRef.current, filename);
-      showToast('Staff statement PDF downloaded successfully', 'success');
-    } catch (err: any) {
-      showToast('Failed to export PDF: ' + (err?.message || 'Unknown error'), 'error');
-    } finally {
-      setExporting(false);
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const handlePrint = () => {
@@ -208,12 +194,11 @@ export const StaffEarningsStatement: React.FC<StaffEarningsStatementProps> = ({
           <button
             type="button"
             onClick={handleExportPDF}
-            disabled={exporting}
             title="Download Statement PDF"
-            className="h-8 px-2.5 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 text-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+            className="h-8 px-2.5 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 text-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer"
           >
             <Download className="w-3.5 h-3.5 text-slate-500" />
-            <span>{exporting ? 'Generating...' : 'PDF'}</span>
+            <span>PDF</span>
           </button>
 
           {/* Print Button */}

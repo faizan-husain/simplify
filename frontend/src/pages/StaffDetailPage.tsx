@@ -15,7 +15,6 @@ import { PayStaffModal } from '../components/staff/PayStaffModal';
 import { StaffEarningsStatement } from '../components/staff/StaffEarningsStatement';
 import { SegmentedControl } from '../components/ui/SegmentedControl';
 import { FilterChips } from '../components/mobile/FilterChips';
-import { exportDocumentPDF } from '../components/documents/pdfExport';
 import {
   ArrowLeft,
   Calendar,
@@ -263,31 +262,8 @@ export const StaffDetailPage: React.FC = () => {
     window.open(waUrl, '_blank');
   };
 
-  const [exportingPDF, setExportingPDF] = useState(false);
-
-  const handleExportPDF = async () => {
-    setExportingPDF(true);
-    try {
-      const cleanName = (staffInfo?.name || 'Staff').replace(/\s+/g, '-');
-      if (activeTab === 'history') {
-        const fyEl = document.getElementById('print-staff-fy-statement');
-        if (fyEl) {
-          await exportDocumentPDF(fyEl, `Staff-Statement-${cleanName}-FY.pdf`);
-          showToast('Staff statement PDF exported successfully', 'success');
-          return;
-        }
-      }
-      const printEl = document.getElementById('print-staff-statement-root');
-      if (!printEl) return;
-      const targetEl = (printEl.firstElementChild as HTMLElement) || printEl;
-      const filename = `Staff-Statement-${cleanName}-${period}.pdf`;
-      await exportDocumentPDF(targetEl, filename);
-      showToast('Staff statement PDF exported successfully', 'success');
-    } catch (err: any) {
-      showToast('Failed to export PDF: ' + (err?.message || 'Unknown error'), 'error');
-    } finally {
-      setExportingPDF(false);
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const handlePrint = () => {
@@ -401,11 +377,11 @@ export const StaffDetailPage: React.FC = () => {
               <button
                 type="button"
                 onClick={handleExportPDF}
-                disabled={exportingPDF}
-                className="h-9 px-3 text-xs font-semibold rounded-xl border-0 bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs disabled:opacity-50"
+                title="Download PDF"
+                className="h-9 px-3 text-xs font-semibold rounded-xl border-0 bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs"
               >
                 <Download className="w-3.5 h-3.5 text-slate-500" />
-                <span>{exportingPDF ? '...' : 'PDF'}</span>
+                <span>PDF</span>
               </button>
               <button
                 type="button"
@@ -443,11 +419,11 @@ export const StaffDetailPage: React.FC = () => {
             <button
               type="button"
               onClick={handleExportPDF}
-              disabled={exportingPDF}
-              className="h-9 px-3.5 text-xs font-semibold rounded-xl border-0 bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+              title="Download PDF"
+              className="h-9 px-3.5 text-xs font-semibold rounded-xl border-0 bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
             >
               <Download className="w-3.5 h-3.5 text-slate-500" />
-              <span>{exportingPDF ? 'Generating...' : 'PDF'}</span>
+              <span>PDF</span>
             </button>
 
             <button
