@@ -223,7 +223,7 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
         }}
       >
         {/* Header Bar */}
-        <div className="flex justify-between items-start border-b border-slate-200 pb-2.5 mb-2.5 gap-2">
+        <div className="flex justify-between items-start border-b border-slate-300 pb-2.5 mb-2.5 gap-2">
           <div className="flex-1 min-w-0 pr-1">
             <h1 className="text-base font-bold text-text leading-normal">
               {business?.name || 'SIMPLIFY'}
@@ -262,7 +262,7 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
         </div>
 
         {/* Payer and Payment Details Bar */}
-        <div className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2.5 flex items-center justify-between gap-2 text-[10px] border border-slate-200">
+        <div className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2.5 flex items-center justify-between gap-2 text-[10px] border border-slate-300">
           <div className="min-w-0 flex-1">
             <div className="text-[8px] font-bold text-text-muted uppercase tracking-wider">
               Received From
@@ -525,7 +525,7 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
         )}
 
         {/* Signatures & Footer Bar */}
-        <div className="pt-2.5 border-t border-slate-200 flex justify-between items-end mb-2">
+        <div className="pt-2.5 border-t border-slate-300 flex justify-between items-end mb-2">
           <div className="text-slate-500 text-[9px] space-y-0.5">
             <div className="font-semibold text-slate-700">{business?.receipt_footer || 'Thank you for your payment!'}</div>
             <div>Computer generated official receipt.</div>
@@ -539,7 +539,7 @@ export const ReceiptDocument = forwardRef<HTMLDivElement, ReceiptDocumentProps>(
         </div>
 
         {/* Simplify Software Small Logo & Brand Footer */}
-        <div className="mt-3 pt-2.5 border-t border-slate-200 flex items-center justify-between text-[8.5px] text-slate-500">
+        <div className="mt-3 pt-2.5 pb-1 border-t border-slate-300 flex items-center justify-between text-[8.5px] text-slate-500">
           <div className="flex items-center gap-1.5">
             <span>Powered by</span>
             <img

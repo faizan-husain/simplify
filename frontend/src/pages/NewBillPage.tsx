@@ -148,9 +148,9 @@ export const NewBillPage: React.FC = () => {
   const [discountType, setDiscountType] = useState<'NONE' | 'FLAT' | 'PERCENT'>('NONE');
   const [discountValue, setDiscountValue] = useState('');
 
-  // Payment state
+  // Payment state - default to CASH per requirement
   const [paidNow, setPaidNow] = useState('');
-  const [paymentMode, setPaymentMode] = useState<string>('UPI');
+  const [paymentMode, setPaymentMode] = useState<string>('CASH');
   const [bankAccounts, setBankAccounts] = useState<
     Array<{
       id: string;
@@ -228,6 +228,8 @@ export const NewBillPage: React.FC = () => {
     setDiscountType('NONE');
     setDiscountValue('');
     setPaidNow('');
+    setPaymentMode('CASH');
+    setSelectedBankId('');
     setNotes('');
     setShowNotes(false);
     setIsWalkIn(true);
@@ -280,9 +282,6 @@ export const NewBillPage: React.FC = () => {
 
   // Load services, customers, bank accounts
   useEffect(() => {
-    const lastMode = localStorage.getItem(LAST_PAYMENT_MODE_KEY);
-    if (lastMode) setPaymentMode(lastMode);
-
     supabase
       .from('services')
       .select('*')

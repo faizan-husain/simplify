@@ -125,7 +125,13 @@ function prepareDocumentClone(element: HTMLElement): HTMLElement {
   clone.style.display = 'block';
   clone.style.boxShadow = 'none';
   clone.style.filter = 'none';
-  clone.style.margin = '0 auto';
+  clone.style.margin = '0';
+  clone.style.backgroundColor = '#ffffff';
+  clone.style.borderRadius = '0';
+  clone.style.boxSizing = 'border-box';
+  clone.style.width = '148mm';
+  clone.style.maxWidth = '148mm';
+  clone.style.minWidth = '148mm';
 
   // Strip print-hidden controls and buttons if any
   clone.querySelectorAll('.print\\:hidden, .no-print, [data-pdf-hidden], [data-print-hidden]').forEach((el) => {
@@ -141,7 +147,7 @@ function prepareDocumentClone(element: HTMLElement): HTMLElement {
     }
 
     if (el.classList) {
-      el.classList.remove('truncate', 'line-clamp-1', 'line-clamp-2', 'line-clamp-3');
+      el.classList.remove('truncate', 'line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
     }
 
     // Keep overflow-hidden for rounded card and table wrappers so borders remain clean,
@@ -181,18 +187,47 @@ function prepareDocumentClone(element: HTMLElement): HTMLElement {
     el.style.verticalAlign = 'middle';
   });
 
+  // Ensure all subtle border lines (e.g. border-slate-200) are rendered with visible border color #cbd5e1 in PDF
+  clone.querySelectorAll('[class*="border-slate-200"]').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    if (htmlEl.style && !htmlEl.style.borderColor) {
+      htmlEl.style.borderColor = '#cbd5e1';
+    }
+  });
+
   return clone;
+}
+
+function getA5PdfExportOptions(filename: string) {
+  return {
+    margin: 0,
+    filename,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      scrollX: 0,
+      scrollY: 0,
+      onclone: (_clonedDoc: Document, element: HTMLElement) => {
+        // Pin html2pdf container to origin with zero subpixel offset
+        element.style.position = 'absolute';
+        element.style.left = '0px';
+        element.style.top = '0px';
+        element.style.right = 'auto';
+        element.style.margin = '0';
+        element.style.padding = '0';
+        element.style.backgroundColor = '#ffffff';
+      },
+    },
+    jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },
+  };
 }
 
 export async function generateDocumentPdfBlob(element: HTMLElement, filename = 'document.pdf'): Promise<Blob> {
   const clone = prepareDocumentClone(element);
-  const opt = {
-    margin: 0,
-    filename,
-    image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: 0, windowWidth: 800 },
-    jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },
-  };
+  const opt = getA5PdfExportOptions(filename);
 
   const worker = html2pdf().set(opt).from(clone).toPdf();
   await worker.get('pdf');
@@ -203,13 +238,7 @@ export async function generateDocumentPdfBlob(element: HTMLElement, filename = '
 
 export async function exportInvoicePDF(element: HTMLElement, filename = 'invoice.pdf'): Promise<void> {
   const clone = prepareDocumentClone(element);
-  const opt = {
-    margin: 0,
-    filename,
-    image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: 0, windowWidth: 800 },
-    jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },
-  };
+  const opt = getA5PdfExportOptions(filename);
 
   const worker = html2pdf().set(opt).from(clone).toPdf();
   await worker.get('pdf');
@@ -263,13 +292,7 @@ export async function shareDocumentWithWhatsApp(
 ): Promise<ShareDocumentResult> {
   const { element, filename, title, text = '', mobile } = options;
   const clone = prepareDocumentClone(element);
-  const opt = {
-    margin: 0,
-    filename,
-    image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: 0, windowWidth: 800 },
-    jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },
-  };
+  const opt = getA5PdfExportOptions(filename);
 
   try {
     const worker = html2pdf().set(opt).from(clone).toPdf();
@@ -359,13 +382,7 @@ export async function shareInvoicePDF(
 
 export async function exportReceiptPDF(element: HTMLElement, filename = 'receipt.pdf'): Promise<void> {
   const clone = prepareDocumentClone(element);
-  const opt = {
-    margin: 0,
-    filename,
-    image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: 0, windowWidth: 800 },
-    jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },
-  };
+  const opt = getA5PdfExportOptions(filename);
 
   const worker = html2pdf().set(opt).from(clone).toPdf();
   await worker.get('pdf');

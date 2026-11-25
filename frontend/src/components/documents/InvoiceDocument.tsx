@@ -163,7 +163,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         }}
       >
         {/* Top Header */}
-        <div className="flex justify-between items-start border-b border-slate-200 pb-2.5 mb-2.5 gap-2">
+        <div className="flex justify-between items-start border-b border-slate-300 pb-2.5 mb-2.5 gap-2">
           <div className="flex-1 min-w-0 pr-1">
             <h1 className="text-base font-bold text-text leading-normal">
               {business?.name || 'SIMPLIFY'}
@@ -203,7 +203,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         </div>
 
         {/* Billed To / Party Info */}
-        <div className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2.5 flex items-center justify-between gap-2 border border-slate-200">
+        <div className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2.5 flex items-center justify-between gap-2 border border-slate-300">
           <div className="min-w-0 flex-1">
             <div className="text-[8.5px] font-bold text-text-muted uppercase tracking-wider">
               Billed To
@@ -361,7 +361,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
 
         {/* Footer Text, Terms & Notes */}
         {(invoice.notes || business?.footer_text) && (
-          <div className="pt-2.5 pb-1 border-t border-slate-200 text-[9.5px] text-slate-500 space-y-1 text-center whitespace-pre-line leading-relaxed">
+          <div className="pt-2.5 pb-1 border-t border-slate-300 text-[9.5px] text-slate-500 space-y-1 text-center whitespace-pre-line leading-relaxed">
             {invoice.notes && (
               <div>
                 <strong>Notes:</strong> {invoice.notes}
@@ -376,7 +376,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         )}
 
         {/* Simplify Software Small Logo & Brand Footer */}
-        <div className="mt-3 pt-2.5 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500">
+        <div className="mt-3 pt-2.5 pb-1 border-t border-slate-300 flex items-center justify-between text-[9px] text-slate-500">
           <div className="flex items-center gap-1.5">
             <span className="text-[9px] text-text-muted">Powered by</span>
             <img
