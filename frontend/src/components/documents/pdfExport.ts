@@ -187,11 +187,41 @@ function prepareDocumentClone(element: HTMLElement): HTMLElement {
     el.style.verticalAlign = 'middle';
   });
 
-  // Ensure all subtle border lines (e.g. border-slate-200) are rendered with visible border color #cbd5e1 in PDF
-  clone.querySelectorAll('[class*="border-slate-200"]').forEach((el) => {
-    const htmlEl = el as HTMLElement;
-    if (htmlEl.style && !htmlEl.style.borderColor) {
-      htmlEl.style.borderColor = '#cbd5e1';
+  // Explicitly enforce solid border styles and crisp hex colors on all border elements
+  // (Prevents html2canvas from dropping borders due to missing iframe preflight or CSS variable resolution)
+  clone.querySelectorAll('*').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    const cls = htmlEl.className || '';
+    if (typeof cls !== 'string') return;
+
+    if (cls.includes('border-t')) {
+      htmlEl.style.borderTopStyle = 'solid';
+      htmlEl.style.borderTopWidth = '1px';
+      htmlEl.style.borderTopColor = htmlEl.style.borderTopColor || '#CBD5E1';
+    }
+    if (cls.includes('border-b')) {
+      htmlEl.style.borderBottomStyle = 'solid';
+      htmlEl.style.borderBottomWidth = '1px';
+      htmlEl.style.borderBottomColor = htmlEl.style.borderBottomColor || '#CBD5E1';
+    }
+    if (cls.includes('border-l')) {
+      htmlEl.style.borderLeftStyle = 'solid';
+      htmlEl.style.borderLeftWidth = '1px';
+      htmlEl.style.borderLeftColor = htmlEl.style.borderLeftColor || '#CBD5E1';
+    }
+    if (cls.includes('border-r')) {
+      htmlEl.style.borderRightStyle = 'solid';
+      htmlEl.style.borderRightWidth = '1px';
+      htmlEl.style.borderRightColor = htmlEl.style.borderRightColor || '#CBD5E1';
+    }
+    if (
+      (cls.includes('border ') || cls.endsWith('border') || cls.includes('border-slate')) &&
+      !cls.includes('border-t') &&
+      !cls.includes('border-b')
+    ) {
+      htmlEl.style.borderStyle = 'solid';
+      htmlEl.style.borderWidth = '1px';
+      htmlEl.style.borderColor = htmlEl.style.borderColor || '#CBD5E1';
     }
   });
 
@@ -219,6 +249,8 @@ function getA5PdfExportOptions(filename: string) {
         element.style.margin = '0';
         element.style.padding = '0';
         element.style.backgroundColor = '#ffffff';
+        element.style.width = '148mm';
+        element.style.maxWidth = '148mm';
       },
     },
     jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },

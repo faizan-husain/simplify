@@ -60,16 +60,19 @@ describe('PDF Export & Print Layout Formatting', () => {
     );
 
     // Verify header border is crisp slate-300
-    const header = container.querySelector('.border-b.border-slate-300');
+    const header = container.querySelector('div.flex.justify-between.items-start') as HTMLElement;
     expect(header).toBeTruthy();
+    expect(header.style.borderBottom).toContain('1px solid');
 
     // Verify billed to border is slate-300
-    const billedTo = container.querySelector('.bg-\\[\\#EEF0F3\\]');
-    expect(billedTo?.classList.contains('border-slate-300')).toBe(true);
+    const billedTo = container.querySelector('.bg-\\[\\#EEF0F3\\]') as HTMLElement;
+    expect(billedTo).toBeTruthy();
+    expect(billedTo.style.border).toContain('1px solid');
 
     // Verify bottom brand footer has border-t border-slate-300 and pb-1 padding
-    const brandFooter = container.querySelector('div.mt-3.pt-2\\.5.pb-1.border-t.border-slate-300');
+    const brandFooter = container.querySelector('div.mt-3.pt-2\\.5.pb-1') as HTMLElement;
     expect(brandFooter).toBeTruthy();
+    expect(brandFooter.style.borderTop).toContain('1px solid');
     expect(brandFooter?.textContent).toContain('Powered by');
     expect(brandFooter?.textContent).toContain('Business Management & Billing Software');
   });
@@ -114,20 +117,24 @@ describe('PDF Export & Print Layout Formatting', () => {
     );
 
     // Verify header border is crisp slate-300
-    const header = container.querySelector('.border-b.border-slate-300');
+    const header = container.querySelector('div.flex.justify-between.items-start') as HTMLElement;
     expect(header).toBeTruthy();
+    expect(header.style.borderBottom).toContain('1px solid');
 
     // Verify payer details border is slate-300
-    const payerBox = container.querySelector('.bg-\\[\\#EEF0F3\\]');
-    expect(payerBox?.classList.contains('border-slate-300')).toBe(true);
+    const payerBox = container.querySelector('.bg-\\[\\#EEF0F3\\]') as HTMLElement;
+    expect(payerBox).toBeTruthy();
+    expect(payerBox.style.border).toContain('1px solid');
 
     // Verify signature bar border is slate-300
-    const sigBar = container.querySelector('.pt-2\\.5.border-t.border-slate-300');
+    const sigBar = container.querySelector('.pt-2\\.5.flex.justify-between') as HTMLElement;
     expect(sigBar).toBeTruthy();
+    expect(sigBar.style.borderTop).toContain('1px solid');
 
     // Verify brand footer has pb-1 and border-slate-300
-    const brandFooter = container.querySelector('div.mt-3.pt-2\\.5.pb-1.border-t.border-slate-300');
+    const brandFooter = container.querySelector('div.mt-3.pt-2\\.5.pb-1') as HTMLElement;
     expect(brandFooter).toBeTruthy();
+    expect(brandFooter.style.borderTop).toContain('1px solid');
     expect(brandFooter?.textContent).toContain('Powered by');
     expect(brandFooter?.textContent).toContain('Business Management & Billing Software');
   });

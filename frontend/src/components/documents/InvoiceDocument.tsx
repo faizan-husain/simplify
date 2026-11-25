@@ -163,7 +163,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         }}
       >
         {/* Top Header */}
-        <div className="flex justify-between items-start border-b border-slate-300 pb-2.5 mb-2.5 gap-2">
+        <div
+          className="flex justify-between items-start pb-2.5 mb-2.5 gap-2"
+          style={{ borderBottom: '1px solid #CBD5E1' }}
+        >
           <div className="flex-1 min-w-0 pr-1">
             <h1 className="text-base font-bold text-text leading-normal">
               {business?.name || 'SIMPLIFY'}
@@ -203,7 +206,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         </div>
 
         {/* Billed To / Party Info */}
-        <div className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2.5 flex items-center justify-between gap-2 border border-slate-300">
+        <div
+          className="bg-[#EEF0F3] p-2.5 rounded-lg mb-2.5 flex items-center justify-between gap-2"
+          style={{ border: '1px solid #CBD5E1' }}
+        >
           <div className="min-w-0 flex-1">
             <div className="text-[8.5px] font-bold text-text-muted uppercase tracking-wider">
               Billed To
@@ -225,7 +231,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         </div>
 
         {/* Items Table - table-fixed with exact percentage widths guarantees zero right-side clipping */}
-        <div className="border border-slate-300 rounded-lg overflow-hidden mb-2.5">
+        <div
+          className="rounded-lg overflow-hidden mb-2.5"
+          style={{ border: '1px solid #CBD5E1' }}
+        >
           <table className="w-full text-left text-[10.5px] table-fixed border-collapse">
             <colgroup>
               <col style={{ width: '50%' }} />
@@ -236,26 +245,26 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
             <thead className="bg-[#F8FAFC] text-slate-600 uppercase text-[9px] font-semibold">
               <tr>
                 <th
-                  className="px-3 border-b border-slate-300"
-                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                  className="px-3"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3', borderBottom: '1px solid #CBD5E1' }}
                 >
                   Description
                 </th>
                 <th
-                  className="px-1 text-center border-b border-slate-300"
-                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                  className="px-1 text-center"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3', borderBottom: '1px solid #CBD5E1' }}
                 >
                   Qty
                 </th>
                 <th
-                  className="px-2 text-right border-b border-slate-300"
-                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                  className="px-2 text-right"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3', borderBottom: '1px solid #CBD5E1' }}
                 >
                   Rate
                 </th>
                 <th
-                  className="px-3 text-right border-b border-slate-300"
-                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3' }}
+                  className="px-3 text-right"
+                  style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.3', borderBottom: '1px solid #CBD5E1' }}
                 >
                   Amount
                 </th>
@@ -264,12 +273,12 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
             <tbody>
               {invoice.invoice_items?.map((item, idx) => {
                 const isLast = idx === (invoice.invoice_items?.length ?? 1) - 1;
-                const borderClass = isLast ? '' : 'border-b border-slate-200';
+                const rowBorderStyle = isLast ? {} : { borderBottom: '1px solid #E2E8F0' };
                 return (
                   <tr key={idx} className="hover:bg-slate-50/50">
                     <td
-                      className={`px-3 text-slate-800 break-words ${borderClass}`}
-                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                      className="px-3 text-slate-800 break-words"
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4', ...rowBorderStyle }}
                     >
                       <span className="font-medium">{item.description}</span>
                       {item.applicant_name && (
@@ -279,20 +288,20 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
                       )}
                     </td>
                     <td
-                      className={`px-1 text-center text-slate-600 tabular-nums ${borderClass}`}
-                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                      className="px-1 text-center text-slate-600 tabular-nums"
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4', ...rowBorderStyle }}
                     >
                       {item.quantity}
                     </td>
                     <td
-                      className={`px-2 text-right text-slate-600 tabular-nums whitespace-nowrap ${borderClass}`}
-                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                      className="px-2 text-right text-slate-600 tabular-nums whitespace-nowrap"
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4', ...rowBorderStyle }}
                     >
                       {formatINR(item.rate)}
                     </td>
                     <td
-                      className={`px-3 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap ${borderClass}`}
-                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4' }}
+                      className="px-3 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap"
+                      style={{ verticalAlign: 'middle', paddingTop: '8px', paddingBottom: '8px', lineHeight: '1.4', ...rowBorderStyle }}
                     >
                       {formatINR(item.amount)}
                     </td>
@@ -307,14 +316,20 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         <div className="grid grid-cols-2 gap-3 items-start mb-3">
           {/* UPI QR Payment Block (BR-19) */}
           {upiQrString && balance > 0 ? (
-            <div className="border border-slate-300 p-2.5 rounded-lg bg-white flex items-center gap-2.5">
-              <QRCodeSVG value={upiQrString} size={70} level="M" />
+            <div
+              className="p-2.5 rounded-lg bg-white flex items-center gap-2"
+              style={{ border: '1px solid #CBD5E1' }}
+            >
+              <QRCodeSVG value={upiQrString} size={62} level="M" />
               <div className="min-w-0 flex-1 leading-normal">
                 <div className="text-[9.5px] font-bold text-slate-800">Scan &amp; Pay UPI</div>
                 <div className="text-[11px] font-bold text-teal-700 mt-0.5 leading-normal">
                   {formatINR(balance)}
                 </div>
-                <div className="text-[8.5px] text-slate-500 mt-0.5 font-mono break-all leading-normal">
+                <div
+                  className="text-[8px] text-slate-600 mt-0.5 font-mono leading-tight break-words"
+                  style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
+                >
                   {business?.upi_id}
                 </div>
                 <div className="text-[7.5px] text-slate-400 mt-0.5 leading-normal">
@@ -329,7 +344,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
           )}
 
           {/* Totals Summary */}
-          <div className="bg-[#F8FAFC] p-3 rounded-lg border border-slate-300 space-y-1 text-[10.5px]">
+          <div
+            className="bg-[#F8FAFC] p-3 rounded-lg space-y-1 text-[10.5px]"
+            style={{ border: '1px solid #CBD5E1' }}
+          >
             <div className="flex justify-between items-center text-slate-600 py-0.5">
               <span>Subtotal</span>
               <span className="font-medium text-slate-900 tabular-nums">{formatINR(invoice.subtotal)}</span>
@@ -340,7 +358,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
                 <span className="tabular-nums">-{formatINR(invoice.discount_amount)}</span>
               </div>
             ) : null}
-            <div className="flex justify-between items-center text-[11px] font-bold text-slate-900 pt-2 pb-0.5 border-t border-slate-300">
+            <div
+              className="flex justify-between items-center text-[11px] font-bold text-slate-900 pt-2 pb-0.5"
+              style={{ borderTop: '1px solid #CBD5E1' }}
+            >
               <span>Total Amount</span>
               <span className="tabular-nums">{formatINR(invoice.total)}</span>
             </div>
@@ -350,7 +371,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
                 {formatINR(invoice.paid_amount)}
               </span>
             </div>
-            <div className="flex justify-between items-center text-[11px] font-bold pt-2 pb-0.5 border-t border-slate-300">
+            <div
+              className="flex justify-between items-center text-[11px] font-bold pt-2 pb-0.5"
+              style={{ borderTop: '1px solid #CBD5E1' }}
+            >
               <span>Balance Due</span>
               <span className={`tabular-nums ${balance > 0 ? 'text-red-600' : 'text-emerald-700'}`}>
                 {formatINR(balance)}
@@ -361,7 +385,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
 
         {/* Footer Text, Terms & Notes */}
         {(invoice.notes || business?.footer_text) && (
-          <div className="pt-2.5 pb-1 border-t border-slate-300 text-[9.5px] text-slate-500 space-y-1 text-center whitespace-pre-line leading-relaxed">
+          <div
+            className="pt-2.5 pb-1 text-[9.5px] text-slate-500 space-y-1 text-center whitespace-pre-line leading-relaxed"
+            style={{ borderTop: '1px solid #CBD5E1' }}
+          >
             {invoice.notes && (
               <div>
                 <strong>Notes:</strong> {invoice.notes}
@@ -376,7 +403,10 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
         )}
 
         {/* Simplify Software Small Logo & Brand Footer */}
-        <div className="mt-3 pt-2.5 pb-1 border-t border-slate-300 flex items-center justify-between text-[9px] text-slate-500">
+        <div
+          className="mt-3 pt-2.5 pb-1 flex items-center justify-between text-[9px] text-slate-500"
+          style={{ borderTop: '1px solid #CBD5E1' }}
+        >
           <div className="flex items-center gap-1.5">
             <span className="text-[9px] text-text-muted">Powered by</span>
             <img
