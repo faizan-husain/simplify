@@ -122,7 +122,6 @@ function cleanPdfBlankPages(worker: any): void {
 function prepareDocumentClone(element: HTMLElement): HTMLElement {
   const clone = element.cloneNode(true) as HTMLElement;
   clone.classList.remove('hidden');
-  clone.style.display = 'block';
   clone.style.boxShadow = 'none';
   clone.style.filter = 'none';
   clone.style.margin = '0';
@@ -133,12 +132,15 @@ function prepareDocumentClone(element: HTMLElement): HTMLElement {
   clone.style.maxWidth = '148mm';
   clone.style.minWidth = '148mm';
 
+  // Preserve canonical document padding (8mm 8mm 10mm 8mm), never wipe to 0
+  clone.style.padding = '8mm 8mm 10mm 8mm';
+
   // Strip print-hidden controls and buttons if any
   clone.querySelectorAll('.print\\:hidden, .no-print, [data-pdf-hidden], [data-print-hidden]').forEach((el) => {
     el.remove();
   });
 
-  // Strip shadows on all descendants and neutralize truncate/line-clamp on text elements
+  // Strip shadows on all descendants and remove multi-line clamp while preserving single-line truncate
   clone.querySelectorAll('*').forEach((node) => {
     const el = node as HTMLElement;
     if (el.style) {
@@ -147,7 +149,7 @@ function prepareDocumentClone(element: HTMLElement): HTMLElement {
     }
 
     if (el.classList) {
-      el.classList.remove('truncate', 'line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
+      el.classList.remove('line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
     }
 
     // Keep overflow-hidden for rounded card and table wrappers so borders remain clean,
@@ -240,7 +242,7 @@ function getA5PdfExportOptions(filename: string) {
       backgroundColor: '#ffffff',
       scrollX: 0,
       scrollY: 0,
-      windowWidth: 794,
+      windowWidth: 560,
       onclone: async (clonedDoc: Document, element: HTMLElement) => {
         // Ensure web fonts (Inter) are 100% loaded in cloned document iframe
         if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
@@ -251,16 +253,43 @@ function getA5PdfExportOptions(filename: string) {
           }
         }
 
-        // Pin html2pdf container to origin with zero subpixel offset
+        // 1. Reset iframe HTML & Body to eliminate browser default 8px margin and scrollbars
+        if (clonedDoc.documentElement) {
+          clonedDoc.documentElement.style.margin = '0px';
+          clonedDoc.documentElement.style.padding = '0px';
+          clonedDoc.documentElement.style.overflow = 'hidden';
+        }
+        if (clonedDoc.body) {
+          clonedDoc.body.style.margin = '0px';
+          clonedDoc.body.style.padding = '0px';
+          clonedDoc.body.style.overflow = 'hidden';
+        }
+
+        // 2. element is html2pdf's container wrapping the cloned document
+        // It must have 0 margin, 0 padding, 0 border, and exact 148mm width
         element.style.position = 'absolute';
         element.style.left = '0px';
         element.style.top = '0px';
-        element.style.right = 'auto';
-        element.style.margin = '0';
-        element.style.padding = '0';
+        element.style.margin = '0px';
+        element.style.padding = '0px';
+        element.style.border = '0px';
         element.style.backgroundColor = '#ffffff';
         element.style.width = '148mm';
         element.style.maxWidth = '148mm';
+        element.style.minWidth = '148mm';
+        element.style.boxSizing = 'border-box';
+
+        // 3. Configure the actual document child inside html2pdf container
+        const docChild = element.firstElementChild as HTMLElement;
+        if (docChild) {
+          docChild.style.margin = '0px';
+          docChild.style.width = '148mm';
+          docChild.style.maxWidth = '148mm';
+          docChild.style.minWidth = '148mm';
+          docChild.style.boxSizing = 'border-box';
+          docChild.style.padding = '8mm 8mm 10mm 8mm';
+          docChild.style.backgroundColor = '#ffffff';
+        }
       },
     },
     jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },
