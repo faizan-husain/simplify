@@ -49,3 +49,6 @@ Thumbs.db
 
 # Supabase local
 .supabase/
+
+# Scratch & temporary test artifacts
+scratch/

@@ -242,8 +242,10 @@ function getA5PdfExportOptions(filename: string) {
       backgroundColor: '#ffffff',
       scrollX: 0,
       scrollY: 0,
+      x: 0,
+      y: 0,
       windowWidth: 560,
-      onclone: async (clonedDoc: Document, element: HTMLElement) => {
+      onclone: async (clonedDoc: Document) => {
         // Ensure web fonts (Inter) are 100% loaded in cloned document iframe
         if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
           try {
@@ -265,30 +267,32 @@ function getA5PdfExportOptions(filename: string) {
           clonedDoc.body.style.overflow = 'hidden';
         }
 
-        // 2. element is html2pdf's container wrapping the cloned document
-        // It must have 0 margin, 0 padding, 0 border, and exact 148mm width
-        element.style.position = 'absolute';
-        element.style.left = '0px';
-        element.style.top = '0px';
-        element.style.margin = '0px';
-        element.style.padding = '0px';
-        element.style.border = '0px';
-        element.style.backgroundColor = '#ffffff';
-        element.style.width = '148mm';
-        element.style.maxWidth = '148mm';
-        element.style.minWidth = '148mm';
-        element.style.boxSizing = 'border-box';
+        // 2. Locate html2pdf container and configure exact 148mm geometry
+        const container = clonedDoc.querySelector('.html2pdf__container') as HTMLElement | null;
+        if (container) {
+          container.style.position = 'absolute';
+          container.style.left = '0px';
+          container.style.top = '0px';
+          container.style.margin = '0px';
+          container.style.padding = '0px';
+          container.style.border = '0px';
+          container.style.backgroundColor = '#ffffff';
+          container.style.width = '148mm';
+          container.style.maxWidth = '148mm';
+          container.style.minWidth = '148mm';
+          container.style.boxSizing = 'border-box';
 
-        // 3. Configure the actual document child inside html2pdf container
-        const docChild = element.firstElementChild as HTMLElement;
-        if (docChild) {
-          docChild.style.margin = '0px';
-          docChild.style.width = '148mm';
-          docChild.style.maxWidth = '148mm';
-          docChild.style.minWidth = '148mm';
-          docChild.style.boxSizing = 'border-box';
-          docChild.style.padding = '8mm 8mm 10mm 8mm';
-          docChild.style.backgroundColor = '#ffffff';
+          // 3. Configure the actual document child inside html2pdf container
+          const docChild = container.firstElementChild as HTMLElement | null;
+          if (docChild) {
+            docChild.style.margin = '0px';
+            docChild.style.width = '148mm';
+            docChild.style.maxWidth = '148mm';
+            docChild.style.minWidth = '148mm';
+            docChild.style.boxSizing = 'border-box';
+            docChild.style.padding = '8mm 8mm 10mm 8mm';
+            docChild.style.backgroundColor = '#ffffff';
+          }
         }
       },
     },
@@ -506,36 +510,17 @@ export async function shareReceiptPDF(
 }
 
 /**
- * Universal A4 Document PDF Exporter for Reports, Ledgers, and Statements.
- * Clones the element into a calibrated 100% width container with overflow reset,
- * strips print-hidden UI elements, applies pagebreak rules to prevent mid-row slicing,
- * and automatically removes any trailing blank pages.
+ * Prepares an A4 document clone (reports, statements, ledgers) for PDF generation:
+ * expands hidden responsive tables, strips interactive controls, establishes 194mm width
+ * matching jsPDF's inner printable width (210mm - 2*8mm margin), prevents mid-row slicing,
+ * and normalizes table/card borders.
  */
-export async function exportDocumentPDF(element: HTMLElement, filename = 'document.pdf'): Promise<void> {
-  // Await web font loading
-  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
-    try {
-      await document.fonts.ready;
-    } catch {
-      // ignore
-    }
-  }
-
-  // Await image and logo decodes
-  const images = Array.from(element.querySelectorAll('img'));
-  await Promise.all(
-    images.map((img) => {
-      if (img.complete) return Promise.resolve();
-      return img.decode?.().catch(() => {});
-    })
-  );
-
-  // 1. Clone element so live DOM is unaffected
+function prepareReportClone(element: HTMLElement): HTMLElement {
   const clone = element.cloneNode(true) as HTMLElement;
   clone.classList.remove('hidden');
   clone.style.display = 'block';
 
-  // 2. Force reveal all table sections that were hidden on mobile viewports (hidden md:block)
+  // 1. Force reveal all table sections that were hidden on mobile viewports (hidden md:block)
   clone.querySelectorAll('.hidden, [class*="hidden"]').forEach((el) => {
     const htmlEl = el as HTMLElement;
     if (
@@ -557,15 +542,15 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     }
   });
 
-  // 3. Strip interactive/action elements and UI controls
+  // 2. Strip interactive/action elements and UI controls
   clone.querySelectorAll('.print\\:hidden, .no-print, [data-pdf-hidden], [data-print-hidden]').forEach((el) => {
     el.remove();
   });
 
-  // 4. Configure clone width & typography calibrated for standard A4 page (794px = 210mm at 96 DPI)
-  clone.style.width = '794px';
-  clone.style.maxWidth = '794px';
-  clone.style.minWidth = '794px';
+  // 3. Configure clone width & typography calibrated for printable area inside jsPDF 8mm margins (194mm)
+  clone.style.width = '194mm';
+  clone.style.maxWidth = '194mm';
+  clone.style.minWidth = '194mm';
   clone.style.margin = '0';
   clone.style.padding = '0';
   clone.style.boxShadow = 'none';
@@ -574,14 +559,14 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
   clone.style.boxSizing = 'border-box';
   clone.style.fontFamily = 'Inter, -apple-system, BlinkMacSystemFont, sans-serif';
 
-  // 5. Reset overflow and scroll restrictions so all tables & cards expand to full content
+  // 4. Reset overflow and scroll restrictions so all tables & cards expand to full content
   clone.querySelectorAll('.overflow-x-auto, .overflow-y-auto, .overflow-hidden').forEach((el) => {
     const htmlEl = el as HTMLElement;
     htmlEl.style.overflow = 'visible';
     htmlEl.style.maxHeight = 'none';
   });
 
-  // Strip shadows on all descendants and neutralize truncate/line-clamp on text elements
+  // 5. Strip shadows on all descendants and neutralize truncate/line-clamp on text elements
   clone.querySelectorAll('*').forEach((node) => {
     const el = node as HTMLElement;
     if (el.style) {
@@ -619,7 +604,7 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     }
   });
 
-  // Ensure tables take 100% width, fit cleanly, and keep headers on multi-page splits
+  // 6. Ensure tables take 100% width, fit cleanly, and keep headers on multi-page splits
   clone.querySelectorAll('table').forEach((table) => {
     table.style.width = '100%';
     table.style.tableLayout = 'auto';
@@ -639,14 +624,14 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     htmlEl.style.display = 'table-header-group';
   });
 
-  // Prevent cards, statement headers, and table rows from being sliced across page breaks
+  // 7. Prevent cards, statement headers, and table rows from being sliced across page breaks
   clone.querySelectorAll('tr, thead, .p-4, .p-5, .rounded-xl, .rounded-2xl, .bg-surface-2').forEach((node) => {
     const htmlEl = node as HTMLElement;
     htmlEl.style.breakInside = 'avoid';
     htmlEl.style.pageBreakInside = 'avoid';
   });
 
-  // Explicitly enforce solid border styles and crisp hex colors on all border elements
+  // 8. Explicitly enforce solid border styles and crisp hex colors on all border elements
   clone.querySelectorAll('*').forEach((node) => {
     const htmlEl = node as HTMLElement;
     const cls = htmlEl.className || '';
@@ -683,7 +668,7 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     }
   });
 
-  // Ensure white summary metric cards have visible boundaries in PDF, while tables and footers stay clean
+  // 9. Ensure white summary metric cards have visible boundaries in PDF, while tables and footers stay clean
   clone.querySelectorAll('.bg-white').forEach((node) => {
     const htmlEl = node as HTMLElement;
     if (
@@ -736,7 +721,11 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     }
   });
 
-  const opt = {
+  return clone;
+}
+
+function getA4PdfExportOptions(filename: string) {
+  return {
     margin: [8, 8, 8, 8],
     filename,
     image: { type: 'jpeg', quality: 0.98 },
@@ -747,8 +736,10 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
       backgroundColor: '#ffffff',
       scrollX: 0,
       scrollY: 0,
+      x: 0,
+      y: 0,
       windowWidth: 794,
-      onclone: async (clonedDoc: Document, clonedEl: HTMLElement) => {
+      onclone: async (clonedDoc: Document) => {
         if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
           try {
             await clonedDoc.fonts.ready;
@@ -769,21 +760,65 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
           clonedDoc.body.style.overflow = 'hidden';
         }
 
-        clonedEl.style.position = 'absolute';
-        clonedEl.style.left = '0px';
-        clonedEl.style.top = '0px';
-        clonedEl.style.right = 'auto';
-        clonedEl.style.margin = '0';
-        clonedEl.style.padding = '0';
-        clonedEl.style.border = '0';
-        clonedEl.style.backgroundColor = '#ffffff';
-        clonedEl.style.width = '794px';
-        clonedEl.style.maxWidth = '794px';
+        const container = clonedDoc.querySelector('.html2pdf__container') as HTMLElement | null;
+        if (container) {
+          container.style.position = 'absolute';
+          container.style.left = '0px';
+          container.style.top = '0px';
+          container.style.right = 'auto';
+          container.style.margin = '0px';
+          container.style.padding = '0px';
+          container.style.border = '0px';
+          container.style.backgroundColor = '#ffffff';
+          container.style.width = '194mm';
+          container.style.maxWidth = '194mm';
+          container.style.minWidth = '194mm';
+          container.style.boxSizing = 'border-box';
+
+          const docChild = container.firstElementChild as HTMLElement | null;
+          if (docChild) {
+            docChild.style.margin = '0px';
+            docChild.style.width = '194mm';
+            docChild.style.maxWidth = '194mm';
+            docChild.style.minWidth = '194mm';
+            docChild.style.boxSizing = 'border-box';
+            docChild.style.backgroundColor = '#ffffff';
+          }
+        }
       },
     },
     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
     pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
   };
+}
+
+/**
+ * Universal A4 Document PDF Exporter for Reports, Ledgers, and Statements.
+ * Clones the element into a calibrated 100% width container with overflow reset,
+ * strips print-hidden UI elements, applies pagebreak rules to prevent mid-row slicing,
+ * and automatically removes any trailing blank pages.
+ */
+export async function exportDocumentPDF(element: HTMLElement, filename = 'document.pdf'): Promise<void> {
+  // Await web font loading
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Await image and logo decodes
+  const images = Array.from(element.querySelectorAll('img'));
+  await Promise.all(
+    images.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return img.decode?.().catch(() => {});
+    })
+  );
+
+  const clone = prepareReportClone(element);
+  const opt = getA4PdfExportOptions(filename);
 
   const worker = html2pdf().set(opt).from(clone).toPdf();
   await worker.get('pdf');
@@ -814,260 +849,8 @@ export async function generateReportPdfBlob(element: HTMLElement, filename = 'do
     })
   );
 
-  // 1. Clone element so live DOM is unaffected
-  const clone = element.cloneNode(true) as HTMLElement;
-  clone.classList.remove('hidden');
-  clone.style.display = 'block';
-
-  // 2. Force reveal all table sections that were hidden on mobile viewports (hidden md:block)
-  clone.querySelectorAll('.hidden, [class*="hidden"]').forEach((el) => {
-    const htmlEl = el as HTMLElement;
-    if (
-      !htmlEl.classList.contains('print:hidden') &&
-      !htmlEl.classList.contains('no-print') &&
-      !htmlEl.hasAttribute('data-print-hidden') &&
-      !htmlEl.hasAttribute('data-pdf-hidden')
-    ) {
-      htmlEl.classList.remove('hidden');
-      if (htmlEl.tagName === 'TABLE') {
-        htmlEl.style.display = 'table';
-      } else if (htmlEl.tagName === 'TR') {
-        htmlEl.style.display = 'table-row';
-      } else if (htmlEl.tagName === 'TD' || htmlEl.tagName === 'TH') {
-        htmlEl.style.display = 'table-cell';
-      } else {
-        htmlEl.style.display = 'block';
-      }
-    }
-  });
-
-  // 3. Strip interactive/action elements and UI controls
-  clone.querySelectorAll('.print\\:hidden, .no-print, [data-pdf-hidden], [data-print-hidden]').forEach((el) => {
-    el.remove();
-  });
-
-  // 4. Configure clone width & typography calibrated for standard A4 page (794px = 210mm at 96 DPI)
-  clone.style.width = '794px';
-  clone.style.maxWidth = '794px';
-  clone.style.minWidth = '794px';
-  clone.style.margin = '0';
-  clone.style.padding = '0';
-  clone.style.boxShadow = 'none';
-  clone.style.backgroundColor = '#ffffff';
-  clone.style.color = '#0f172a';
-  clone.style.boxSizing = 'border-box';
-  clone.style.fontFamily = 'Inter, -apple-system, BlinkMacSystemFont, sans-serif';
-
-  // 5. Reset overflow and scroll restrictions so all tables & cards expand to full content
-  clone.querySelectorAll('.overflow-x-auto, .overflow-y-auto, .overflow-hidden').forEach((el) => {
-    const htmlEl = el as HTMLElement;
-    htmlEl.style.overflow = 'visible';
-    htmlEl.style.maxHeight = 'none';
-  });
-
-  // Strip shadows on all descendants and neutralize truncate/line-clamp on text elements
-  clone.querySelectorAll('*').forEach((node) => {
-    const el = node as HTMLElement;
-    if (el.style) {
-      el.style.boxShadow = 'none';
-      el.style.textShadow = 'none';
-    }
-
-    if (el.classList) {
-      el.classList.remove('truncate', 'line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
-    }
-
-    const isContainer =
-      el.tagName === 'TABLE' ||
-      el.querySelector('table') !== null ||
-      el.classList.contains('rounded-lg') ||
-      el.classList.contains('rounded-xl') ||
-      el.classList.contains('rounded-2xl');
-
-    if (!isContainer && el.style) {
-      if (el.style.overflow === 'hidden' || el.style.overflowX === 'hidden' || el.style.overflowY === 'hidden') {
-        el.style.overflow = 'visible';
-      }
-    }
-
-    if (el.style) {
-      if (el.style.textOverflow === 'ellipsis') {
-        el.style.textOverflow = 'clip';
-      }
-      if (el.style.webkitLineClamp) {
-        el.style.webkitLineClamp = 'unset';
-      }
-      if (el.style.display === '-webkit-box') {
-        el.style.display = 'block';
-      }
-    }
-  });
-
-  // Ensure tables take 100% width, fit cleanly, and keep headers on multi-page splits
-  clone.querySelectorAll('table').forEach((table) => {
-    table.style.width = '100%';
-    table.style.tableLayout = 'auto';
-    table.style.border = 'none';
-    table.style.borderCollapse = 'collapse';
-  });
-
-  clone.querySelectorAll('th, td').forEach((cell) => {
-    const htmlEl = cell as HTMLElement;
-    htmlEl.style.wordBreak = 'break-word';
-    htmlEl.style.overflowWrap = 'break-word';
-    htmlEl.style.verticalAlign = 'middle';
-  });
-
-  clone.querySelectorAll('thead').forEach((thead) => {
-    const htmlEl = thead as HTMLElement;
-    htmlEl.style.display = 'table-header-group';
-  });
-
-  // Prevent cards, statement headers, and table rows from being sliced across page breaks
-  clone.querySelectorAll('tr, thead, .p-4, .p-5, .rounded-xl, .rounded-2xl, .bg-surface-2').forEach((node) => {
-    const htmlEl = node as HTMLElement;
-    htmlEl.style.breakInside = 'avoid';
-    htmlEl.style.pageBreakInside = 'avoid';
-  });
-
-  // Explicitly enforce solid border styles and crisp hex colors on all border elements
-  clone.querySelectorAll('*').forEach((node) => {
-    const htmlEl = node as HTMLElement;
-    const cls = htmlEl.className || '';
-    if (typeof cls !== 'string') return;
-
-    if (cls.includes('border-t')) {
-      htmlEl.style.borderTopStyle = 'solid';
-      htmlEl.style.borderTopWidth = '1px';
-      htmlEl.style.borderTopColor = htmlEl.style.borderTopColor || '#CBD5E1';
-    }
-    if (cls.includes('border-b')) {
-      htmlEl.style.borderBottomStyle = 'solid';
-      htmlEl.style.borderBottomWidth = '1px';
-      htmlEl.style.borderBottomColor = htmlEl.style.borderBottomColor || '#CBD5E1';
-    }
-    if (cls.includes('border-l')) {
-      htmlEl.style.borderLeftStyle = 'solid';
-      htmlEl.style.borderLeftWidth = '1px';
-      htmlEl.style.borderLeftColor = htmlEl.style.borderLeftColor || '#CBD5E1';
-    }
-    if (cls.includes('border-r')) {
-      htmlEl.style.borderRightStyle = 'solid';
-      htmlEl.style.borderRightWidth = '1px';
-      htmlEl.style.borderRightColor = htmlEl.style.borderRightColor || '#CBD5E1';
-    }
-    if (
-      (cls.includes('border ') || cls.endsWith('border') || cls.includes('border-slate')) &&
-      !cls.includes('border-t') &&
-      !cls.includes('border-b')
-    ) {
-      htmlEl.style.borderStyle = 'solid';
-      htmlEl.style.borderWidth = '1px';
-      htmlEl.style.borderColor = htmlEl.style.borderColor || '#CBD5E1';
-    }
-  });
-
-  // Ensure white summary metric cards have visible boundaries in PDF, while tables and footers stay clean
-  clone.querySelectorAll('.bg-white').forEach((node) => {
-    const htmlEl = node as HTMLElement;
-    if (
-      htmlEl.tagName === 'TABLE' ||
-      htmlEl.querySelector('table') ||
-      htmlEl.classList.contains('overflow-x-auto') ||
-      htmlEl.classList.contains('pdf-footer') ||
-      htmlEl.hasAttribute('data-no-border') ||
-      htmlEl.innerText?.includes('Powered by') ||
-      htmlEl.innerText?.includes('Confidential')
-    ) {
-      htmlEl.style.border = 'none';
-      if (
-        htmlEl.classList.contains('pdf-footer') ||
-        htmlEl.hasAttribute('data-no-border') ||
-        htmlEl.innerText?.includes('Powered by')
-      ) {
-        htmlEl.style.borderTop = '1px solid #E2E8F0';
-      }
-      return;
-    }
-
-    if (
-      htmlEl.classList.contains('p-3') ||
-      htmlEl.classList.contains('p-3.5') ||
-      htmlEl.classList.contains('p-4') ||
-      htmlEl.classList.contains('p-5') ||
-      htmlEl.classList.contains('p-6') ||
-      htmlEl.classList.contains('rounded-2xl') ||
-      htmlEl.classList.contains('rounded-xl') ||
-      htmlEl.parentElement?.classList.contains('grid')
-    ) {
-      htmlEl.style.border = '1px solid #CBD5E1';
-      htmlEl.style.backgroundColor = '#FFFFFF';
-      htmlEl.style.boxShadow = 'none';
-    }
-  });
-
-  // Ensure yellow / amber notices stay clean and borderless in PDF
-  clone.querySelectorAll('[class*="amber"], [class*="yellow"]').forEach((node) => {
-    const htmlEl = node as HTMLElement;
-    htmlEl.style.border = 'none';
-  });
-
-  // Strip shadows on all nodes to prevent canvas blur overflow
-  clone.querySelectorAll('*').forEach((node) => {
-    const htmlEl = node as HTMLElement;
-    if (htmlEl.style) {
-      htmlEl.style.boxShadow = 'none';
-    }
-  });
-
-  const opt = {
-    margin: [8, 8, 8, 8],
-    filename,
-    image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: {
-      scale: 2,
-      useCORS: true,
-      logging: false,
-      backgroundColor: '#ffffff',
-      scrollX: 0,
-      scrollY: 0,
-      windowWidth: 794,
-      onclone: async (clonedDoc: Document, clonedEl: HTMLElement) => {
-        if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
-          try {
-            await clonedDoc.fonts.ready;
-          } catch {
-            // ignore
-          }
-        }
-
-        // Reset iframe HTML & Body to eliminate browser default 8px margin
-        if (clonedDoc.documentElement) {
-          clonedDoc.documentElement.style.margin = '0px';
-          clonedDoc.documentElement.style.padding = '0px';
-          clonedDoc.documentElement.style.overflow = 'hidden';
-        }
-        if (clonedDoc.body) {
-          clonedDoc.body.style.margin = '0px';
-          clonedDoc.body.style.padding = '0px';
-          clonedDoc.body.style.overflow = 'hidden';
-        }
-
-        clonedEl.style.position = 'absolute';
-        clonedEl.style.left = '0px';
-        clonedEl.style.top = '0px';
-        clonedEl.style.right = 'auto';
-        clonedEl.style.margin = '0';
-        clonedEl.style.padding = '0';
-        clonedEl.style.border = '0';
-        clonedEl.style.backgroundColor = '#ffffff';
-        clonedEl.style.width = '794px';
-        clonedEl.style.maxWidth = '794px';
-      },
-    },
-    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
-    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
-  };
+  const clone = prepareReportClone(element);
+  const opt = getA4PdfExportOptions(filename);
 
   const worker = html2pdf().set(opt).from(clone).toPdf();
   await worker.get('pdf');
