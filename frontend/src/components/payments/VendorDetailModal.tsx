@@ -8,7 +8,7 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../ui/Toast';
-import { setPrintPageSize, exportDocumentPDF } from '../documents/pdfExport';
+import { setPrintPageSize } from '../documents/pdfExport';
 import { Printer, Download, Plus, Share2, Building2, Pencil, Trash2 } from 'lucide-react';
 
 export interface VendorDetailModalProps {
@@ -209,15 +209,8 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
     window.print();
   };
 
-  const handleExportPDF = async () => {
-    if (!printRef.current || !vendor) return;
-    try {
-      showToast('Generating statement PDF...', 'info');
-      await exportDocumentPDF(printRef.current, `Vendor_Statement_${vendor.name.replace(/\s+/g, '_')}.pdf`);
-      showToast('Statement PDF downloaded', 'success');
-    } catch {
-      // Fallback is handled automatically inside exportPdf
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const getPeriodLabel = (): string => {

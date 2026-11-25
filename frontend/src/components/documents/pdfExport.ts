@@ -1,24 +1,14 @@
-import { supabase } from '../../lib/supabase';
-import { sharePdfViaNativeShare } from './documentSharing';
+import html2pdf from 'html2pdf.js';
 import { getWhatsAppUrl } from '../../lib/auth';
-
-export interface ExportPdfOptions {
-  element: HTMLElement;
-  page?: 'A4' | 'A5' | 'thermal58' | 'thermal80';
-  filename?: string;
-  docType?: string;
-}
 
 /**
  * Dynamically injects or updates standard @page print CSS rules in the document head.
- * Ensures the browser print dialog respects the exact paper size (A4 vs A5 vs Thermal) and margins.
+ * Ensures the browser print dialog respects the exact paper size (A4 vs A5) and margins.
  */
 export function setPrintPageSize(
-  format: 'a4' | 'a5' | 'A4' | 'A5' | 'thermal58' | 'thermal80',
+  format: 'a4' | 'a5' | 'thermal58' | 'thermal80',
   marginMm?: number
-): void {
-  if (typeof document === 'undefined') return;
-
+) {
   let styleEl = document.getElementById('print-page-size-style') as HTMLStyleElement;
   if (!styleEl) {
     styleEl = document.createElement('style');
@@ -26,17 +16,16 @@ export function setPrintPageSize(
     document.head.appendChild(styleEl);
   }
 
-  const normalized = format.toLowerCase();
   let sizeRule = 'A4 portrait';
   let defaultMargin = 8;
 
-  if (normalized === 'a5') {
+  if (format === 'a5') {
     sizeRule = 'A5 portrait';
     defaultMargin = 0;
-  } else if (normalized === 'thermal58') {
+  } else if (format === 'thermal58') {
     sizeRule = '58mm auto';
     defaultMargin = 0;
-  } else if (normalized === 'thermal80') {
+  } else if (format === 'thermal80') {
     sizeRule = '80mm auto';
     defaultMargin = 0;
   }
@@ -46,277 +35,325 @@ export function setPrintPageSize(
 }
 
 /**
- * Invokes the browser's native print preview dialog with the calibrated page size.
+ * Detects whether a vertical slice of a canvas contains any visible content.
+ * Sub-millisecond execution using step sampling.
  */
-export function printDocument(
-  _element?: HTMLElement | null,
-  page: 'A4' | 'A5' | 'thermal58' | 'thermal80' = 'A5',
-  marginMm?: number
-): void {
-  setPrintPageSize(page, marginMm);
-  window.print();
-}
+function isCanvasSliceBlank(canvas: HTMLCanvasElement, startY: number, sliceHeight: number): boolean {
+  if (sliceHeight <= 15) return true; // Micro-overflow / rounding artifact
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return sliceHeight <= 25;
 
-/**
- * Downloads a Blob directly to the client's device.
- */
-export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    if (a.parentNode) {
-      document.body.removeChild(a);
-    }
-    URL.revokeObjectURL(url);
-  }, 1000);
-}
+  const sampleHeight = Math.min(sliceHeight, canvas.height - startY);
+  if (sampleHeight <= 0) return true;
 
-let cachedCompiledCss = '';
+  try {
+    const imgData = ctx.getImageData(0, startY, canvas.width, sampleHeight);
+    const data = imgData.data;
+    const len = data.length;
 
-/**
- * Gathers all compiled Tailwind styles and print CSS from the document.
- */
-export async function collectPrintCss(): Promise<string> {
-  if (cachedCompiledCss) return cachedCompiledCss;
+    let nonWhitePixels = 0;
+    // Sample every 8th pixel (step of 32 bytes) for maximum speed (<1ms)
+    for (let i = 0; i < len; i += 32) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
 
-  let cssText = '';
-
-  if (typeof document !== 'undefined') {
-    // 1. Gather rules from styleSheets
-    for (let i = 0; i < document.styleSheets.length; i++) {
-      const sheet = document.styleSheets[i];
-      try {
-        if (sheet.cssRules) {
-          for (let j = 0; j < sheet.cssRules.length; j++) {
-            cssText += sheet.cssRules[j].cssText + '\n';
-          }
-        }
-      } catch {
-        // Cross-origin restriction
-      }
-    }
-
-    // 2. Fetch external link stylesheets if rules were restricted
-    if (cssText.length < 5000) {
-      const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
-      for (const link of links) {
-        const href = link.getAttribute('href');
-        if (href) {
-          try {
-            const res = await fetch(href);
-            if (res.ok) {
-              cssText += (await res.text()) + '\n';
-            }
-          } catch {
-            // Ignore fetch errors
-          }
+      // Pixel is visible if it has opacity and is not pure/near-white
+      if (a > 20 && (r < 245 || g < 245 || b < 245)) {
+        nonWhitePixels++;
+        if (nonWhitePixels > 15) {
+          return false; // Found real document content
         }
       }
     }
-
-    // 3. Gather inline style tags
-    document.querySelectorAll('style').forEach((st) => {
-      cssText += (st.textContent || '') + '\n';
-    });
+    return true; // Blank slice
+  } catch {
+    // If getImageData is blocked (CORS), fall back to height check
+    return sliceHeight <= 25;
   }
-
-  if (cssText.length > 5000) {
-    cachedCompiledCss = cssText;
-  }
-
-  return cssText;
 }
 
 /**
- * Universal Vector PDF Exporter powered by Headless Chromium (Plan A).
- * Serializes the canonical visible DOM element + print CSS and posts to /pdf-service/render.
- * If the service is unreachable, automatically opens the native print preview dialog as a safe fallback.
+ * Inspects the jsPDF document and full canvas after PDF generation,
+ * and deletes any trailing blank pages.
  */
-export async function exportPdf(options: ExportPdfOptions): Promise<Blob> {
-  const {
-    element,
-    page = 'A5',
-    filename = 'document.pdf',
-    docType,
-  } = options;
+function cleanPdfBlankPages(worker: any): void {
+  try {
+    const pdf = worker?.prop?.pdf;
+    const canvas = worker?.prop?.canvas;
+    const pageSize = worker?.prop?.pageSize;
 
-  if (!element) {
-    throw new Error('exportPdf requires a valid DOM element');
+    if (!pdf || !canvas || !pageSize) return;
+
+    const pxFullHeight = canvas.height;
+    const ratio =
+      pageSize.inner?.ratio ||
+      (pageSize.inner?.height && pageSize.inner?.width
+        ? pageSize.inner.height / pageSize.inner.width
+        : 1.414);
+    const pxPageHeight = Math.floor(canvas.width * ratio);
+
+    if (!pxPageHeight || pxPageHeight <= 0) return;
+
+    let totalPages = pdf.internal.getNumberOfPages();
+
+    while (totalPages > 1) {
+      const startY = (totalPages - 1) * pxPageHeight;
+      const sliceHeight = pxFullHeight - startY;
+
+      if (isCanvasSliceBlank(canvas, startY, sliceHeight)) {
+        pdf.deletePage(totalPages);
+        totalPages = pdf.internal.getNumberOfPages();
+      } else {
+        break;
+      }
+    }
+  } catch (err) {
+    console.warn('cleanPdfBlankPages encountered an error:', err);
   }
+}
 
-  // 1. Prepare canonical DOM clone without print-hidden / interactive elements
+/**
+ * Prepares an invoice or receipt clone for PDF generation:
+ * removes shadows and margins that cause accidental 2nd page overflow,
+ * and clears truncate, line-clamp, and overflow-hidden to prevent html2canvas text clipping.
+ */
+function prepareDocumentClone(element: HTMLElement): HTMLElement {
   const clone = element.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('.no-print, .print\\:hidden, [data-print-hidden], [data-pdf-hidden]').forEach((el) => {
+  clone.classList.remove('hidden');
+  clone.style.boxShadow = 'none';
+  clone.style.filter = 'none';
+  clone.style.margin = '0';
+  clone.style.backgroundColor = '#ffffff';
+  clone.style.borderRadius = '0';
+  clone.style.boxSizing = 'border-box';
+  clone.style.width = '148mm';
+  clone.style.maxWidth = '148mm';
+  clone.style.minWidth = '148mm';
+
+  // Preserve canonical document padding (8mm 8mm 10mm 8mm), never wipe to 0
+  clone.style.padding = '8mm 8mm 10mm 8mm';
+
+  // Strip print-hidden controls and buttons if any
+  clone.querySelectorAll('.print\\:hidden, .no-print, [data-pdf-hidden], [data-print-hidden]').forEach((el) => {
     el.remove();
   });
-  const html = clone.outerHTML;
 
-  // 2. Collect print CSS
-  const css = await collectPrintCss();
+  // Strip shadows on all descendants and remove multi-line clamp while preserving single-line truncate
+  clone.querySelectorAll('*').forEach((node) => {
+    const el = node as HTMLElement;
+    if (el.style) {
+      el.style.boxShadow = 'none';
+      el.style.textShadow = 'none';
+    }
 
-  // 3. Resolve service URL and Supabase JWT
-  const serviceUrl = (import.meta.env.VITE_PDF_SERVICE_URL || 'http://localhost:3001').replace(/\/$/, '');
-  let token = '';
-  try {
-    const { data } = await supabase.auth.getSession();
-    token = data?.session?.access_token || '';
-  } catch {
-    // Session token retrieval is non-blocking
-  }
+    if (el.classList) {
+      el.classList.remove('line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
+    }
 
-  const payload = {
-    html,
-    css,
-    page,
-    filename,
-    docType,
-  };
+    // Keep overflow-hidden for rounded card and table wrappers so borders remain clean,
+    // only reset overflow on text nodes that could clip font ascenders
+    const isContainer =
+      el.tagName === 'TABLE' ||
+      el.querySelector('table') !== null ||
+      el.classList.contains('rounded-lg') ||
+      el.classList.contains('rounded-xl') ||
+      el.classList.contains('rounded-2xl');
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  // 4. Request with 20s timeout and 1 automatic retry
-  let attempt = 0;
-  let lastError: any = null;
-
-  while (attempt < 2) {
-    attempt++;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-    try {
-      const res = await fetch(`${serviceUrl}/render`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (res.ok) {
-        const blob = await res.blob();
-        return blob;
-      } else {
-        const errJson = await res.json().catch(() => null);
-        throw new Error(errJson?.message || `PDF service responded with HTTP ${res.status}`);
-      }
-    } catch (err: any) {
-      clearTimeout(timeoutId);
-      lastError = err;
-      if (attempt < 2) {
-        // Wait 500ms before retry
-        await new Promise((r) => setTimeout(r, 500));
+    if (!isContainer && el.style) {
+      if (el.style.overflow === 'hidden' || el.style.overflowX === 'hidden' || el.style.overflowY === 'hidden') {
+        el.style.overflow = 'visible';
       }
     }
-  }
 
-  // 5. Fallback: If service is unreachable or offline, open native browser print dialog
-  console.warn('[PDF Export] PDF microservice unreachable. Triggering native print fallback:', lastError);
-  printDocument(element, page);
-
-  const fallbackNotice = 'PDF service is currently unavailable. The print dialog has been opened — please select "Save as PDF" to download your document.';
-  if (typeof window !== 'undefined' && (window as any).showToast) {
-    (window as any).showToast(fallbackNotice, 'info');
-  } else {
-    console.info(fallbackNotice);
-  }
-
-  throw new Error(fallbackNotice);
-}
-
-/**
- * Universal document sharing with seamless WhatsApp integration:
- * - On Mobile / PWA: Uses Web Share API to attach the vector PDF file directly into WhatsApp / native share.
- * - On Desktop / WhatsApp Web: Triggers instant PDF download, copies image if supported, and opens WhatsApp Web.
- */
-export async function sharePdf(
-  blob: Blob,
-  filename: string,
-  title: string,
-  text = '',
-  mobile?: string | null
-): Promise<boolean> {
-  // 1. Attempt native Web Share API with actual vector PDF file
-  const nativeRes = await sharePdfViaNativeShare({
-    pdfBlob: blob,
-    filename,
-    title,
-    text,
+    if (el.style) {
+      if (el.style.textOverflow === 'ellipsis') {
+        el.style.textOverflow = 'clip';
+      }
+      if (el.style.webkitLineClamp) {
+        el.style.webkitLineClamp = 'unset';
+      }
+      if (el.style.display === '-webkit-box') {
+        el.style.display = 'block';
+      }
+    }
   });
 
-  if (nativeRes.supported) {
-    return nativeRes.success;
-  }
+  // Enforce border-collapse on all tables for crisp, gap-free border rendering and ensure cell text vertical alignment
+  clone.querySelectorAll('table').forEach((table) => {
+    table.style.borderCollapse = 'collapse';
+  });
+  clone.querySelectorAll('td, th').forEach((cell) => {
+    const el = cell as HTMLElement;
+    el.style.verticalAlign = 'middle';
+  });
 
-  // 2. Desktop Fallback: Download file & open WhatsApp link
-  downloadBlob(blob, filename);
+  // Explicitly enforce solid border styles and crisp hex colors on all border elements
+  // (Prevents html2canvas from dropping borders due to missing iframe preflight or CSS variable resolution)
+  clone.querySelectorAll('*').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    const cls = htmlEl.className || '';
+    if (typeof cls !== 'string') return;
 
-  if (mobile) {
-    const waUrl = getWhatsAppUrl(mobile, text || title);
-    window.open(waUrl, '_blank');
-  }
+    if (cls.includes('border-t')) {
+      htmlEl.style.borderTopStyle = 'solid';
+      htmlEl.style.borderTopWidth = '1px';
+      htmlEl.style.borderTopColor = htmlEl.style.borderTopColor || '#CBD5E1';
+    }
+    if (cls.includes('border-b')) {
+      htmlEl.style.borderBottomStyle = 'solid';
+      htmlEl.style.borderBottomWidth = '1px';
+      htmlEl.style.borderBottomColor = htmlEl.style.borderBottomColor || '#CBD5E1';
+    }
+    if (cls.includes('border-l')) {
+      htmlEl.style.borderLeftStyle = 'solid';
+      htmlEl.style.borderLeftWidth = '1px';
+      htmlEl.style.borderLeftColor = htmlEl.style.borderLeftColor || '#CBD5E1';
+    }
+    if (cls.includes('border-r')) {
+      htmlEl.style.borderRightStyle = 'solid';
+      htmlEl.style.borderRightWidth = '1px';
+      htmlEl.style.borderRightColor = htmlEl.style.borderRightColor || '#CBD5E1';
+    }
+    if (
+      (cls.includes('border ') || cls.endsWith('border') || cls.includes('border-slate')) &&
+      !cls.includes('border-t') &&
+      !cls.includes('border-b')
+    ) {
+      htmlEl.style.borderStyle = 'solid';
+      htmlEl.style.borderWidth = '1px';
+      htmlEl.style.borderColor = htmlEl.style.borderColor || '#CBD5E1';
+    }
+  });
 
-  return true;
+  return clone;
 }
 
-// ============================================================================
-// Backward-Compatible Document Helpers for All 19 Documents
-// ============================================================================
+function getA5PdfExportOptions(filename: string) {
+  return {
+    margin: 0,
+    filename,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      scrollX: 0,
+      scrollY: 0,
+      x: 0,
+      y: 0,
+      windowWidth: 560,
+      onclone: async (clonedDoc: Document) => {
+        // Ensure web fonts (Inter) are 100% loaded in cloned document iframe
+        if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
+          try {
+            await clonedDoc.fonts.ready;
+          } catch {
+            // Ignore font ready errors
+          }
+        }
+
+        // 1. Reset iframe HTML & Body to eliminate browser default 8px margin and scrollbars
+        if (clonedDoc.documentElement) {
+          clonedDoc.documentElement.style.margin = '0px';
+          clonedDoc.documentElement.style.padding = '0px';
+          clonedDoc.documentElement.style.overflow = 'hidden';
+        }
+        if (clonedDoc.body) {
+          clonedDoc.body.style.margin = '0px';
+          clonedDoc.body.style.padding = '0px';
+          clonedDoc.body.style.overflow = 'hidden';
+        }
+
+        // 2. Locate html2pdf container and configure exact 148mm geometry
+        const container = clonedDoc.querySelector('.html2pdf__container') as HTMLElement | null;
+        if (container) {
+          container.style.position = 'absolute';
+          container.style.left = '0px';
+          container.style.top = '0px';
+          container.style.margin = '0px';
+          container.style.padding = '0px';
+          container.style.border = '0px';
+          container.style.backgroundColor = '#ffffff';
+          container.style.width = '148mm';
+          container.style.maxWidth = '148mm';
+          container.style.minWidth = '148mm';
+          container.style.boxSizing = 'border-box';
+
+          // 3. Configure the actual document child inside html2pdf container
+          const docChild = container.firstElementChild as HTMLElement | null;
+          if (docChild) {
+            docChild.style.margin = '0px';
+            docChild.style.width = '148mm';
+            docChild.style.maxWidth = '148mm';
+            docChild.style.minWidth = '148mm';
+            docChild.style.boxSizing = 'border-box';
+            docChild.style.padding = '8mm 8mm 10mm 8mm';
+            docChild.style.backgroundColor = '#ffffff';
+          }
+        }
+      },
+    },
+    jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' as const },
+  };
+}
 
 export async function generateDocumentPdfBlob(element: HTMLElement, filename = 'document.pdf'): Promise<Blob> {
-  return exportPdf({
-    element,
-    page: 'A5',
-    filename,
-    docType: 'document_a5',
-  });
-}
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+  const clone = prepareDocumentClone(element);
+  const opt = getA5PdfExportOptions(filename);
 
-export async function generateReportPdfBlob(element: HTMLElement, filename = 'document.pdf'): Promise<Blob> {
-  return exportPdf({
-    element,
-    page: 'A4',
-    filename,
-    docType: 'report_a4',
-  });
+  const worker = html2pdf().set(opt).from(clone).toPdf();
+  await worker.get('pdf');
+  cleanPdfBlankPages(worker);
+  const pdfBlob: Blob = await worker.outputPdf('blob');
+  return pdfBlob;
 }
 
 export async function exportInvoicePDF(element: HTMLElement, filename = 'invoice.pdf'): Promise<void> {
-  const blob = await exportPdf({
-    element,
-    page: 'A5',
-    filename,
-    docType: 'invoice',
-  });
-  downloadBlob(blob, filename);
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+  const clone = prepareDocumentClone(element);
+  const opt = getA5PdfExportOptions(filename);
+
+  const worker = html2pdf().set(opt).from(clone).toPdf();
+  await worker.get('pdf');
+  cleanPdfBlankPages(worker);
+  await worker.save();
 }
 
-export async function exportReceiptPDF(element: HTMLElement, filename = 'receipt.pdf'): Promise<void> {
-  const blob = await exportPdf({
-    element,
-    page: 'A5',
-    filename,
-    docType: 'receipt',
-  });
-  downloadBlob(blob, filename);
-}
-
-export async function exportDocumentPDF(element: HTMLElement, filename = 'document.pdf'): Promise<void> {
-  const blob = await exportPdf({
-    element,
-    page: 'A4',
-    filename,
-    docType: 'report_statement',
-  });
-  downloadBlob(blob, filename);
+/**
+ * Copies a canvas element as a PNG image to the system clipboard.
+ * Enables instant Ctrl+V pasting into WhatsApp Web, Telegram, Email, etc.
+ */
+export async function copyCanvasToClipboard(canvas: HTMLCanvasElement): Promise<boolean> {
+  try {
+    if (!navigator.clipboard || typeof window.ClipboardItem === 'undefined') {
+      return false;
+    }
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((b) => resolve(b), 'image/png');
+    });
+    if (!blob) return false;
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    return true;
+  } catch (err) {
+    console.warn('Clipboard image copy not supported or denied:', err);
+    return false;
+  }
 }
 
 export interface ShareDocumentOptions {
@@ -333,22 +370,94 @@ export interface ShareDocumentResult {
   copiedImage: boolean;
 }
 
+/**
+ * Universal document sharing with seamless WhatsApp integration:
+ * - On Mobile / PWA: Uses Web Share API to attach the actual PDF file directly into WhatsApp / native share.
+ * - On Desktop / WhatsApp Web: Triggers instant PDF download, copies bill/receipt image to clipboard for Ctrl+V,
+ *   and opens WhatsApp Web with the customer's chat and pre-filled message.
+ */
 export async function shareDocumentWithWhatsApp(
   options: ShareDocumentOptions
 ): Promise<ShareDocumentResult> {
   const { element, filename, title, text = '', mobile } = options;
-  const blob = await exportPdf({
-    element,
-    page: 'A5',
-    filename,
-  });
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+  const clone = prepareDocumentClone(element);
+  const opt = getA5PdfExportOptions(filename);
 
-  const success = await sharePdf(blob, filename, title, text, mobile);
-  return {
-    success,
-    method: 'native_share',
-    copiedImage: false,
-  };
+  try {
+    const worker = html2pdf().set(opt).from(clone).toPdf();
+    await worker.get('pdf');
+    cleanPdfBlankPages(worker);
+    const pdfBlob: Blob = await worker.outputPdf('blob');
+    const file = new File([pdfBlob], filename, { type: 'application/pdf' });
+
+    // 1. Try Native Web Share API (Mobile / PWA - WhatsApp directly attaches PDF)
+    const canShareFiles =
+      typeof navigator !== 'undefined' &&
+      typeof navigator.canShare === 'function' &&
+      navigator.canShare({ files: [file] });
+
+    if (canShareFiles) {
+      try {
+        await navigator.share({
+          files: [file],
+          title,
+          text: text || title,
+        });
+        return { success: true, method: 'native_share', copiedImage: false };
+      } catch (shareErr: any) {
+        if (shareErr.name === 'AbortError') {
+          // User cancelled / dismissed the native share sheet
+          return { success: false, method: 'native_share', copiedImage: false };
+        }
+        console.warn('Native share failed, proceeding with desktop WhatsApp flow:', shareErr);
+      }
+    }
+
+    // 2. Desktop / WhatsApp Web Flow:
+    // Download PDF directly from the already generated Blob (instant, 0ms)
+    const blobUrl = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+    // 3. Copy Bill/Receipt image to Clipboard for instant Ctrl+V into WhatsApp Web
+    let copiedImage = false;
+    if (worker.prop?.canvas) {
+      copiedImage = await copyCanvasToClipboard(worker.prop.canvas);
+    }
+
+    // 4. Open WhatsApp Web / App if customer mobile is available
+    if (mobile) {
+      const waUrl = getWhatsAppUrl(mobile, text);
+      window.open(waUrl, '_blank');
+      return { success: true, method: 'whatsapp_web', copiedImage };
+    }
+
+    return { success: true, method: 'download_fallback', copiedImage };
+  } catch (err) {
+    console.warn('Error during document sharing:', err);
+    // Fallback: save to disk
+    try {
+      const fallbackWorker = html2pdf().set(opt).from(clone).toPdf();
+      await fallbackWorker.get('pdf');
+      cleanPdfBlankPages(fallbackWorker);
+      await fallbackWorker.save();
+    } catch {
+      // ignore
+    }
+    return { success: false, method: 'download_fallback', copiedImage: false };
+  }
 }
 
 export async function shareInvoicePDF(
@@ -367,6 +476,23 @@ export async function shareInvoicePDF(
   return result.success;
 }
 
+export async function exportReceiptPDF(element: HTMLElement, filename = 'receipt.pdf'): Promise<void> {
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+  const clone = prepareDocumentClone(element);
+  const opt = getA5PdfExportOptions(filename);
+
+  const worker = html2pdf().set(opt).from(clone).toPdf();
+  await worker.get('pdf');
+  cleanPdfBlankPages(worker);
+  await worker.save();
+}
+
 export async function shareReceiptPDF(
   element: HTMLElement,
   filename = 'receipt.pdf',
@@ -383,19 +509,352 @@ export async function shareReceiptPDF(
   return result.success;
 }
 
-export async function copyCanvasToClipboard(canvas: HTMLCanvasElement): Promise<boolean> {
-  try {
-    if (!navigator.clipboard || typeof window.ClipboardItem === 'undefined') {
-      return false;
+/**
+ * Prepares an A4 document clone (reports, statements, ledgers) for PDF generation:
+ * expands hidden responsive tables, strips interactive controls, establishes 194mm width
+ * matching jsPDF's inner printable width (210mm - 2*8mm margin), prevents mid-row slicing,
+ * and normalizes table/card borders.
+ */
+function prepareReportClone(element: HTMLElement): HTMLElement {
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.classList.remove('hidden');
+  clone.style.display = 'block';
+
+  // 1. Force reveal all table sections that were hidden on mobile viewports (hidden md:block)
+  clone.querySelectorAll('.hidden, [class*="hidden"]').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    if (
+      !htmlEl.classList.contains('print:hidden') &&
+      !htmlEl.classList.contains('no-print') &&
+      !htmlEl.hasAttribute('data-print-hidden') &&
+      !htmlEl.hasAttribute('data-pdf-hidden')
+    ) {
+      htmlEl.classList.remove('hidden');
+      if (htmlEl.tagName === 'TABLE') {
+        htmlEl.style.display = 'table';
+      } else if (htmlEl.tagName === 'TR') {
+        htmlEl.style.display = 'table-row';
+      } else if (htmlEl.tagName === 'TD' || htmlEl.tagName === 'TH') {
+        htmlEl.style.display = 'table-cell';
+      } else {
+        htmlEl.style.display = 'block';
+      }
     }
-    const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((b) => resolve(b), 'image/png');
-    });
-    if (!blob) return false;
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-    return true;
-  } catch (err) {
-    console.warn('Clipboard image copy not supported or denied:', err);
-    return false;
+  });
+
+  // 2. Strip interactive/action elements and UI controls
+  clone.querySelectorAll('.print\\:hidden, .no-print, [data-pdf-hidden], [data-print-hidden]').forEach((el) => {
+    el.remove();
+  });
+
+  // 3. Configure clone width & typography calibrated for printable area inside jsPDF 8mm margins (194mm)
+  clone.style.width = '194mm';
+  clone.style.maxWidth = '194mm';
+  clone.style.minWidth = '194mm';
+  clone.style.margin = '0';
+  clone.style.padding = '0';
+  clone.style.boxShadow = 'none';
+  clone.style.backgroundColor = '#ffffff';
+  clone.style.color = '#0f172a';
+  clone.style.boxSizing = 'border-box';
+  clone.style.fontFamily = 'Inter, -apple-system, BlinkMacSystemFont, sans-serif';
+
+  // 4. Reset overflow and scroll restrictions so all tables & cards expand to full content
+  clone.querySelectorAll('.overflow-x-auto, .overflow-y-auto, .overflow-hidden').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.overflow = 'visible';
+    htmlEl.style.maxHeight = 'none';
+  });
+
+  // 5. Strip shadows on all descendants and neutralize truncate/line-clamp on text elements
+  clone.querySelectorAll('*').forEach((node) => {
+    const el = node as HTMLElement;
+    if (el.style) {
+      el.style.boxShadow = 'none';
+      el.style.textShadow = 'none';
+    }
+
+    if (el.classList) {
+      el.classList.remove('truncate', 'line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
+    }
+
+    const isContainer =
+      el.tagName === 'TABLE' ||
+      el.querySelector('table') !== null ||
+      el.classList.contains('rounded-lg') ||
+      el.classList.contains('rounded-xl') ||
+      el.classList.contains('rounded-2xl');
+
+    if (!isContainer && el.style) {
+      if (el.style.overflow === 'hidden' || el.style.overflowX === 'hidden' || el.style.overflowY === 'hidden') {
+        el.style.overflow = 'visible';
+      }
+    }
+
+    if (el.style) {
+      if (el.style.textOverflow === 'ellipsis') {
+        el.style.textOverflow = 'clip';
+      }
+      if (el.style.webkitLineClamp) {
+        el.style.webkitLineClamp = 'unset';
+      }
+      if (el.style.display === '-webkit-box') {
+        el.style.display = 'block';
+      }
+    }
+  });
+
+  // 6. Ensure tables take 100% width, fit cleanly, and keep headers on multi-page splits
+  clone.querySelectorAll('table').forEach((table) => {
+    table.style.width = '100%';
+    table.style.tableLayout = 'auto';
+    table.style.border = 'none';
+    table.style.borderCollapse = 'collapse';
+  });
+
+  clone.querySelectorAll('th, td').forEach((cell) => {
+    const htmlEl = cell as HTMLElement;
+    htmlEl.style.wordBreak = 'break-word';
+    htmlEl.style.overflowWrap = 'break-word';
+    htmlEl.style.verticalAlign = 'middle';
+  });
+
+  clone.querySelectorAll('thead').forEach((thead) => {
+    const htmlEl = thead as HTMLElement;
+    htmlEl.style.display = 'table-header-group';
+  });
+
+  // 7. Prevent cards, statement headers, and table rows from being sliced across page breaks
+  clone.querySelectorAll('tr, thead, .p-4, .p-5, .rounded-xl, .rounded-2xl, .bg-surface-2').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    htmlEl.style.breakInside = 'avoid';
+    htmlEl.style.pageBreakInside = 'avoid';
+  });
+
+  // 8. Explicitly enforce solid border styles and crisp hex colors on all border elements
+  clone.querySelectorAll('*').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    const cls = htmlEl.className || '';
+    if (typeof cls !== 'string') return;
+
+    if (cls.includes('border-t')) {
+      htmlEl.style.borderTopStyle = 'solid';
+      htmlEl.style.borderTopWidth = '1px';
+      htmlEl.style.borderTopColor = htmlEl.style.borderTopColor || '#CBD5E1';
+    }
+    if (cls.includes('border-b')) {
+      htmlEl.style.borderBottomStyle = 'solid';
+      htmlEl.style.borderBottomWidth = '1px';
+      htmlEl.style.borderBottomColor = htmlEl.style.borderBottomColor || '#CBD5E1';
+    }
+    if (cls.includes('border-l')) {
+      htmlEl.style.borderLeftStyle = 'solid';
+      htmlEl.style.borderLeftWidth = '1px';
+      htmlEl.style.borderLeftColor = htmlEl.style.borderLeftColor || '#CBD5E1';
+    }
+    if (cls.includes('border-r')) {
+      htmlEl.style.borderRightStyle = 'solid';
+      htmlEl.style.borderRightWidth = '1px';
+      htmlEl.style.borderRightColor = htmlEl.style.borderRightColor || '#CBD5E1';
+    }
+    if (
+      (cls.includes('border ') || cls.endsWith('border') || cls.includes('border-slate')) &&
+      !cls.includes('border-t') &&
+      !cls.includes('border-b')
+    ) {
+      htmlEl.style.borderStyle = 'solid';
+      htmlEl.style.borderWidth = '1px';
+      htmlEl.style.borderColor = htmlEl.style.borderColor || '#CBD5E1';
+    }
+  });
+
+  // 9. Ensure white summary metric cards have visible boundaries in PDF, while tables and footers stay clean
+  clone.querySelectorAll('.bg-white').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    if (
+      htmlEl.tagName === 'TABLE' ||
+      htmlEl.querySelector('table') ||
+      htmlEl.classList.contains('overflow-x-auto') ||
+      htmlEl.classList.contains('pdf-footer') ||
+      htmlEl.hasAttribute('data-no-border') ||
+      htmlEl.innerText?.includes('Powered by') ||
+      htmlEl.innerText?.includes('Confidential')
+    ) {
+      htmlEl.style.border = 'none';
+      if (
+        htmlEl.classList.contains('pdf-footer') ||
+        htmlEl.hasAttribute('data-no-border') ||
+        htmlEl.innerText?.includes('Powered by')
+      ) {
+        htmlEl.style.borderTop = '1px solid #E2E8F0';
+      }
+      return;
+    }
+
+    if (
+      htmlEl.classList.contains('p-3') ||
+      htmlEl.classList.contains('p-3.5') ||
+      htmlEl.classList.contains('p-4') ||
+      htmlEl.classList.contains('p-5') ||
+      htmlEl.classList.contains('p-6') ||
+      htmlEl.classList.contains('rounded-2xl') ||
+      htmlEl.classList.contains('rounded-xl') ||
+      htmlEl.parentElement?.classList.contains('grid')
+    ) {
+      htmlEl.style.border = '1px solid #CBD5E1';
+      htmlEl.style.backgroundColor = '#FFFFFF';
+      htmlEl.style.boxShadow = 'none';
+    }
+  });
+
+  // Ensure yellow / amber notices stay clean and borderless in PDF
+  clone.querySelectorAll('[class*="amber"], [class*="yellow"]').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    htmlEl.style.border = 'none';
+  });
+
+  // Strip shadows on all nodes to prevent canvas blur overflow
+  clone.querySelectorAll('*').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    if (htmlEl.style) {
+      htmlEl.style.boxShadow = 'none';
+    }
+  });
+
+  return clone;
+}
+
+function getA4PdfExportOptions(filename: string) {
+  return {
+    margin: [8, 8, 8, 8],
+    filename,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      scrollX: 0,
+      scrollY: 0,
+      x: 0,
+      y: 0,
+      windowWidth: 794,
+      onclone: async (clonedDoc: Document) => {
+        if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
+          try {
+            await clonedDoc.fonts.ready;
+          } catch {
+            // ignore
+          }
+        }
+
+        // Reset iframe HTML & Body to eliminate browser default 8px margin
+        if (clonedDoc.documentElement) {
+          clonedDoc.documentElement.style.margin = '0px';
+          clonedDoc.documentElement.style.padding = '0px';
+          clonedDoc.documentElement.style.overflow = 'hidden';
+        }
+        if (clonedDoc.body) {
+          clonedDoc.body.style.margin = '0px';
+          clonedDoc.body.style.padding = '0px';
+          clonedDoc.body.style.overflow = 'hidden';
+        }
+
+        const container = clonedDoc.querySelector('.html2pdf__container') as HTMLElement | null;
+        if (container) {
+          container.style.position = 'absolute';
+          container.style.left = '0px';
+          container.style.top = '0px';
+          container.style.right = 'auto';
+          container.style.margin = '0px';
+          container.style.padding = '0px';
+          container.style.border = '0px';
+          container.style.backgroundColor = '#ffffff';
+          container.style.width = '194mm';
+          container.style.maxWidth = '194mm';
+          container.style.minWidth = '194mm';
+          container.style.boxSizing = 'border-box';
+
+          const docChild = container.firstElementChild as HTMLElement | null;
+          if (docChild) {
+            docChild.style.margin = '0px';
+            docChild.style.width = '194mm';
+            docChild.style.maxWidth = '194mm';
+            docChild.style.minWidth = '194mm';
+            docChild.style.boxSizing = 'border-box';
+            docChild.style.backgroundColor = '#ffffff';
+          }
+        }
+      },
+    },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
+    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+  };
+}
+
+/**
+ * Universal A4 Document PDF Exporter for Reports, Ledgers, and Statements.
+ * Clones the element into a calibrated 100% width container with overflow reset,
+ * strips print-hidden UI elements, applies pagebreak rules to prevent mid-row slicing,
+ * and automatically removes any trailing blank pages.
+ */
+export async function exportDocumentPDF(element: HTMLElement, filename = 'document.pdf'): Promise<void> {
+  // Await web font loading
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
   }
+
+  // Await image and logo decodes
+  const images = Array.from(element.querySelectorAll('img'));
+  await Promise.all(
+    images.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return img.decode?.().catch(() => {});
+    })
+  );
+
+  const clone = prepareReportClone(element);
+  const opt = getA4PdfExportOptions(filename);
+
+  const worker = html2pdf().set(opt).from(clone).toPdf();
+  await worker.get('pdf');
+  cleanPdfBlankPages(worker);
+  await worker.save();
+}
+
+/**
+ * Generates an A4 PDF Blob for Reports, Statements, and Ledgers.
+ * Uses the exact same rendering pipeline as exportDocumentPDF.
+ */
+export async function generateReportPdfBlob(element: HTMLElement, filename = 'document.pdf'): Promise<Blob> {
+  // Await web font loading
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Await image and logo decodes
+  const images = Array.from(element.querySelectorAll('img'));
+  await Promise.all(
+    images.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return img.decode?.().catch(() => {});
+    })
+  );
+
+  const clone = prepareReportClone(element);
+  const opt = getA4PdfExportOptions(filename);
+
+  const worker = html2pdf().set(opt).from(clone).toPdf();
+  await worker.get('pdf');
+  cleanPdfBlankPages(worker);
+  const pdfBlob: Blob = await worker.outputPdf('blob');
+  return pdfBlob;
 }

@@ -7,7 +7,7 @@ import { getErrorMessage, t } from '../../i18n';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
-import { setPrintPageSize, exportDocumentPDF } from '../documents/pdfExport';
+import { setPrintPageSize } from '../documents/pdfExport';
 import { Printer, Download, Plus, Share2, Building2 } from 'lucide-react';
 
 export interface CustomerLedgerModalProps {
@@ -156,15 +156,8 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
     window.print();
   };
 
-  const handleExportPDF = async () => {
-    if (!printRef.current || !customer) return;
-    try {
-      showToast('Generating statement PDF...', 'info');
-      await exportDocumentPDF(printRef.current, `Customer_Statement_${customer.name.replace(/\s+/g, '_')}.pdf`);
-      showToast('Statement PDF downloaded', 'success');
-    } catch {
-      // Fallback is handled automatically inside exportPdf
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const getPeriodLabel = (): string => {

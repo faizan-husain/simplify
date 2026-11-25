@@ -11,7 +11,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { PrivacyPinModal } from '../components/privacy/PrivacyPinModal';
 import { CustomerLedgerModal } from '../components/customers/CustomerLedgerModal';
 import { VendorDetailModal } from '../components/payments/VendorDetailModal';
-import { setPrintPageSize, exportDocumentPDF } from '../components/documents/pdfExport';
+import { setPrintPageSize } from '../components/documents/pdfExport';
 import { exportReportExcel } from '../components/documents/excelExport';
 import {
   Download,
@@ -238,19 +238,8 @@ export const ReportsPage: React.FC = () => {
     window.print();
   };
 
-  const handleExportPDF = async () => {
-    if (!reportPrintRef.current) return;
-    try {
-      const periodTag =
-        activeTab === 'pnl' ? pnlPeriod : activeTab === 'ledger' ? ledgerSubTab : regPeriod;
-      const statusSuffix = activeTab === 'invoices' && invoiceStatusFilter !== 'ALL' ? `-${invoiceStatusFilter.toLowerCase()}` : '';
-      const filename = `Report-${activeTab}${statusSuffix}-${periodTag}-${selectedFY}.pdf`;
-      showToast('Generating report PDF...', 'info');
-      await exportDocumentPDF(reportPrintRef.current, filename);
-      showToast('Report PDF downloaded successfully', 'success');
-    } catch {
-      // Fallback handled automatically
-    }
+  const handleExportPDF = () => {
+    handlePrint();
   };
 
   const handleExportExcel = async () => {

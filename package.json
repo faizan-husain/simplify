@@ -16,7 +16,6 @@
     "secret-leak-check": "tsx scripts/check-secret-leak.ts",
     "bridge": "tsx scripts/local-dev-bridge.ts",
     "qa:pilot": "tsx qa/suites/run-pilot-audit.ts",
-    "qa:pdf": "node qa/run_acceptance_harness.mjs && python qa/evaluate_harness_results.py",
     "test:concurrency": "tsx scripts/test-enterprise-concurrency.ts"
   },
   "devDependencies": {

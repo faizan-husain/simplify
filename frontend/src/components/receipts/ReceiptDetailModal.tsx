@@ -7,7 +7,7 @@ import { formatDate } from '../../lib/dates';
 import { Dialog } from '../ui/Dialog';
 import { useToast } from '../ui/Toast';
 import { ReceiptDocument } from '../documents/ReceiptDocument';
-import { setPrintPageSize, generateDocumentPdfBlob, exportReceiptPDF } from '../documents/pdfExport';
+import { setPrintPageSize, generateDocumentPdfBlob } from '../documents/pdfExport';
 import {
   normalizeCustomerMobile,
   buildReceiptWhatsAppMessage,
@@ -127,17 +127,8 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
     return blob;
   };
 
-  const handleDownloadPDF = async () => {
-    if (!pdfDocRef.current || !data) return;
-    setSharingState('generating');
-    try {
-      await exportReceiptPDF(pdfDocRef.current, `Receipt-${data.receipt.number}.pdf`);
-      showToast('Receipt PDF downloaded successfully', 'success');
-    } catch (err: any) {
-      // Fallback is automatically handled inside exportPdf by opening print dialog
-    } finally {
-      setSharingState('idle');
-    }
+  const handleDownloadPDF = () => {
+    handlePrint();
   };
 
   const handleWhatsAppDirect = async (overrideMobile?: string) => {
