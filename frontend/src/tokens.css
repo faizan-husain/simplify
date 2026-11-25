@@ -14,6 +14,8 @@
   --text-2: #4B5563;
   --muted: #5B6472;
   --placeholder: #6B7280;
+  --selection-bg: #BFDBFE;     /* Soft blue text selection highlight */
+  --selection-text: #1E3A8A;   /* Dark navy text selection color */
 
   /* Brand */
   --ink: #111827;           /* Primary buttons */

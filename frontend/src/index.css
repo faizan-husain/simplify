@@ -34,6 +34,36 @@
   .tabular {
     font-variant-numeric: tabular-nums;
   }
+
+  /* Universal High-Contrast Premium Text Selection (Standard) */
+  ::selection {
+    background-color: var(--selection-bg, #BFDBFE) !important;
+    color: var(--selection-text, #1E3A8A) !important;
+  }
+
+  input::selection,
+  textarea::selection,
+  select::selection,
+  [contenteditable="true"]::selection,
+  [contenteditable="true"] *::selection {
+    background-color: var(--selection-bg, #BFDBFE) !important;
+    color: var(--selection-text, #1E3A8A) !important;
+  }
+
+  /* Mozilla ::-moz-selection in separate block to prevent selector invalidation in Chromium/WebKit */
+  ::-moz-selection {
+    background-color: var(--selection-bg, #BFDBFE) !important;
+    color: var(--selection-text, #1E3A8A) !important;
+  }
+
+  input::-moz-selection,
+  textarea::-moz-selection,
+  select::-moz-selection,
+  [contenteditable="true"]::-moz-selection,
+  [contenteditable="true"] *::-moz-selection {
+    background-color: var(--selection-bg, #BFDBFE) !important;
+    color: var(--selection-text, #1E3A8A) !important;
+  }
 }
 
 /* SaaS Custom Dropdown Animations */
