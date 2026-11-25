@@ -279,8 +279,9 @@ export const StaffDetailPage: React.FC = () => {
       }
       const printEl = document.getElementById('print-staff-statement-root');
       if (!printEl) return;
+      const targetEl = (printEl.firstElementChild as HTMLElement) || printEl;
       const filename = `Staff-Statement-${cleanName}-${period}.pdf`;
-      await exportDocumentPDF(printEl, filename);
+      await exportDocumentPDF(targetEl, filename);
       showToast('Staff statement PDF exported successfully', 'success');
     } catch (err: any) {
       showToast('Failed to export PDF: ' + (err?.message || 'Unknown error'), 'error');

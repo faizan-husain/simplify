@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
-import { setPrintPageSize } from '../pdfExport';
+import { setPrintPageSize, exportDocumentPDF, generateReportPdfBlob } from '../pdfExport';
 import { InvoiceDocument } from '../InvoiceDocument';
 import { ReceiptDocument } from '../ReceiptDocument';
 
@@ -210,5 +210,10 @@ describe('PDF Export & Print Layout Formatting', () => {
     expect(brandFooter.style.borderTop).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
     expect(brandFooter?.textContent).toContain('Powered by');
     expect(brandFooter?.textContent).toContain('Business Management & Billing Software');
+  });
+
+  it('exports generateReportPdfBlob and exportDocumentPDF for universal report handling', () => {
+    expect(typeof exportDocumentPDF).toBe('function');
+    expect(typeof generateReportPdfBlob).toBe('function');
   });
 });

@@ -483,6 +483,24 @@ export async function shareReceiptPDF(
  * and automatically removes any trailing blank pages.
  */
 export async function exportDocumentPDF(element: HTMLElement, filename = 'document.pdf'): Promise<void> {
+  // Await web font loading
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Await image and logo decodes
+  const images = Array.from(element.querySelectorAll('img'));
+  await Promise.all(
+    images.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return img.decode?.().catch(() => {});
+    })
+  );
+
   // 1. Clone element so live DOM is unaffected
   const clone = element.cloneNode(true) as HTMLElement;
   clone.classList.remove('hidden');
@@ -534,6 +552,44 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     htmlEl.style.maxHeight = 'none';
   });
 
+  // Strip shadows on all descendants and neutralize truncate/line-clamp on text elements
+  clone.querySelectorAll('*').forEach((node) => {
+    const el = node as HTMLElement;
+    if (el.style) {
+      el.style.boxShadow = 'none';
+      el.style.textShadow = 'none';
+    }
+
+    if (el.classList) {
+      el.classList.remove('truncate', 'line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
+    }
+
+    const isContainer =
+      el.tagName === 'TABLE' ||
+      el.querySelector('table') !== null ||
+      el.classList.contains('rounded-lg') ||
+      el.classList.contains('rounded-xl') ||
+      el.classList.contains('rounded-2xl');
+
+    if (!isContainer && el.style) {
+      if (el.style.overflow === 'hidden' || el.style.overflowX === 'hidden' || el.style.overflowY === 'hidden') {
+        el.style.overflow = 'visible';
+      }
+    }
+
+    if (el.style) {
+      if (el.style.textOverflow === 'ellipsis') {
+        el.style.textOverflow = 'clip';
+      }
+      if (el.style.webkitLineClamp) {
+        el.style.webkitLineClamp = 'unset';
+      }
+      if (el.style.display === '-webkit-box') {
+        el.style.display = 'block';
+      }
+    }
+  });
+
   // Ensure tables take 100% width, fit cleanly, and keep headers on multi-page splits
   clone.querySelectorAll('table').forEach((table) => {
     table.style.width = '100%';
@@ -546,6 +602,7 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     const htmlEl = cell as HTMLElement;
     htmlEl.style.wordBreak = 'break-word';
     htmlEl.style.overflowWrap = 'break-word';
+    htmlEl.style.verticalAlign = 'middle';
   });
 
   clone.querySelectorAll('thead').forEach((thead) => {
@@ -560,7 +617,44 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
     htmlEl.style.pageBreakInside = 'avoid';
   });
 
-  // Ensure white summary metric cards have visible boundaries in PDF, while tables and footers stay borderless
+  // Explicitly enforce solid border styles and crisp hex colors on all border elements
+  clone.querySelectorAll('*').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    const cls = htmlEl.className || '';
+    if (typeof cls !== 'string') return;
+
+    if (cls.includes('border-t')) {
+      htmlEl.style.borderTopStyle = 'solid';
+      htmlEl.style.borderTopWidth = '1px';
+      htmlEl.style.borderTopColor = htmlEl.style.borderTopColor || '#CBD5E1';
+    }
+    if (cls.includes('border-b')) {
+      htmlEl.style.borderBottomStyle = 'solid';
+      htmlEl.style.borderBottomWidth = '1px';
+      htmlEl.style.borderBottomColor = htmlEl.style.borderBottomColor || '#CBD5E1';
+    }
+    if (cls.includes('border-l')) {
+      htmlEl.style.borderLeftStyle = 'solid';
+      htmlEl.style.borderLeftWidth = '1px';
+      htmlEl.style.borderLeftColor = htmlEl.style.borderLeftColor || '#CBD5E1';
+    }
+    if (cls.includes('border-r')) {
+      htmlEl.style.borderRightStyle = 'solid';
+      htmlEl.style.borderRightWidth = '1px';
+      htmlEl.style.borderRightColor = htmlEl.style.borderRightColor || '#CBD5E1';
+    }
+    if (
+      (cls.includes('border ') || cls.endsWith('border') || cls.includes('border-slate')) &&
+      !cls.includes('border-t') &&
+      !cls.includes('border-b')
+    ) {
+      htmlEl.style.borderStyle = 'solid';
+      htmlEl.style.borderWidth = '1px';
+      htmlEl.style.borderColor = htmlEl.style.borderColor || '#CBD5E1';
+    }
+  });
+
+  // Ensure white summary metric cards have visible boundaries in PDF, while tables and footers stay clean
   clone.querySelectorAll('.bg-white').forEach((node) => {
     const htmlEl = node as HTMLElement;
     if (
@@ -624,6 +718,25 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
       backgroundColor: '#ffffff',
       scrollX: 0,
       scrollY: 0,
+      windowWidth: 794,
+      onclone: async (clonedDoc: Document, clonedEl: HTMLElement) => {
+        if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
+          try {
+            await clonedDoc.fonts.ready;
+          } catch {
+            // ignore
+          }
+        }
+
+        clonedEl.style.position = 'absolute';
+        clonedEl.style.left = '0px';
+        clonedEl.style.top = '0px';
+        clonedEl.style.right = 'auto';
+        clonedEl.style.margin = '0';
+        clonedEl.style.backgroundColor = '#ffffff';
+        clonedEl.style.width = '794px';
+        clonedEl.style.maxWidth = '794px';
+      },
     },
     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
     pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
@@ -633,4 +746,275 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
   await worker.get('pdf');
   cleanPdfBlankPages(worker);
   await worker.save();
+}
+
+/**
+ * Generates an A4 PDF Blob for Reports, Statements, and Ledgers.
+ * Uses the exact same rendering pipeline as exportDocumentPDF.
+ */
+export async function generateReportPdfBlob(element: HTMLElement, filename = 'document.pdf'): Promise<Blob> {
+  // Await web font loading
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Await image and logo decodes
+  const images = Array.from(element.querySelectorAll('img'));
+  await Promise.all(
+    images.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return img.decode?.().catch(() => {});
+    })
+  );
+
+  // 1. Clone element so live DOM is unaffected
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.classList.remove('hidden');
+  clone.style.display = 'block';
+
+  // 2. Force reveal all table sections that were hidden on mobile viewports (hidden md:block)
+  clone.querySelectorAll('.hidden, [class*="hidden"]').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    if (
+      !htmlEl.classList.contains('print:hidden') &&
+      !htmlEl.classList.contains('no-print') &&
+      !htmlEl.hasAttribute('data-print-hidden') &&
+      !htmlEl.hasAttribute('data-pdf-hidden')
+    ) {
+      htmlEl.classList.remove('hidden');
+      if (htmlEl.tagName === 'TABLE') {
+        htmlEl.style.display = 'table';
+      } else if (htmlEl.tagName === 'TR') {
+        htmlEl.style.display = 'table-row';
+      } else if (htmlEl.tagName === 'TD' || htmlEl.tagName === 'TH') {
+        htmlEl.style.display = 'table-cell';
+      } else {
+        htmlEl.style.display = 'block';
+      }
+    }
+  });
+
+  // 3. Strip interactive/action elements and UI controls
+  clone.querySelectorAll('.print\\:hidden, .no-print, [data-pdf-hidden], [data-print-hidden]').forEach((el) => {
+    el.remove();
+  });
+
+  // 4. Configure clone width & typography calibrated for standard A4 page (794px = 210mm at 96 DPI)
+  clone.style.width = '794px';
+  clone.style.maxWidth = '794px';
+  clone.style.minWidth = '794px';
+  clone.style.margin = '0';
+  clone.style.padding = '0';
+  clone.style.boxShadow = 'none';
+  clone.style.backgroundColor = '#ffffff';
+  clone.style.color = '#0f172a';
+  clone.style.boxSizing = 'border-box';
+  clone.style.fontFamily = 'Inter, -apple-system, BlinkMacSystemFont, sans-serif';
+
+  // 5. Reset overflow and scroll restrictions so all tables & cards expand to full content
+  clone.querySelectorAll('.overflow-x-auto, .overflow-y-auto, .overflow-hidden').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.overflow = 'visible';
+    htmlEl.style.maxHeight = 'none';
+  });
+
+  // Strip shadows on all descendants and neutralize truncate/line-clamp on text elements
+  clone.querySelectorAll('*').forEach((node) => {
+    const el = node as HTMLElement;
+    if (el.style) {
+      el.style.boxShadow = 'none';
+      el.style.textShadow = 'none';
+    }
+
+    if (el.classList) {
+      el.classList.remove('truncate', 'line-clamp-1', 'line-clamp-2', 'line-clamp-3', 'shadow-card', 'shadow-xs', 'shadow-2xs');
+    }
+
+    const isContainer =
+      el.tagName === 'TABLE' ||
+      el.querySelector('table') !== null ||
+      el.classList.contains('rounded-lg') ||
+      el.classList.contains('rounded-xl') ||
+      el.classList.contains('rounded-2xl');
+
+    if (!isContainer && el.style) {
+      if (el.style.overflow === 'hidden' || el.style.overflowX === 'hidden' || el.style.overflowY === 'hidden') {
+        el.style.overflow = 'visible';
+      }
+    }
+
+    if (el.style) {
+      if (el.style.textOverflow === 'ellipsis') {
+        el.style.textOverflow = 'clip';
+      }
+      if (el.style.webkitLineClamp) {
+        el.style.webkitLineClamp = 'unset';
+      }
+      if (el.style.display === '-webkit-box') {
+        el.style.display = 'block';
+      }
+    }
+  });
+
+  // Ensure tables take 100% width, fit cleanly, and keep headers on multi-page splits
+  clone.querySelectorAll('table').forEach((table) => {
+    table.style.width = '100%';
+    table.style.tableLayout = 'auto';
+    table.style.border = 'none';
+    table.style.borderCollapse = 'collapse';
+  });
+
+  clone.querySelectorAll('th, td').forEach((cell) => {
+    const htmlEl = cell as HTMLElement;
+    htmlEl.style.wordBreak = 'break-word';
+    htmlEl.style.overflowWrap = 'break-word';
+    htmlEl.style.verticalAlign = 'middle';
+  });
+
+  clone.querySelectorAll('thead').forEach((thead) => {
+    const htmlEl = thead as HTMLElement;
+    htmlEl.style.display = 'table-header-group';
+  });
+
+  // Prevent cards, statement headers, and table rows from being sliced across page breaks
+  clone.querySelectorAll('tr, thead, .p-4, .p-5, .rounded-xl, .rounded-2xl, .bg-surface-2').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    htmlEl.style.breakInside = 'avoid';
+    htmlEl.style.pageBreakInside = 'avoid';
+  });
+
+  // Explicitly enforce solid border styles and crisp hex colors on all border elements
+  clone.querySelectorAll('*').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    const cls = htmlEl.className || '';
+    if (typeof cls !== 'string') return;
+
+    if (cls.includes('border-t')) {
+      htmlEl.style.borderTopStyle = 'solid';
+      htmlEl.style.borderTopWidth = '1px';
+      htmlEl.style.borderTopColor = htmlEl.style.borderTopColor || '#CBD5E1';
+    }
+    if (cls.includes('border-b')) {
+      htmlEl.style.borderBottomStyle = 'solid';
+      htmlEl.style.borderBottomWidth = '1px';
+      htmlEl.style.borderBottomColor = htmlEl.style.borderBottomColor || '#CBD5E1';
+    }
+    if (cls.includes('border-l')) {
+      htmlEl.style.borderLeftStyle = 'solid';
+      htmlEl.style.borderLeftWidth = '1px';
+      htmlEl.style.borderLeftColor = htmlEl.style.borderLeftColor || '#CBD5E1';
+    }
+    if (cls.includes('border-r')) {
+      htmlEl.style.borderRightStyle = 'solid';
+      htmlEl.style.borderRightWidth = '1px';
+      htmlEl.style.borderRightColor = htmlEl.style.borderRightColor || '#CBD5E1';
+    }
+    if (
+      (cls.includes('border ') || cls.endsWith('border') || cls.includes('border-slate')) &&
+      !cls.includes('border-t') &&
+      !cls.includes('border-b')
+    ) {
+      htmlEl.style.borderStyle = 'solid';
+      htmlEl.style.borderWidth = '1px';
+      htmlEl.style.borderColor = htmlEl.style.borderColor || '#CBD5E1';
+    }
+  });
+
+  // Ensure white summary metric cards have visible boundaries in PDF, while tables and footers stay clean
+  clone.querySelectorAll('.bg-white').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    if (
+      htmlEl.tagName === 'TABLE' ||
+      htmlEl.querySelector('table') ||
+      htmlEl.classList.contains('overflow-x-auto') ||
+      htmlEl.classList.contains('pdf-footer') ||
+      htmlEl.hasAttribute('data-no-border') ||
+      htmlEl.innerText?.includes('Powered by') ||
+      htmlEl.innerText?.includes('Confidential')
+    ) {
+      htmlEl.style.border = 'none';
+      if (
+        htmlEl.classList.contains('pdf-footer') ||
+        htmlEl.hasAttribute('data-no-border') ||
+        htmlEl.innerText?.includes('Powered by')
+      ) {
+        htmlEl.style.borderTop = '1px solid #E2E8F0';
+      }
+      return;
+    }
+
+    if (
+      htmlEl.classList.contains('p-3') ||
+      htmlEl.classList.contains('p-3.5') ||
+      htmlEl.classList.contains('p-4') ||
+      htmlEl.classList.contains('p-5') ||
+      htmlEl.classList.contains('p-6') ||
+      htmlEl.classList.contains('rounded-2xl') ||
+      htmlEl.classList.contains('rounded-xl') ||
+      htmlEl.parentElement?.classList.contains('grid')
+    ) {
+      htmlEl.style.border = '1px solid #CBD5E1';
+      htmlEl.style.backgroundColor = '#FFFFFF';
+      htmlEl.style.boxShadow = 'none';
+    }
+  });
+
+  // Ensure yellow / amber notices stay clean and borderless in PDF
+  clone.querySelectorAll('[class*="amber"], [class*="yellow"]').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    htmlEl.style.border = 'none';
+  });
+
+  // Strip shadows on all nodes to prevent canvas blur overflow
+  clone.querySelectorAll('*').forEach((node) => {
+    const htmlEl = node as HTMLElement;
+    if (htmlEl.style) {
+      htmlEl.style.boxShadow = 'none';
+    }
+  });
+
+  const opt = {
+    margin: [8, 8, 8, 8],
+    filename,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: 794,
+      onclone: async (clonedDoc: Document, clonedEl: HTMLElement) => {
+        if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
+          try {
+            await clonedDoc.fonts.ready;
+          } catch {
+            // ignore
+          }
+        }
+
+        clonedEl.style.position = 'absolute';
+        clonedEl.style.left = '0px';
+        clonedEl.style.top = '0px';
+        clonedEl.style.right = 'auto';
+        clonedEl.style.margin = '0';
+        clonedEl.style.backgroundColor = '#ffffff';
+        clonedEl.style.width = '794px';
+        clonedEl.style.maxWidth = '794px';
+      },
+    },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
+    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+  };
+
+  const worker = html2pdf().set(opt).from(clone).toPdf();
+  await worker.get('pdf');
+  cleanPdfBlankPages(worker);
+  const pdfBlob: Blob = await worker.outputPdf('blob');
+  return pdfBlob;
 }
