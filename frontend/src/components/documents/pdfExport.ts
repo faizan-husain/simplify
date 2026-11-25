@@ -240,7 +240,17 @@ function getA5PdfExportOptions(filename: string) {
       backgroundColor: '#ffffff',
       scrollX: 0,
       scrollY: 0,
-      onclone: (_clonedDoc: Document, element: HTMLElement) => {
+      windowWidth: 794,
+      onclone: async (clonedDoc: Document, element: HTMLElement) => {
+        // Ensure web fonts (Inter) are 100% loaded in cloned document iframe
+        if (clonedDoc.fonts && typeof clonedDoc.fonts.ready !== 'undefined') {
+          try {
+            await clonedDoc.fonts.ready;
+          } catch {
+            // Ignore font ready errors
+          }
+        }
+
         // Pin html2pdf container to origin with zero subpixel offset
         element.style.position = 'absolute';
         element.style.left = '0px';
@@ -258,6 +268,13 @@ function getA5PdfExportOptions(filename: string) {
 }
 
 export async function generateDocumentPdfBlob(element: HTMLElement, filename = 'document.pdf'): Promise<Blob> {
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
   const clone = prepareDocumentClone(element);
   const opt = getA5PdfExportOptions(filename);
 
@@ -269,6 +286,13 @@ export async function generateDocumentPdfBlob(element: HTMLElement, filename = '
 }
 
 export async function exportInvoicePDF(element: HTMLElement, filename = 'invoice.pdf'): Promise<void> {
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
   const clone = prepareDocumentClone(element);
   const opt = getA5PdfExportOptions(filename);
 
@@ -323,6 +347,13 @@ export async function shareDocumentWithWhatsApp(
   options: ShareDocumentOptions
 ): Promise<ShareDocumentResult> {
   const { element, filename, title, text = '', mobile } = options;
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
   const clone = prepareDocumentClone(element);
   const opt = getA5PdfExportOptions(filename);
 
@@ -413,6 +444,13 @@ export async function shareInvoicePDF(
 }
 
 export async function exportReceiptPDF(element: HTMLElement, filename = 'receipt.pdf'): Promise<void> {
+  if (typeof document !== 'undefined' && document.fonts && typeof document.fonts.ready !== 'undefined') {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+  }
   const clone = prepareDocumentClone(element);
   const opt = getA5PdfExportOptions(filename);
 

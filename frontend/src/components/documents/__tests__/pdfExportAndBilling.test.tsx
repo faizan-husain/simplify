@@ -13,20 +13,17 @@ describe('PDF Export & Print Layout Formatting', () => {
     expect(styleEl?.textContent).toContain('margin: 0mm !important');
   });
 
-  it('renders InvoiceDocument with crisp border-slate-300 borders and brand footer', () => {
+  it('renders InvoiceDocument with crisp solid hex borders, single-line UPI ID, and brand footer', () => {
     const dummyInvoice = {
       id: 'inv-1',
-      number: 'INV-0003',
+      number: 'INV-0004',
       fy_label: '2026-27',
       invoice_date: '2026-11-24',
       due_date: '2026-12-01',
-      party_name: 'Aayesha Clinic',
-      party_mobile: '9623874183',
-      subtotal: 8000,
-      discount_type: 'FLAT' as const,
-      discount_value: 2000,
-      discount_amount: 2000,
-      total: 6000,
+      party_name: 'Sayyed Restorant',
+      party_mobile: '7020257442',
+      subtotal: 6200,
+      total: 6200,
       paid_amount: 0,
       status: 'ACTIVE' as const,
       cancel_reason: null,
@@ -35,12 +32,11 @@ describe('PDF Export & Print Layout Formatting', () => {
         {
           id: 'item-1',
           invoice_id: 'inv-1',
-          service_id: 'srv-1',
-          description: 'NT 1 Side',
-          applicant_name: 'Visiting Card',
-          quantity: 10,
-          rate: 800,
-          amount: 8000,
+          description: 'Hotel Menu Card',
+          applicant_name: 'A4 size Front Back with Lamination and Spiral Binding',
+          quantity: 8,
+          rate: 775,
+          amount: 6200,
           is_job: false,
         },
       ],
@@ -53,28 +49,105 @@ describe('PDF Export & Print Layout Formatting', () => {
       address: 'Ali Sahab Mohalla, Nandurbar',
       mobile: '9764971786',
       email: 'global.graphics007@gmail.com',
+      upi_id: 'global.graphics007-2@okhdfcbank',
     };
 
     const { container } = render(
       <InvoiceDocument invoice={dummyInvoice} business={dummyBusiness} format="a5" />
     );
 
-    // Verify header border is crisp slate-300
+    // Verify header border is crisp solid #CBD5E1 (rgb(203, 213, 225))
     const header = container.querySelector('div.flex.justify-between.items-start') as HTMLElement;
     expect(header).toBeTruthy();
-    expect(header.style.borderBottom).toContain('1px solid');
+    expect(header.style.borderBottom).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
 
-    // Verify billed to border is slate-300
+    // Verify billed to border is solid #CBD5E1
     const billedTo = container.querySelector('.bg-\\[\\#EEF0F3\\]') as HTMLElement;
     expect(billedTo).toBeTruthy();
-    expect(billedTo.style.border).toContain('1px solid');
+    expect(billedTo.style.border).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
 
-    // Verify bottom brand footer has border-t border-slate-300 and pb-1 padding
+    // Verify items table has outer border and header has borderBottom
+    const tableWrapper = container.querySelector('.rounded-lg.overflow-hidden.mb-2\\.5') as HTMLElement;
+    expect(tableWrapper).toBeTruthy();
+    expect(tableWrapper.style.border).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
+
+    const thList = container.querySelectorAll('th');
+    thList.forEach((th) => {
+      expect((th as HTMLElement).style.borderBottom).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
+    });
+
+    // Verify UPI QR block has solid border and UPI ID contains break-words
+    const upiBox = container.querySelector('div.grid.grid-cols-2 > div') as HTMLElement;
+    expect(upiBox).toBeTruthy();
+    expect(upiBox.style.border).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
+
+    const upiTextEl = upiBox.querySelector('.font-mono') as HTMLElement;
+    expect(upiTextEl).toBeTruthy();
+    expect(upiTextEl.textContent).toBe('global.graphics007-2@okhdfcbank');
+
+    // Verify totals summary has solid border and dividers
+    const totalsBox = container.querySelector('div.grid.grid-cols-2 > div:last-child') as HTMLElement;
+    expect(totalsBox).toBeTruthy();
+    expect(totalsBox.style.border).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
+
+    // Verify bottom brand footer has borderTop and brand text
     const brandFooter = container.querySelector('div.mt-3.pt-2\\.5.pb-1') as HTMLElement;
     expect(brandFooter).toBeTruthy();
-    expect(brandFooter.style.borderTop).toContain('1px solid');
+    expect(brandFooter.style.borderTop).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
     expect(brandFooter?.textContent).toContain('Powered by');
     expect(brandFooter?.textContent).toContain('Business Management & Billing Software');
+  });
+
+  it('renders multiline items, large totals, and long customer names without clipping', () => {
+    const multilineInvoice = {
+      id: 'inv-multi',
+      number: 'INV-9999',
+      invoice_date: '2026-11-24',
+      due_date: '2026-12-01',
+      party_name: 'M/S Royal Palace Luxury Banquet & Hospitality Services Pvt Ltd',
+      party_mobile: '9876543210',
+      subtotal: 125000,
+      total: 125000,
+      paid_amount: 25000,
+      notes: 'Customer requested express delivery before Saturday.',
+      invoice_items: [
+        {
+          description: 'Special Deluxe Visiting Card with Velvet Matte UV Spot Lamination',
+          applicant_name: 'Front & Back 400 GSM Art Card with Rounded Corner Die Cutting and Gold Foil Embossing',
+          quantity: 50,
+          rate: 2500,
+          amount: 125000,
+        },
+      ],
+    };
+
+    const business = {
+      name: 'Global Computers & Advanced Digital Printing Solutions LLP',
+      address: 'Shop No 1, Main Market, Complex Road',
+      mobile: '9764971786',
+      upi_id: 'global.graphics007-2@okhdfcbank',
+      footer_text: 'Thank you for your business! All disputes subject to local jurisdiction.',
+    };
+
+    const { container } = render(
+      <InvoiceDocument invoice={multilineInvoice} business={business} format="a5" />
+    );
+
+    // Verify table has table-fixed layout for stable percentage columns
+    const table = container.querySelector('table') as HTMLTableElement;
+    expect(table).toBeTruthy();
+    expect(table.className).toContain('table-fixed');
+
+    // Verify long applicant / particular text is present
+    expect(container.textContent).toContain('Gold Foil Embossing');
+
+    // Verify large amount formatting
+    expect(container.textContent).toContain('₹1,25,000');
+
+    // Verify terms/notes footer has solid top border
+    const notesBox = container.querySelector('div.pt-2\\.5.pb-1.text-\\[9\\.5px\\]') as HTMLElement;
+    expect(notesBox).toBeTruthy();
+    expect(notesBox.style.borderTop).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
   });
 
   it('renders ReceiptDocument with crisp border-slate-300 and brand footer', () => {
@@ -116,25 +189,25 @@ describe('PDF Export & Print Layout Formatting', () => {
       />
     );
 
-    // Verify header border is crisp slate-300
+    // Verify header border is crisp solid #CBD5E1
     const header = container.querySelector('div.flex.justify-between.items-start') as HTMLElement;
     expect(header).toBeTruthy();
-    expect(header.style.borderBottom).toContain('1px solid');
+    expect(header.style.borderBottom).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
 
-    // Verify payer details border is slate-300
+    // Verify payer details border is solid #CBD5E1
     const payerBox = container.querySelector('.bg-\\[\\#EEF0F3\\]') as HTMLElement;
     expect(payerBox).toBeTruthy();
-    expect(payerBox.style.border).toContain('1px solid');
+    expect(payerBox.style.border).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
 
-    // Verify signature bar border is slate-300
+    // Verify signature bar border is solid #CBD5E1
     const sigBar = container.querySelector('.pt-2\\.5.flex.justify-between') as HTMLElement;
     expect(sigBar).toBeTruthy();
-    expect(sigBar.style.borderTop).toContain('1px solid');
+    expect(sigBar.style.borderTop).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
 
-    // Verify brand footer has pb-1 and border-slate-300
+    // Verify brand footer has solid #CBD5E1 border
     const brandFooter = container.querySelector('div.mt-3.pt-2\\.5.pb-1') as HTMLElement;
     expect(brandFooter).toBeTruthy();
-    expect(brandFooter.style.borderTop).toContain('1px solid');
+    expect(brandFooter.style.borderTop).toMatch(/1px solid (?:#CBD5E1|rgb\(203, 213, 225\))/);
     expect(brandFooter?.textContent).toContain('Powered by');
     expect(brandFooter?.textContent).toContain('Business Management & Billing Software');
   });
