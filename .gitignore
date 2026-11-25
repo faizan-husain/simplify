@@ -52,3 +52,5 @@ Thumbs.db
 
 # Scratch & temporary test artifacts
 scratch/
+qa/pdf/*.pdf
+qa/pdf/*.png

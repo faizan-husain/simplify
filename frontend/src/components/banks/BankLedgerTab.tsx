@@ -12,7 +12,7 @@ import { useToast } from '../ui/Toast';
 import { useAuth } from '../../context/AuthContext';
 import { NewBankAccountModal } from './NewBankAccountModal';
 import { TransferMoneyModal, TransferType } from './TransferMoneyModal';
-import { setPrintPageSize } from '../documents/pdfExport';
+import { setPrintPageSize, exportDocumentPDF } from '../documents/pdfExport';
 import { BankStatementPrintDocument } from './BankStatementPrintDocument';
 import {
   Building2,
@@ -220,8 +220,17 @@ export const BankLedgerTab: React.FC<BankLedgerTabProps> = () => {
     window.print();
   };
 
-  const handleExportPDF = () => {
-    handlePrint();
+  const handleExportPDF = async () => {
+    const el = document.getElementById('print-bank-statement-root') || printRef.current;
+    if (!el) return;
+    try {
+      showToast('Generating bank statement PDF...', 'info');
+      const filename = `Bank_Statement_${selectedBank ? selectedBank.bank_name.replace(/\s+/g, '_') : 'Consolidated'}.pdf`;
+      await exportDocumentPDF(el, filename);
+      showToast('Bank statement downloaded', 'success');
+    } catch {
+      // Fallback handled automatically
+    }
   };
 
   // Helper to format short date like "2 Nov"

@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef } from 'react';
 import { formatINR } from '../../lib/money';
 import { Select } from '../ui/Select';
 import { useAuth } from '../../context/AuthContext';
-import { setPrintPageSize } from '../documents/pdfExport';
+import { setPrintPageSize, exportDocumentPDF } from '../documents/pdfExport';
 import {
   BarChart3,
   Calendar,
@@ -118,8 +118,14 @@ export const StaffEarningsStatement: React.FC<StaffEarningsStatementProps> = ({
     ? `Fixed Salary (₹${monthlySalary.toLocaleString('en-IN')}/mo)`
     : 'Commission Based';
 
-  const handleExportPDF = () => {
-    handlePrint();
+  const handleExportPDF = async () => {
+    if (!printRef.current) return;
+    try {
+      const filename = `Staff_Statement_${staffName.replace(/\s+/g, '_')}_${selectedFY}.pdf`;
+      await exportDocumentPDF(printRef.current, filename);
+    } catch {
+      // Fallback handled automatically
+    }
   };
 
   const handlePrint = () => {
