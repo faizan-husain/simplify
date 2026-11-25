@@ -349,6 +349,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
           ) : data ? (
             <div className="flex justify-center">
               <ReceiptDocument
+                ref={pdfDocRef}
                 receipt={data.receipt}
                 customer={data.customer}
                 allocations={data.allocations}
@@ -366,37 +367,22 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
         </div>
       </div>
 
-      {/* Hidden container for print and offscreen container for PDF generation */}
-      {data && (
-        <>
-          {createPortal(
-            <div id="print-receipt-root" className="hidden print:flex">
-              <ReceiptDocument
-                receipt={data.receipt}
-                customer={data.customer}
-                allocations={data.allocations}
-                items={(data as any)?.items}
-                ledger_summary={data.ledger_summary}
-                business={data.business}
-                format={format}
-              />
-            </div>,
-            document.body
-          )}
-          <div style={{ position: 'fixed', left: '-9999px', top: '-9999px', width: '148mm' }}>
+      {/* Hidden container for print mounted at document.body for exact horizontal page centering */}
+      {data &&
+        createPortal(
+          <div id="print-receipt-root" className="hidden print:flex">
             <ReceiptDocument
-              ref={pdfDocRef}
               receipt={data.receipt}
               customer={data.customer}
               allocations={data.allocations}
               items={(data as any)?.items}
               ledger_summary={data.ledger_summary}
               business={data.business}
-              format="a5"
+              format={format}
             />
-          </div>
-        </>
-      )}
+          </div>,
+          document.body
+        )}
       {/* Customer WhatsApp Number Modal */}
       <UpdateMobileModal
         open={isUpdateMobileOpen}

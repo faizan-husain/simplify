@@ -395,6 +395,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
 
             <div className="flex justify-center">
               <InvoiceDocument
+                ref={docRef}
                 invoice={invoice}
                 business={business}
                 format={printFormat}
@@ -512,11 +513,6 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
           </div>,
           document.body
         )}
-
-      {/* Offscreen container for crisp PDF generation */}
-      <div style={{ position: 'fixed', left: '-9999px', top: '-9999px', width: '148mm' }}>
-        <InvoiceDocument ref={docRef} invoice={invoice} business={business} format="a5" />
-      </div>
 
       {/* Cancel Bill Modal */}
       <CancelBillModal
