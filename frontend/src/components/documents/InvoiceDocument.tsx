@@ -327,7 +327,7 @@ export const InvoiceDocument = forwardRef<HTMLDivElement, InvoiceDocumentProps>(
                   {formatINR(balance)}
                 </div>
                 <div
-                  className="text-[7.5px] text-slate-600 mt-0.5 font-mono font-medium tracking-tight leading-tight whitespace-nowrap overflow-hidden text-ellipsis"
+                  className="text-[8.5px] text-slate-600 mt-0.5 font-mono font-medium leading-normal whitespace-nowrap"
                   title={business?.upi_id || ''}
                 >
                   {business?.upi_id}

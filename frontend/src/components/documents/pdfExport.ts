@@ -757,11 +757,25 @@ export async function exportDocumentPDF(element: HTMLElement, filename = 'docume
           }
         }
 
+        // Reset iframe HTML & Body to eliminate browser default 8px margin
+        if (clonedDoc.documentElement) {
+          clonedDoc.documentElement.style.margin = '0px';
+          clonedDoc.documentElement.style.padding = '0px';
+          clonedDoc.documentElement.style.overflow = 'hidden';
+        }
+        if (clonedDoc.body) {
+          clonedDoc.body.style.margin = '0px';
+          clonedDoc.body.style.padding = '0px';
+          clonedDoc.body.style.overflow = 'hidden';
+        }
+
         clonedEl.style.position = 'absolute';
         clonedEl.style.left = '0px';
         clonedEl.style.top = '0px';
         clonedEl.style.right = 'auto';
         clonedEl.style.margin = '0';
+        clonedEl.style.padding = '0';
+        clonedEl.style.border = '0';
         clonedEl.style.backgroundColor = '#ffffff';
         clonedEl.style.width = '794px';
         clonedEl.style.maxWidth = '794px';
@@ -1027,11 +1041,25 @@ export async function generateReportPdfBlob(element: HTMLElement, filename = 'do
           }
         }
 
+        // Reset iframe HTML & Body to eliminate browser default 8px margin
+        if (clonedDoc.documentElement) {
+          clonedDoc.documentElement.style.margin = '0px';
+          clonedDoc.documentElement.style.padding = '0px';
+          clonedDoc.documentElement.style.overflow = 'hidden';
+        }
+        if (clonedDoc.body) {
+          clonedDoc.body.style.margin = '0px';
+          clonedDoc.body.style.padding = '0px';
+          clonedDoc.body.style.overflow = 'hidden';
+        }
+
         clonedEl.style.position = 'absolute';
         clonedEl.style.left = '0px';
         clonedEl.style.top = '0px';
         clonedEl.style.right = 'auto';
         clonedEl.style.margin = '0';
+        clonedEl.style.padding = '0';
+        clonedEl.style.border = '0';
         clonedEl.style.backgroundColor = '#ffffff';
         clonedEl.style.width = '794px';
         clonedEl.style.maxWidth = '794px';

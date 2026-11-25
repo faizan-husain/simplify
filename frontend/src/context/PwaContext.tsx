@@ -86,10 +86,11 @@ export const PwaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      registerSW({
+      const updateSW = registerSW({
         immediate: true,
         onNeedRefresh() {
-          console.log('[PWA] Service worker updated, ready to refresh');
+          console.log('[PWA] Service worker updated, auto-updating to latest build');
+          updateSW(true);
         },
         onOfflineReady() {
           console.log('[PWA] Service worker active and offline-ready');
